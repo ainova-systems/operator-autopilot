@@ -39,7 +39,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | dev-review-changes | Read-only review of pending changes against project rules, with a severity verdict |
 | dev-run-tests | Run typecheck, lint, and tests with the right scope; analyze failures |
 | git-commit-push | Verify, review, and push pending work as one milestone commit |
-| git-create-release | Cut a release: version, changelog, tag, per the project's release flow |
+| git-create-release | Cut a release: version, changelog, tag, and release object — policy-driven across trunk/gitflow and tag-only/full |
 | git-finalize-pr | Drive the current branch's PR to merge-ready: CI green and every review comment handled, ending with an outcome label |
 | git-merge-pr | After owner accept: guard-checked squash-merge of the current branch's PR, base sync and branch cleanup |
 | git-resolve-conflicts | Resolve merge or rebase conflicts semantically, then re-verify the full gates |
@@ -237,9 +237,14 @@ Sync with `bash intelligence/scripts/sync.sh`. Generated outputs (`.claude/`, `.
 
 ## Releases
 
-- release_flow: tag-on-default      <!-- master is the default/release branch; no integration branch -->
-- version_source: TODO(owner)       <!-- version lives in package.json (currently 5.0.0); no CHANGELOG at repo root and no git tags yet -->
-- tag_format: vX.Y.Z                <!-- migration.md references the v5.0.0 tag convention -->
+- release_flow: tag-on-default      <!-- master is the single trunk; no develop -->
+- changelog: continuous             <!-- every change appends ## [Unreleased]; release promotes it to ## [x.y.z] -->
+- release_cut: release-pr           <!-- release/x.y.z branch → PR → CI green → merge → tag the merge commit -->
+- release_artifact: github-release  <!-- publish a GitHub Release, not just a tag -->
+- release_notes: changelog-section  <!-- body = the [x.y.z] CHANGELOG.md section -->
+- tagger: maintainer                <!-- local git tag + push origin vX.Y.Z; CI tagging is a later upgrade -->
+- version_source: package.json      <!-- bump here; mirrored in CHANGELOG.md; released as vX.Y.Z tags + GitHub Releases -->
+- tag_format: vX.Y.Z
 
 ## Documentation
 

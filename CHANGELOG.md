@@ -2,6 +2,8 @@
 
 All notable changes to this project. 0.5.0 is the first public release of the v5 architecture rebuild.
 
+## [Unreleased]
+
 ## 0.5.0 — 2026-06-23
 
 First public release of the v5 architecture rebuild. The v4 line was abandoned mid-migration after accumulated dead code and duplicated stage plumbing made further iteration unsafe. v5 restarts with a single composition root, a generic stage loop, and an observability UI that ships from day one.

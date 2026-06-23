@@ -43,9 +43,14 @@ description: Project-specific configuration consumed by the intelligence-dev-pac
 
 ## Releases
 
-- release_flow: tag-on-default      <!-- master is the default/release branch; no integration branch -->
-- version_source: TODO(owner)       <!-- version lives in package.json (currently 5.0.0); no CHANGELOG at repo root and no git tags yet -->
-- tag_format: vX.Y.Z                <!-- migration.md references the v5.0.0 tag convention -->
+- release_flow: tag-on-default      <!-- master is the single trunk; no develop -->
+- changelog: continuous             <!-- every change appends ## [Unreleased]; release promotes it to ## [x.y.z] -->
+- release_cut: release-pr           <!-- release/x.y.z branch → PR → CI green → merge → tag the merge commit -->
+- release_artifact: github-release  <!-- publish a GitHub Release, not just a tag -->
+- release_notes: changelog-section  <!-- body = the [x.y.z] CHANGELOG.md section -->
+- tagger: maintainer                <!-- local git tag + push origin vX.Y.Z; CI tagging is a later upgrade -->
+- version_source: package.json      <!-- bump here; mirrored in CHANGELOG.md; released as vX.Y.Z tags + GitHub Releases -->
+- tag_format: vX.Y.Z
 
 ## Documentation
 
