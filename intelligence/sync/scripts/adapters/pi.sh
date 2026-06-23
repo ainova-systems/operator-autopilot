@@ -182,7 +182,7 @@ sync_pi_agents() {
 
             local name rel desc access template_desc body prompt_file access_note
             name="$(basename "$f" .md)"
-            rel="${f#$repo_root/}"
+            rel="$(repo_rel_link "$repo_root" "$f")"
             desc="$(get_frontmatter_value "description" "$f")"
             access="$(get_frontmatter_value "access" "$f")"
             body="$(pi_agent_body "$f")"
@@ -212,7 +212,7 @@ EOF
                 echo ""
                 printf 'Adopt the `%s` agent persona for this task.\n' "$name"
                 echo ""
-                printf 'Source: `%s`\n' "$rel"
+                printf 'Source: `%s`\n' "${rel:-$name (remote pack)}"
                 if [ -n "$desc" ]; then
                     echo "Use this persona when: $desc"
                     echo ""

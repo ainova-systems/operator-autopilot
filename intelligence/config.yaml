@@ -1,5 +1,5 @@
 project:
-  name: "github-operator"
+  name: "operator-autopilot"
 
 sources:
   rules:
@@ -32,4 +32,4 @@ ignore:
   - "state"
   - "intelligence/_backup"
   - "engine/content"
-sync_version: "0.4.2"
+sync_version: "0.5.0"

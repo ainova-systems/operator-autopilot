@@ -65,6 +65,21 @@ source_is_remote() {
     esac
 }
 
+# Map an absolute file path to a repo-root-relative path for use as a link
+# target inside a COMMITTED file (e.g. AGENTS.md). A file under $repo_root gets
+# its repo-relative path. A file resolved OUTSIDE $repo_root comes from a remote
+# source materialized in the transient clone cache and has NO stable,
+# committable path, so this returns the empty string — callers MUST then emit
+# the bare name, never the absolute path. The `${path#"$repo_root"/}` strip is a
+# no-op when $path is not under $repo_root, which is how the out-of-repo case is
+# detected.
+repo_rel_link() {
+    local repo_root="$1" path="$2" rel
+    rel="${path#"$repo_root"/}"
+    [ "$rel" = "$path" ] && return 0
+    printf '%s' "$rel"
+}
+
 # Resolve a single source token to an absolute local directory.
 #   Local token  -> "$repo_root/$token".
 #   Remote token -> shallow-clone into the run cache, echo "<clone>/<subpath>".

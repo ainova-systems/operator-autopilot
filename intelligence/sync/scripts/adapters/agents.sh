@@ -48,11 +48,15 @@ agents_md_append_agents_table() {
             [ -f "$f" ] || continue
             local name rel tier access desc
             name="$(basename "$f" .md)"
-            rel="${f#$repo_root/}"
+            rel="$(repo_rel_link "$repo_root" "$f")"
             tier=$(get_frontmatter_value "tier" "$f")
             access=$(get_frontmatter_value "access" "$f")
             desc=$(get_frontmatter_value "description" "$f")
-            rows+="| [$name]($rel) | ${tier:--} | ${access:--} | ${desc:--} |"$'\n'
+            if [ -n "$rel" ]; then
+                rows+="| [$name]($rel) | ${tier:--} | ${access:--} | ${desc:--} |"$'\n'
+            else
+                rows+="| $name | ${tier:--} | ${access:--} | ${desc:--} |"$'\n'
+            fi
             count=$((count + 1))
         done
     done < <(read_yaml_list "$config_file" "agents")
@@ -92,9 +96,13 @@ agents_md_append_skills_table() {
             local skill_file="${skill_dir%/}/SKILL.md"
             [ -f "$skill_file" ] || continue
             local rel desc
-            rel="${skill_file#$repo_root/}"
+            rel="$(repo_rel_link "$repo_root" "$skill_file")"
             desc=$(get_frontmatter_value "description" "$skill_file")
-            rows+="| [$dirname]($rel) | ${desc:--} |"$'\n'
+            if [ -n "$rel" ]; then
+                rows+="| [$dirname]($rel) | ${desc:--} |"$'\n'
+            else
+                rows+="| $dirname | ${desc:--} |"$'\n'
+            fi
             count=$((count + 1))
         done
     done < <(read_yaml_list "$config_file" "skills")
@@ -131,14 +139,18 @@ agents_md_append_rules_list() {
             [ -f "$f" ] || continue
             local name rel scope
             name="$(basename "$f" .md)"
-            rel="${f#$repo_root/}"
+            rel="$(repo_rel_link "$repo_root" "$f")"
             scope="global"
             if [ "$(has_paths "$f")" != "0" ]; then
                 scope="scoped"
             else
                 global_rule_files+=("$f")
             fi
-            lines+="- [$name]($rel) ($scope)"$'\n'
+            if [ -n "$rel" ]; then
+                lines+="- [$name]($rel) ($scope)"$'\n'
+            else
+                lines+="- $name ($scope)"$'\n'
+            fi
             count=$((count + 1))
         done
     done < <(read_yaml_list "$config_file" "rules")
@@ -222,5 +234,16 @@ sync_to_agents() {
     agents_md_append_rules_list  "$repo_root" "$config_file" "$output_file"
 
     normalize_file_to_lf "$output_file"
+
+    # Safety net: AGENTS.md is committed, so it must never carry an absolute or
+    # transient link target (remote-pack content lives under the run cache). If
+    # relativization ever fails, fail the sync loudly rather than write a
+    # machine-specific path into version control.
+    if grep -nE '\]\((/|[A-Za-z]:[\\/])' "$output_file" >/dev/null 2>&1; then
+        echo "  ERROR: AGENTS.md has an absolute link target — relativization failed:" >&2
+        grep -nE '\]\((/|[A-Za-z]:[\\/])' "$output_file" >&2
+        return 1
+    fi
+
     echo "  -> ${output_file#$repo_root/}"
 }
