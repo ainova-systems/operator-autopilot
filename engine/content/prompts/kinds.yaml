@@ -1,0 +1,71 @@
+# MVP work-item kind definitions — seeded into kv:work-item-kinds/{name} on first boot.
+# Source of truth at runtime is KV. Edit via UI after Step 16; the engine never
+# reads this file during normal operation once the seed pass has completed.
+# Per architecture-v5.md §8.1.
+#
+# This file is a placeholder until Step 5 (KVStore + seed.ts) consumes it and
+# Step 13 (kind registry) makes runtime code KindRegistry-driven. Engine code
+# in Step 3 does NOT read this file yet.
+
+kinds:
+  finding:
+    label: Finding
+    idPrefix: F
+    dataDir: .operator/data/findings
+    branchPrefix: ai/findings
+    prPrefix: "[AI:Finding]"
+    # PR-bound lifecycle, two terminal-success states:
+    #   `merged`    — the discovery/planning PR was merged (planner
+    #                 produced child tasks and they were accepted by the
+    #                 base branch). Engine's own work on the finding is
+    #                 done.
+    #   `completed` — derived. Promoted from `merged` once ALL spawned
+    #                 child tasks have reached terminal state themselves.
+    #                 Signals "the entire finding lifecycle is closed, no
+    #                 outstanding child work remains" — a stronger UI
+    #                 signal than `merged` alone. Computed by the
+    #                 reconciler's post-sync aggregation pass; never
+    #                 written by an agent or by file frontmatter.
+    terminalStatuses: [merged, completed, failed, rejected, duplicate]
+    # No parent kinds today — findings are top-level discoveries.
+    parentKinds: []
+
+  task:
+    label: Task
+    idPrefix: T
+    dataDir: .operator/data/tasks
+    branchPrefix: ai/tasks
+    prPrefix: "[AI:Task]"
+    terminalStatuses: [merged, failed, rejected, duplicate, cancelled]
+    # Tasks today are spawned by the planner from a finding, but the
+    # registry expresses this declaratively so any future workflow
+    # (research → task, retrospective → task, manual → task) can set
+    # `parent_id` to any allowed parent kind.
+    parentKinds: [finding]
+
+  request:
+    label: Request
+    idPrefix: R
+    dataDir: .operator/data/requests
+    branchPrefix: ai/requests
+    prPrefix: "[AI:Request]"
+    # Manual / human-driven. Can complete without a PR (frontmatter
+    # `status: completed`) or via merge — both terminal.
+    terminalStatuses: [completed, merged, rejected]
+    parentKinds: []
+
+  retrospective:
+    label: Retrospective
+    # Week-scoped singleton (id like `2026W26`); ids are scope keys, not
+    # minted via generateId, so idPrefix is nominal.
+    idPrefix: W
+    dataDir: .operator/data/retrospectives
+    branchPrefix: ai/retrospective
+    prPrefix: "[AI:Improver]"
+    # PR-bound: `merged` is the terminal-success state (human merges the
+    # weekly optimization PR). Registering the kind closes the gap where
+    # retrospective PRs had no kind entry — branch→kind resolution
+    # (pr-lifecycle item overrides, supervisor afterAgent) now works for
+    # them exactly like tasks/findings.
+    terminalStatuses: [merged, completed, failed, rejected, duplicate, cancelled]
+    parentKinds: []

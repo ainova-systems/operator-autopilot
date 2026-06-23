@@ -1,0 +1,64 @@
+# Global operator defaults
+schedules:
+  prReviewMinutes: 5
+  taskSelectMinutes: 15
+  findingSelectMinutes: 30
+  dailyResearchHour: 8       # UTC hour for daily research run
+  improverDayOfWeek: 1       # 1=Monday
+  prLifecycleMinutes: 15     # how often pr-lifecycle sweeps open AI PRs
+
+workspace:
+  baseDir: /home/runner/workspaces
+
+limits:
+  maxReviewAttempts: 20
+
+# PR lifecycle automation. Per-repo overrides land on `repos/{id}.lifecycle`;
+# per-work-item overrides come from frontmatter `lifecycle_*` fields.
+# Concrete numbers (including 0) win over inherited values; `null` means
+# "rule disabled".
+lifecycle:
+  promoteToReadyAfterIdleHours: 1   # ai:in-review → ai:ready-to-merge after 1h idle
+  autoMergeReadyAfterHours: null    # human merge by default
+  autoCloseStuckAfterHours: null    # never auto-close stuck PRs by default
+
+review:
+  # Bot logins whose comments/reviews are ignored (pure noise sources).
+  # All other bots (Cursor, Copilot, CodeQL, etc.) trigger the review cycle.
+  ignoredBotLogins:
+    - github-actions[bot]
+
+labels:
+  pending: "ai:pending"
+  processing: "ai:processing"
+  # Applied-changes / review-cycle-open — pr-feedback selector scans
+  # PRs with this label for fresh feedback.
+  inReview: "ai:in-review"
+  # Terminal AI handoff — pr-feedback selector excludes PRs carrying
+  # this label so the PR sits here until the human merges.
+  readyToMerge: "ai:ready-to-merge"
+  failed: "ai:failed"
+  manual: "ai:manual"
+  cancelled: "ai:cancelled"
+  rejected: "ai:rejected"
+
+conventions:
+  branches:
+    aiPrefix: "ai"
+    init: "ai/init"
+    tasks: "ai/tasks"
+    research: "ai/research"
+    improver: "ai/improver"
+    findings: "ai/findings"
+  prPrefixes:
+    task: "[AI:Task]"
+    finding: "[AI:Finding]"
+    research: "[AI:Research]"
+    improver: "[AI:Improver]"
+    init: "[AI:Init]"
+    failed: "[AI:Failed]"
+    manual: "[AI:Manual]"
+  patterns:
+    taskId: 'T[0-9]{8}-[0-9]{6}'
+    findingPrefix: "F"
+  commentMarker: "<!-- bot:operator -->"

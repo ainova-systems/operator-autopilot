@@ -1,0 +1,81 @@
+# Operator Engine — always-on daemon.
+#
+# Single writer against the SQLite state volume. NEVER scale beyond one
+# replica (SQLite is not multi-writer safe). One container; rely on
+# `restart: unless-stopped` to survive host / Docker-daemon restarts.
+#
+# Local / VM:  docker compose -f deployment/docker-compose.yml up -d --build
+# Portainer:   Stacks -> Add stack -> Web editor -> paste -> set env -> Deploy
+#              (set OPERATOR_IMAGE to a pushed tag; drop the `build:` block).
+
+services:
+  operator-engine:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    # Production pulls a pushed image; local dev builds from source above.
+    image: ${OPERATOR_IMAGE:-operator-engine:local}
+    container_name: operator-engine
+    restart: unless-stopped
+    labels:
+      # Scope Watchtower (below) to auto-update only this container.
+      - com.centurylinklabs.watchtower.enable=true
+
+    # Graceful shutdown: SIGTERM drains the in-flight cycle before exit (the
+    # engine never kills an agent mid-PR-transition). Keep this >=
+    # SHUTDOWN_GRACE_MS so the drain finishes before Docker escalates to
+    # SIGKILL. A hard kill is still safe — boot reconciliation self-heals
+    # stale locks / labels / executions on the next start.
+    stop_grace_period: 5m
+
+    environment:
+      # Paths — everything stateful lives under the volume mount below.
+      OPERATOR_DIR: /var/lib/operator
+      WORKSPACE_BASE_DIR: /var/lib/operator/workspaces
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_GRACE_MS: ${SHUTDOWN_GRACE_MS:-300000}
+
+      # Secrets — provide via the stack environment / .env, never commit them.
+      # MANAGED_REPO_GH_TOKEN must match `tokenEnvVar` in repos.yaml.
+      MANAGED_REPO_GH_TOKEN: ${MANAGED_REPO_GH_TOKEN:?set in stack env}
+      # Claude auth — analysis/review roles (analyst, planner, verifier, ...).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set in stack env}
+      # Cursor auth — code-writing roles (creator, improver, supervisor).
+      CURSOR_API_KEY: ${CURSOR_API_KEY:?set in stack env}
+      # Optional, depending on engine/content/defaults/agents.yaml:
+      # CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+    # Read managed repos from the persistent volume rather than the baked
+    # sample, so instance config lives with the operator, not in the image.
+    # Place your file at <volume>/config/repos.yaml before first start.
+    command: ["--config", "/var/lib/operator/config"]
+
+    volumes:
+      - operator-state:/var/lib/operator
+      # Uncomment if a managed repo's verify/test step needs Docker
+      # (testcontainers, docker compose, image builds):
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+  # Auto-redeploy. Watches the registry for a new operator-engine image (the
+  # tag rebuilds nightly + on every master push — see
+  # ../.github/workflows/build-image.yml) and recreates the container, so the
+  # bundled agent CLIs (claude-code + cursor-agent) and engine code stay current
+  # without a manual pull. `--label-enable` scopes it to operator-engine only.
+  # `--stop-timeout 300s` matches the engine's SIGTERM drain budget so a swap
+  # never interrupts an in-flight cycle. The daily `--schedule` fires after the
+  # CI build window (build cron is 04:17 UTC).
+  #
+  # If OPERATOR_IMAGE points at a PRIVATE registry, Watchtower needs pull creds:
+  # mount a Docker config.json (`- ~/.docker/config.json:/config.json:ro`) or set
+  # REPO_USER / REPO_PASS. Remove this service for manual, reviewed redeploys.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: operator-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --label-enable --cleanup --stop-timeout 300s --schedule "0 30 4 * * *"
+
+volumes:
+  operator-state:

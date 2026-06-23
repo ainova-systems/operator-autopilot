@@ -1,0 +1,12 @@
+* text=auto
+*.sh text eol=lf
+*.bash text eol=lf
+*.bats text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+Dockerfile text eol=lf
+.gitattributes text eol=lf
+.gitmodules text eol=lf

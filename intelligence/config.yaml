@@ -1,0 +1,35 @@
+project:
+  name: "github-operator"
+
+sources:
+  rules:
+    - "intelligence/rules"
+    - "git+https://github.com/ainova-systems/intelligence-dev-packs.git@main#packs/core/rules"
+  agents:
+    - "intelligence/agents"
+    - "git+https://github.com/ainova-systems/intelligence-dev-packs.git@main#packs/core/agents"
+  skills:
+    - "intelligence/skills"
+    - "intelligence/sync/skills"
+    - "git+https://github.com/ainova-systems/intelligence-dev-packs.git@main#packs/core/skills"
+
+targets:
+  claude:
+    enabled: true
+    output: ".claude"
+  cursor:
+    enabled: true
+    output: ".cursor"
+  agents:
+    enabled: true
+    output: "AGENTS.md"
+
+ignore:
+  - "node_modules"
+  - ".tmp"
+  - "dist"
+  - "coverage"
+  - "state"
+  - "intelligence/_backup"
+  - "engine/content"
+sync_version: "0.4.2"

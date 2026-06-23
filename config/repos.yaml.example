@@ -1,0 +1,35 @@
+# Managed repositories — instance config for this Operator deployment.
+#
+# This file is the seed source for `kv:repos/*` in seed-mirror mode
+# (architecture-v5.md §4.4). Every entry here is upserted into KV on engine
+# startup with metadata.source = "yaml" and metadata.readonly = true. Rows
+# that disappear from yaml are deleted from KV on the next restart.
+#
+# User-added repos (via the app UI once Step 16 lands) live in KV only and
+# are not reflected here. The yaml file is for deployment-time provisioning;
+# the UI is for runtime management.
+#
+# Copy to `config/repos.yaml` and edit for your environment. That file is
+# gitignored (local-only instance binding) — only this generic example is
+# committed. Repos can also be managed at runtime through the app UI.
+
+repos:
+  - id: example
+    debug: false                    # verbose logs + debug run URLs in PR comments
+    vcs:
+      platform: github
+      repo: owner/repository        # full repo slug
+      branch: main                  # base branch for AI work (main/master/develop/trunk/...)
+      tokenEnvVar: MANAGED_REPO_GH_TOKEN # env var holding the GitHub token
+    # tracker: omitted = same as vcs (uses GitHub issues for tracking)
+    features:                       # toggle stages on/off per repo
+      prReview: true
+      taskSelect: true
+      taskExecute: true
+      dailyResearch: true
+      improver: true
+      findingSelect: true
+      findingExecute: true
+    limits:
+      maxActiveTasks: 2             # cap concurrent task-execute items
+      maxActiveFindings: 2          # cap concurrent finding-plan items

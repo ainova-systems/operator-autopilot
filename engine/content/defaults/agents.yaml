@@ -1,0 +1,168 @@
+# Agent definitions: providers, roles, models, budgets
+#
+# Provider split: the code-writing roles (creator, improver, supervisor) run on
+# Cursor's Composer model; the analysis / planning / review roles (analyst,
+# planner, verifier, diagnoser, scout) stay on Claude, where deep reasoning and
+# the verdict path carry the most weight. If a read-only role is ever moved to
+# Cursor, it must run with `--mode plan` / `--mode ask` to keep its no-write
+# guarantee — cursor-agent's `-p` otherwise has full write+bash access.
+version: "3.0"
+
+defaultProvider: claude
+
+providers:
+  claude:
+    command: claude
+    defaultArgs:
+      - --dangerously-skip-permissions
+    promptArg: "-p"
+    modelArg: "--model"
+    toolsArg: "--tools"
+    maxBudgetArg: "--max-budget-usd"
+    systemPromptFileArg: "--append-system-prompt-file"
+    outputMode: stdout
+    # Windows argv limit is ~32 KB. Weekly retrospective + context-heavy tasks
+    # routinely exceed 100 KB, so the prompt body is piped via stdin. The
+    # claude CLI honors `-p` without a value and then reads the prompt from
+    # stdin — no data leaks into argv.
+    promptFromStdin: true
+    envVarsAnyOf:
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_OAUTH_TOKEN
+  cursor:
+    command: cursor-agent
+    # `-p` is cursor-agent's non-interactive (print) flag; the prompt follows
+    # as a positional arg. `--force` grants write+bash access (required for the
+    # code-writing roles below). cursor-agent has NO system-prompt flag, so the
+    # engine folds the assembled role + context into the prompt body (see
+    # CLIAgentProvider.resolvePrompt). No `toolsArg` / `maxBudgetArg`: cursor-agent
+    # supports neither — per-tool restriction is only `--mode plan|ask` (read-only)
+    # and there is no per-agent USD budget cap.
+    # Host prerequisites: `cursor-agent` on PATH, `ripgrep` (rg) installed, and
+    # CURSOR_API_KEY set (or `cursor-agent login`). `--model` takes an exact id
+    # from `cursor-agent --list-models` (there is no bare `composer` alias).
+    # Composer 2.5 has two ids: `composer-2.5` (standard) and `composer-2.5-fast`
+    # (Fast tier — lower latency, ~6x the token price, same model). The writers
+    # below use `composer-2.5` (standard, Fast disabled). "Max Mode" is encoded
+    # as a model-id suffix (`-max`) and only exists for some models (Opus 4.8,
+    # Codex); Composer 2.5 has no `-max` variant. No separate --fast/--max flags.
+    # `defaultModel: auto` is the fallback for any role/repo that pins no model —
+    # cursor-agent's `auto` self-selects the best available model.
+    defaultModel: auto
+    # Windows note: `cursor-agent` is a `.cmd`/`.ps1` shim spawn cannot launch by
+    # bare name, so the engine resolves it to its bundled `node.exe index.js`
+    # automatically on win32 — host-local runtime behavior keyed on the command,
+    # NOT config (see win-launcher.ts). Override the install dir with
+    # CURSOR_AGENT_HOME if non-default. On Linux/macOS cursor-agent is a real
+    # binary and spawns directly.
+    defaultArgs:
+      - --force
+      - --output-format
+      - text
+    promptArg: "-p"
+    outputMode: stdout
+    modelArg: "--model"
+    # Windows argv limit is ~32 KB. The weekly retrospective (improver) and
+    # context-heavy creator/supervisor prompts routinely fold to 70 KB+ once
+    # the system prompt is prepended (cursor-agent has no system-prompt flag),
+    # so passing the body in argv fails with `spawn ENAMETOOLONG`. cursor-agent
+    # reads the prompt from stdin when `-p` is given with no positional value,
+    # so the body is piped instead — nothing leaks into argv.
+    promptFromStdin: true
+    envVars:
+      - CURSOR_API_KEY
+
+agents:
+  creator:
+    provider: cursor
+    description: Creates changes (code, text, structure, PR)
+    instructions: agents/creator.md
+    timeout: 3600
+    model: composer-2.5
+    review: true
+    tools: Read,Grep,Glob,Bash,Edit,Write,WebSearch,WebFetch
+    maxBudget: 15.00
+    context:
+      - base
+
+  verifier:
+    provider: claude
+    description: Checks quality, correctness, requirement compliance
+    instructions: agents/verifier.md
+    timeout: 600
+    model: opus
+    tools: Read,Grep,Glob
+    maxBudget: 3.00
+    context:
+      - base
+
+  improver:
+    provider: cursor
+    description: Improves - refactoring, simplification, quality uplift
+    instructions: agents/improver.md
+    timeout: 1200
+    model: composer-2.5
+    review: true
+    tools: Read,Grep,Glob,Edit,Write
+    maxBudget: 3.00
+    context:
+      - base
+
+  analyst:
+    provider: claude
+    description: Analyzes findings, determines root causes, forms conclusions
+    instructions: agents/analyst.md
+    timeout: 1200
+    model: opus
+    review: true
+    schedule: daily
+    tools: Read,Grep,Glob,Bash,WebSearch,WebFetch
+    maxBudget: 5.00
+    context:
+      - base
+      - state
+
+  planner:
+    provider: claude
+    description: Breaks down into tasks, forms an action plan
+    instructions: agents/planner.md
+    timeout: 1800
+    model: opus
+    review: true
+    tools: Read,Grep,Glob,WebSearch,WebFetch
+    maxBudget: 5.00
+    context:
+      - base
+
+  diagnoser:
+    provider: claude
+    description: Analyzes failures, rejections, identifies rejection causes
+    instructions: agents/diagnoser.md
+    timeout: 240
+    model: sonnet
+    context:
+      - base
+
+  supervisor:
+    provider: cursor
+    description: System-level LLM router for PR events — reads PR comments, decides re-iterate/cancel/escalate, applies code changes via AOP EMIT
+    instructions: agents/supervisor.md
+    timeout: 3600
+    model: composer-2.5
+    review: true
+    tools: Read,Grep,Glob,Bash,Edit,Write,WebSearch,WebFetch
+    maxBudget: 15.00
+    context:
+      - base
+
+  scout:
+    provider: claude
+    description: Initializes operator in repository with full research
+    instructions: agents/scout.md
+    timeout: 1200
+    model: opus
+    review: true
+    tools: Read,Grep,Glob,Bash
+    maxBudget: 5.00
+    context:
+      - base

@@ -1,0 +1,49 @@
+# Build context excludes — keep the image free of host state, build output,
+# and local tooling. Anything the daemon needs at runtime (engine/, packages/,
+# app/package.json, engine/content/, config/) stays in.
+
+.git
+.github
+
+# Dependencies and build output (reinstalled / rebuilt inside the image)
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+*.tsbuildinfo
+.next
+app/.next
+out
+
+# Runtime state — never bake host state into the image
+state
+/state
+workspace
+.workspace
+.operator-data
+.runtime-logs
+
+# Local env / secrets
+.env
+.env.local
+*.pem
+
+# Local AI-IDE tooling (generated, gitignored)
+.claude
+.cursor
+.agents
+.codex
+CLAUDE.md
+CODEX.md
+.cursorrules
+intelligence/_backup
+**/.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+.eslintcache
+*.png

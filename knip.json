@@ -1,0 +1,60 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["engine/entry.ts", "engine/cli.ts", "engine/index.ts"],
+      "project": ["engine/**/*.ts"],
+      "ignore": [
+        "engine/test-helpers/**",
+        "**/*.test.ts"
+      ]
+    },
+    "packages/core": {
+      "entry": ["src/index.ts"],
+      "project": ["src/**/*.ts"],
+      "ignore": ["**/*.test.ts"]
+    },
+    "packages/adapters": {
+      "entry": [
+        "src/index.ts",
+        "src/kvstore-sqlite/index.ts",
+        "src/kind-registry/index.ts",
+        "src/work-item-source/index.ts",
+        "src/agent-event-stream/index.ts"
+      ],
+      "project": ["src/**/*.ts"],
+      "ignore": ["**/*.test.ts"]
+    },
+    "app": {
+      "entry": [
+        "src/app/**/page.{ts,tsx}",
+        "src/app/**/layout.{ts,tsx}",
+        "src/app/**/route.ts",
+        "next.config.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignore": ["**/*.test.ts", "**/*.test.tsx"]
+    }
+  },
+  "ignoreDependencies": [
+    "@operator/core",
+    "@operator/adapters",
+    "@operator/engine",
+    "@operator/app",
+    "node-cron",
+    "@types/node-cron",
+    "@anthropic-ai/sdk",
+    "better-sqlite3",
+    "@types/better-sqlite3"
+  ],
+  "ignore": [
+    "engine/content/**",
+    "intelligence/**",
+    "docs/**",
+    "config/**",
+    "scripts/**",
+    "dev/**",
+    "state/**",
+    "workspace/**"
+  ]
+}

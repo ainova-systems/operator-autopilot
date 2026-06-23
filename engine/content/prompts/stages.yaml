@@ -1,0 +1,256 @@
+# Workflow stage definitions — seeded into kv:workflow-stages/{name} on boot.
+# Source of truth at runtime is KV. Edit via the app UI; the engine reads
+# only from KV during cycles.
+
+stages:
+  - name: init
+    agent: scout
+    selector: bootstrap
+    selectorConfig:
+      requiredFile: ".operator/project.yaml"
+    merge: gated
+    branchScope: singleton
+    branchPrefix: ai/init
+    prTemplate: init-pr-body.md
+    schedule: on-start
+    enabled: true
+    outputSink:
+      parser: code-changes
+      commitMode: code-changes
+      prTemplate: init-pr-body.md
+    reviewEnabled: false
+    dispatch:
+      order: 10
+      schedule: { kind: always }
+    composer: bootstrap-init
+    composerConfig:
+      agentRole: scout
+      verifierTopic: init
+      prTemplate: init-pr-body.md
+      commitMessage: "Initialize .operator for AI Operator"
+      readmeTemplate: operator-user-readme.md
+      scaffoldDirs:
+        - context
+        - analyst
+        - creator
+        - verifier
+        - planner
+        - improver
+        - data/tasks
+        - data/findings
+        - data/retrospectives
+
+  - name: research
+    agent: analyst
+    selector: discovery
+    selectorConfig:
+      discoveryDir: ".operator/analyst"
+      # ISO day-of-week (1=Mon..7=Sun) on which weekly analyzers fire.
+      retroDay: 1
+    merge: gated
+    branchScope: per-item
+    branchPrefix: ai/research
+    prTemplate: research-pr-body.md
+    schedule: "0 8 * * *"
+    enabled: true
+    inputSource:
+      iterate: analyzerItems
+    outputSink:
+      kind: finding
+      parser: multi-document
+      commitMode: work-item-files
+      prTemplate: research-pr-body.md
+    reviewEnabled: false
+    dispatch:
+      order: 70
+      featureFlags: [dailyResearch]
+      schedule:
+        kind: daily
+        # `dailyResearchHour` from defaults.yaml — engine-defaults seed mirrors it.
+        hourUtc: 8
+        # 20h window so daemon restarts within the same UTC day don't double-fire.
+        guardMinutes: 1200
+        stateKey: research
+    composer: discovery-iteration
+    composerConfig:
+      agentRole: analyst
+      verifierTopic: research
+      childKind: finding
+      displayName: research
+      prTemplate: research-pr-body.md
+      prFailedTemplate: research-pr-failed-body.md
+      # branchPrefix + prPrefix derived from conventions.branches.research / conventions.prPrefixes.research
+
+  - name: finding-plan
+    agent: planner
+    selector: per-item
+    selectorConfig:
+      kind: finding
+      status: pending
+      orderBy: priority,createdAt
+    merge: gated
+    branchScope: per-item
+    branchPrefix: ai/findings
+    prTemplate: finding-pr-body.md
+    maxActive: 2
+    schedule: "*/5 * * * *"
+    enabled: true
+    inputSource:
+      kind: finding
+      status: pending
+      vars:
+        FINDING_ID: "${item.id}"
+        FINDING_BODY: "${item.body}"
+    outputSink:
+      kind: task
+      parser: single-document
+      commitMode: work-item-files
+      prTemplate: finding-pr-body.md
+    reviewEnabled: true
+    dispatch:
+      order: 50
+      # Step 9 merged finding-select + finding-execute → either legacy flag
+      # set to `false` still disables the merged stage.
+      featureFlags: [findingExecute, findingSelect]
+      schedule:
+        kind: interval
+        # `findingSelectMinutes` (30) from engine defaults — same cadence as legacy.
+        intervalMinutes: 30
+        stateKey: findingSelect
+    composer: aop-planner
+    composerConfig:
+      agentRole: planner
+      verifierTopic: finding
+      parentKind: finding
+      childKind: task
+      displayName: Finding
+      idPrefix: F
+      idVarName: FINDING_ID
+      seqVarName: FINDING_SEQ
+      prTemplate: finding-pr-inprogress-body.md
+      maxActiveLimitKey: maxActiveFindings
+      # branchPrefix + prPrefix derived from conventions.branches.findings / conventions.prPrefixes.finding
+
+  - name: task-execute
+    agent: creator
+    selector: per-item
+    selectorConfig:
+      kind: task
+      status: pending
+      orderBy: priority,createdAt
+    merge: gated
+    branchScope: per-item
+    branchPrefix: ai/tasks
+    prTemplate: task-pr-body.md
+    maxActive: 2
+    schedule: "*/5 * * * *"
+    enabled: true
+    inputSource:
+      kind: task
+      status: pending
+      recoveryPolicy: reset-failed-to-pending
+      vars:
+        TASK_ID: "${item.id}"
+        TASK_BODY: "${item.body}"
+    outputSink:
+      parser: code-changes
+      commitMode: code-changes
+      prTemplate: task-pr-body.md
+    reviewEnabled: true
+    dispatch:
+      order: 60
+      # Step 9 merged task-select + task-execute → either legacy flag
+      # set to `false` still disables the merged stage.
+      featureFlags: [taskExecute, taskSelect]
+      schedule:
+        kind: interval
+        # `taskSelectMinutes` (15) from engine defaults.
+        intervalMinutes: 15
+        stateKey: taskSelect
+    composer: verifier-driven-creator
+    composerConfig:
+      agentRole: creator
+      verifierTopic: task
+      kind: task
+      displayName: Task
+      prTemplate: task-pr-inprogress-body.md
+      maxActiveLimitKey: maxActiveTasks
+      # branchPrefix + prPrefix derived from conventions.branches.tasks / conventions.prPrefixes.task
+      # verifyCommand pulled from .operator/project.yaml at handler-build time
+
+  - name: pr-review
+    # Phase A S1: agent role is `supervisor` — the system-level LLM
+    # router that handles PR events (open-with-comments today; closed-no-
+    # merge + rejection-handler absorption follows in S4). The stage NAME
+    # stays "pr-review" because stage names are per-repo config, not
+    # engine-universal — see memory/project_stage_names_per_repo.md.
+    agent: supervisor
+    selector: pr-feedback
+    selectorConfig:
+      # Coverage is uniform across every kind: the selector reviews every open
+      # PR under conventions.branches.aiPrefix (ai/*). No per-kind branch list
+      # to keep in sync — a new kind (or the retrospective kind that used to
+      # fall through a stale list) is reviewed exactly like tasks/findings.
+      ignoreBots: ["github-actions[bot]"]
+    merge: gated
+    branchScope: pr
+    schedule: "*/5 * * * *"
+    enabled: true
+    outputSink:
+      parser: code-changes
+      commitMode: code-changes
+    reviewEnabled: true
+    dispatch:
+      order: 40
+      featureFlags: [prReview]
+      schedule:
+        kind: interval
+        # `prReviewMinutes` (5) from engine defaults.
+        intervalMinutes: 5
+        stateKey: prReview
+    composer: pr-feedback-supervisor
+    composerConfig:
+      agentRole: supervisor
+      verifierTopic: supervisor
+
+  - name: retrospective
+    agent: improver
+    selector: singleton
+    selectorConfig:
+      scopeKind: week
+      requiredFileTemplate: ".operator/data/retrospectives/{scopeKey}.md"
+    merge: gated
+    branchScope: per-item
+    branchPrefix: ai/retrospective
+    prTemplate: improver-pr-body.md
+    schedule: "0 9 * * 1"
+    enabled: true
+    inputSource:
+      preAgentPrimitive: collect-metrics
+    outputSink:
+      kind: retrospective
+      parser: structured-report
+      commitMode: work-item-files
+      prTemplate: improver-pr-body.md
+    reviewEnabled: true
+    dispatch:
+      order: 80
+      featureFlags: [improver]
+      schedule:
+        kind: weekly
+        # `improverDayOfWeek` (1 = Monday) from engine defaults.
+        dayOfWeek: 1
+        # 6-day window so daemon restarts within the same ISO week don't double-fire.
+        guardMinutes: 8640
+        stateKey: improver
+    composer: weekly-metrics
+    composerConfig:
+      agentRole: improver
+      verifierTopic: improvement
+      scopeVarName: WEEK
+      displayName: "Weekly optimization"
+      agentDisplayName: Improver
+      prTemplate: improver-pr-body.md
+      prFailedTemplate: improver-pr-failed-body.md
+      # prPrefix derived from conventions.prPrefixes.improver
+      # reportsDir = .operator/data/retrospectives
