@@ -17,12 +17,11 @@ v4 migration failed. v5 is the rebuild. Non-negotiable discipline below.
 
 ## Before ANY migration work — MANDATORY reading order
 
-1. **`docs/migration-v5.md`** — find the CURRENT step, identify the exact next uncompleted PR. Update the progress dashboard (§17) at the end of each completed step.
-2. **`docs/architecture-v5.md`** — target shape — read in full before touching code. Pay attention to §3 (run-stage loop), §5 (KVStore model), §6 (sync contract).
-3. **`docs/workflow.md`** — behavior contract — 8-step run loop, 3 persistence modes, 5 verdicts, MVP stage list as config.
-4. **`docs/vision.md`** — product invariants (§10), non-goals (§9), what we refuse to build (§12).
-5. **`docs/architecture.md`** — current-state snapshot so you know exactly what you are migrating from.
-6. **`docs/archive/v4/failed-migration.md`** — post-mortem — do not repeat these mistakes.
+The migration plan itself is kept outside this public repo and the migration is already complete, so there is no step list to advance. The discipline below remains in force for all future PRs.
+
+1. **`docs/architecture-v5.md`** — target shape — read in full before touching code. Pay attention to §3 (run-stage loop), §5 (KVStore model), §6 (sync contract).
+2. **`docs/workflow.md`** — behavior contract — 8-step run loop, 3 persistence modes, 5 verdicts, MVP stage list as config.
+3. **`docs/vision.md`** — product invariants (§10), non-goals (§9), what we refuse to build (§12).
 
 ## FORBIDDEN
 
@@ -40,17 +39,17 @@ v4 migration failed. v5 is the rebuild. Non-negotiable discipline below.
 
 ## REQUIRED
 
-- **ONE STEP = ONE PR.** If a step is too large for one PR (>800 lines), split mid-step with an explicit hand-off note added to `migration-v5.md`.
+- **ONE STEP = ONE PR.** If a step is too large for one PR (>800 lines), split mid-step with an explicit hand-off note recorded in the internal migration plan.
 - **Every PR description lists what was deleted.** If nothing, reviewer asks why.
 - **`ts-prune` runs clean** at the end of every PR from step 2 onwards.
 - **Tests green**: `npm run typecheck && npm test -- --coverage && npm run lint`.
 - **Coverage >=90%** on touched files. >=95% for primitives.
-- **Progress dashboard updated** in `docs/migration-v5.md §17` at the end of every completed step.
+- **Progress dashboard updated** in the internal migration plan at the end of every completed step.
 - **Commit message is one line**, capital letter, past tense, no prefixes. Describes what changed, not what was tried.
 
-## v5 Step Sequence (from migration-v5.md)
+## v5 Step Sequence
 
-The source of truth is `docs/migration-v5.md §1` (phase overview) and `§17` (progress dashboard). This table MUST stay aligned with it.
+The source of truth is the internal migration plan (kept outside this public repo): its phase overview and progress dashboard. This table reflects the completed sequence.
 
 | Step | Title | Status at time of writing |
 |---|---|---|
@@ -95,7 +94,7 @@ The source of truth is `docs/migration-v5.md §1` (phase overview) and `§17` (p
 3. **Observability early, not late.** User lost 2 weeks because they couldn't see what the engine was doing. Step 5 (Next.js app) is deliberately early — every subsequent step is visually verifiable before merge.
 4. **Stages are config, not code.** In v5, if you are writing a new file under `pipeline/stages/`, STOP. There is no such directory. Stages live in `agents/workflow/stages.yaml`.
 5. **One composition root.** Only `engine/entry.ts` uses `new` on concrete implementations. No other file instantiates cross-layer classes.
-6. **Read the actual code before generalizing.** v4 vision described an abstraction layer that never matched what was in `src/`. v5 docs are grounded in the current-state snapshot `docs/architecture.md`.
+6. **Read the actual code before generalizing.** v4 vision described an abstraction layer that never matched what was in `src/`. v5 docs are grounded in the pre-migration current-state snapshot (no longer in this repo).
 7. **INFO logs are not optional.** v5 is being rebuilt because the operator was invisible in v4 — the user had to cross-reference GitHub and grep DEBUG stdout to figure out what happened on a cycle. Every externally-observable action (commit, push, PR change, label flip, bot comment) gets an INFO line. Every decision with a reason gets an INFO line. "I could tell from the log" is a hard acceptance criterion. Line-count caps do NOT apply to log statements.
 
 ## Key v5 invariants to verify per PR

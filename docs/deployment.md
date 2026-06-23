@@ -198,7 +198,7 @@ SQLite files are the full state. Back up `OPERATOR_DB_PATH` + `OPERATOR_APP_DB_P
 
 - **Config-only changes** (e.g. new reviewer prompt): edit `engine/content/*`, run `npx tsx engine/entry.ts --reseed <category>`. Only `source: "content"` rows are refreshed; user-edited rows with `modifiedFromBaseline: true` are preserved.
 - **Engine code changes**: stop the daemon, `git pull`, `npm install`, restart. SQLite schema migrations are idempotent; wiping the database is never required.
-- **Major version bump**: check `docs/migration-v5.md` for step notes. v4 → v5 is not auto-migrated — follow the migration plan.
+- **Major version bump**: v4 → v5 is not auto-migrated — wipe the v4 state directory and start fresh with `--fresh-db`. See the breaking-changes notes in `CHANGELOG.md`.
 
 ### Keeping the agent CLIs current
 

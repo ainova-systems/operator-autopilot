@@ -29,9 +29,7 @@ Always respond in Russian. Code comments in English only.
 2. Read `intelligence/rules/typescript.md` — layer dependencies, primitives boundary, FORBIDDEN/REQUIRED lists
 3. Read `docs/workflow.md` — behavior contract your code must satisfy (8-step loop, verdicts, modes)
 4. Read `docs/architecture-v5.md` — target architecture, specifically the section(s) touching your change
-5. Read `docs/migration-v5.md` — find the current step, understand how your work fits the plan
-6. If touching a primitive, read `docs/architecture-v5.md §3` in full
-7. Read `docs/archive/v4/failed-migration.md` once — understand what patterns to avoid
+5. If touching a primitive, read `docs/architecture-v5.md §3` in full
 
 ## Key patterns to enforce
 

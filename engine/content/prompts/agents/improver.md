@@ -89,8 +89,7 @@ One block per drift. Do not bundle multiple updates in one block.
 Use this for **every** lifecycle transition you want — never bypass it
 by editing frontmatter directly. The same AOP fence applies to spawning
 child items (`EMIT: child-item`) and rewriting work-item bodies
-(`EMIT: body-update`); see `docs/migration-v5.md §3.3` for the full
-catalogue.
+(`EMIT: body-update`).
 
 ## Rules
 

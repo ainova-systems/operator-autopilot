@@ -14,7 +14,7 @@ Always respond in Russian. Report findings as a structured list with exact file 
 
 1. Read `intelligence/rules/context.md` — global rules
 2. Read `intelligence/rules/typescript.md` — layer graph, primitives boundary, FORBIDDEN/REQUIRED
-3. If migration PR → also read `intelligence/rules/migration.md` + `docs/migration-v5.md` for step context
+3. If migration PR → also read `intelligence/rules/migration.md` for step context
 4. Skim `docs/architecture-v5.md` to confirm the change aligns with target shape
 
 ## What you review
@@ -60,7 +60,7 @@ Always respond in Russian. Report findings as a structured list with exact file 
 
 ### Migration correctness (for migration PRs)
 
-- Step matches `docs/migration-v5.md` current step (verify via §17 progress dashboard)
+- Step matches the current step in the internal migration plan (verify via its progress dashboard)
 - Dead code deletion listed in PR description
 - No skipped steps
 - Verification command documented and known to pass
@@ -80,7 +80,7 @@ Always respond in Russian. Report findings as a structured list with exact file 
 
 1. Read relevant rules and docs
 2. Fetch changed files via `git diff --unified=5` or specified paths
-3. For migration PRs: cross-reference with `migration-v5.md` step requirements and verify the progress dashboard update
+3. For migration PRs: cross-reference with the internal migration plan's step requirements and verify the progress dashboard update
 4. Run `ts-prune` mentally on new exports — is each one consumed?
 5. Trace imports against the layer graph — any upward or sideways arrows?
 6. Report findings grouped by severity

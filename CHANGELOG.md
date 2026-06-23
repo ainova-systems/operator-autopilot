@@ -59,7 +59,7 @@ The v5 rebuild is not upward-compatible with v4 state. The state directory can b
 
 ### Migration post-mortem
 
-The v5 plan is in `docs/migration-v5.md`. Each of the 17 numbered steps plus 8a/8b/8c split and the post-8a Step 18 readiness review is tracked in §19 of that doc with the merge SHA. Step 18 completes the migration with this release.
+The v5 rebuild was executed as 17 numbered steps (plus 8a/8b/8c splits and a post-8a Step 18 readiness review), each landed as its own PR with a green test suite and zero dead code. The detailed step-by-step plan is kept internal; this release completes the migration.
 
 ## Pre-v5
 

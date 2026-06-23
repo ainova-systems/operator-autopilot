@@ -17,7 +17,7 @@ Code lives in `engine/` (flat, no `src/` sub-directory), plus `packages/core/src
 Paired with:
 - `docs/architecture-v5.md` — target shape
 - `docs/workflow.md` — behavior contract (8-step run loop)
-- `docs/archive/v4/failed-migration.md` — what NOT to do
+- the v4 post-mortem (no longer in this repo) — what NOT to do
 
 ## FORBIDDEN
 

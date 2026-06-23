@@ -12,7 +12,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | Agent | Tier | Access | Description |
 |-------|------|--------|-------------|
 | [operator-code-reviewer](intelligence/agents/operator-code-reviewer.md) | standard | readonly | Code review specialist for Operator v5 rebuild. Validates TypeScript patterns, migration correctness, layer dependencies, primitives boundary, dead code. Read-only. |
-| [operator-migration](intelligence/agents/operator-migration.md) | heavy | full | Strict migration agent for v5 rebuild. Reads migration-v5.md, identifies next step, implements one PR at a time with no dead code and full verification. |
+| [operator-migration](intelligence/agents/operator-migration.md) | heavy | full | Strict migration agent for v5 rebuild. Executes the internal migration plan one step at a time, implementing one PR at a time with no dead code and full verification. |
 | [operator-ts-developer](intelligence/agents/operator-ts-developer.md) | heavy | full | TypeScript developer for Operator v5 engine. Use for implementing engine/, packages/core/src/, packages/adapters/src/, app/src/ modules following architecture-v5.md. |
 | [dev-code-reviewer](/tmp/intelligence-sync-remotes-UiRijK/3179557639-65/packs/core/agents/dev-code-reviewer.md) | standard | readonly | Reviews pending changes and pull requests for correctness, conventions, boundaries, tests, and security. Read-only. |
 | [dev-test-engineer](/tmp/intelligence-sync-remotes-UiRijK/3179557639-65/packs/core/agents/dev-test-engineer.md) | standard | full | Test strategy and coverage across unit, integration, contract, and end-to-end levels. Builds the net that makes AI-paced change safe. |
@@ -22,7 +22,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | Skill | Description |
 |-------|-------------|
 | [operator-commit-push](intelligence/skills/operator-commit-push/SKILL.md) | Verify build, review changes, commit and push with a clean single-line message |
-| [operator-migrate-next](intelligence/skills/operator-migrate-next/SKILL.md) | Identify and execute the next uncompleted step from migration-v5.md |
+| [operator-migrate-next](intelligence/skills/operator-migrate-next/SKILL.md) | Identify and execute the next uncompleted step from the internal migration plan |
 | [operator-review-pending-changes](intelligence/skills/operator-review-pending-changes/SKILL.md) | Read-only review of pending git changes against Operator v5 rules (layer deps, primitives boundary, dead code, commit hygiene) |
 | [operator-run-tests](intelligence/skills/operator-run-tests/SKILL.md) | Run the correct test suites (vitest across workspaces) based on the scope of pending changes |
 | [intelligence-add-agent](intelligence/sync/skills/intelligence-add-agent/SKILL.md) | Create new specialized agent |
@@ -73,7 +73,7 @@ Closed-loop SDLC engine: discovers issues, plans fixes, implements code, verifie
 
 **Architecture principle**: orchestrator, not agent. Schedules work and invokes external agent CLIs. Never reimplements tool execution.
 
-**Current state**: rebuilding from v4 (abandoned, archived) to v5. See `docs/migration-v5.md` for the 17-step plan. v4 migration failed because duplicate stage plumbing and dead code accumulated — v5 does not repeat those mistakes.
+**Current state**: the v5 rebuild is complete. The earlier v4 migration failed because duplicate stage plumbing and dead code accumulated — v5 does not repeat those mistakes.
 
 ## Repository Structure (monorepo)
 
@@ -125,9 +125,6 @@ Legacy v1 bash code no longer lives in this repo — it was extracted to the sib
 | `docs/workflow.md` | Target behavior: 8-step run loop, persistence modes, verdicts, MVP stage list |
 | `docs/vision.md` | Product direction, invariants, non-goals, four tenets |
 | `docs/architecture-v5.md` | Target shape: monorepo layout, primitives, KV model, package boundaries |
-| `docs/architecture.md` | Current-state snapshot (what exists today in `src/` before migration) |
-| `docs/migration-v5.md` | 17-step PR-by-PR migration plan from current to v5 |
-| `docs/archive/v4/failed-migration.md` | Post-mortem: why v4 failed, what to avoid |
 
 ## Build / Test / Dev
 
@@ -144,8 +141,8 @@ npm run exec                                  # alias for above
 
 ## Global Rules (enforced every PR)
 
-- **🚨 OPERATOR NEVER PUSHES `master` / `main` / `develop`. PR feature branches only.** Full rule: `docs/migration-v5.md §1.4`.
-- **🚨 PR closed / rejected / cancelled / duplicate → work item TERMINAL. Selectors skip unconditionally. ALL kinds.** Only the retrospective stage reads terminal items (as analysis input) and only Phase 6 P-505 retrospective recovery flow may spawn replacement work-items. Full rule: `docs/migration-v5.md §1.5`.
+- **🚨 OPERATOR NEVER PUSHES `master` / `main` / `develop`. PR feature branches only.**
+- **🚨 PR closed / rejected / cancelled / duplicate → work item TERMINAL. Selectors skip unconditionally. ALL kinds.** Only the retrospective stage reads terminal items (as analysis input) and only Phase 6 P-505 retrospective recovery flow may spawn replacement work-items.
 - **NO DEAD CODE.** Every file and exported symbol must be reachable from `entry.ts` import closure or a colocated test. `ts-prune` in CI. Dead code is a migration blocker — v4 died from exactly this pattern.
 - **NO FORCE-PUSH.** Every commit-push sequence is fast-forward-safe. `WorkspaceScope` primitive is the only place that manages branches. Non-negotiable after 2026-04-13 incident.
 - **One PR per migration step.** Never combine two steps. Rollback must always be a single revert.
@@ -247,8 +244,8 @@ Sync with `bash intelligence/scripts/sync.sh`. Generated outputs (`.claude/`, `.
 ## Documentation
 
 <!-- spec pack NOT installed: this repo uses its own deliberate docs tree
-     (docs/workflow.md, docs/vision.md, docs/architecture-v5.md, docs/migration-v5.md,
-     docs/archive/v4/), not the ai-first-docs specs/model/glossary layout. The spec-only
+     (docs/workflow.md, docs/vision.md, docs/architecture-v5.md, docs/deployment.md),
+     not the ai-first-docs specs/model/glossary layout. The spec-only
      keys (specs_dir, features_dir, rules_dir, decisions_dir) are intentionally omitted. -->
 
 # Source Language: English Only

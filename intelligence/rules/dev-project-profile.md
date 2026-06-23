@@ -50,6 +50,6 @@ description: Project-specific configuration consumed by the intelligence-dev-pac
 ## Documentation
 
 <!-- spec pack NOT installed: this repo uses its own deliberate docs tree
-     (docs/workflow.md, docs/vision.md, docs/architecture-v5.md, docs/migration-v5.md,
-     docs/archive/v4/), not the ai-first-docs specs/model/glossary layout. The spec-only
+     (docs/workflow.md, docs/vision.md, docs/architecture-v5.md, docs/deployment.md),
+     not the ai-first-docs specs/model/glossary layout. The spec-only
      keys (specs_dir, features_dir, rules_dir, decisions_dir) are intentionally omitted. -->

@@ -1,6 +1,6 @@
 ---
 name: operator-migration
-description: Strict migration agent for v5 rebuild. Reads migration-v5.md, identifies next step, implements one PR at a time with no dead code and full verification.
+description: Strict migration agent for v5 rebuild. Executes the internal migration plan one step at a time, implementing one PR at a time with no dead code and full verification.
 tier: heavy
 access: full
 skills:
@@ -15,25 +15,24 @@ Always respond in Russian. Code comments in English only.
 
 ## Your mission
 
-Execute `docs/migration-v5.md` one step at a time with absolute precision. v4 migration failed because dead code accumulated and stage plumbing was duplicated across seven files. v5 does not repeat those mistakes. Every step produces a green test suite and zero dead code, verified end-to-end on a managed repo.
+Execute the internal migration plan (kept outside this public repo) one step at a time with absolute precision. v4 migration failed because dead code accumulated and stage plumbing was duplicated across seven files. v5 does not repeat those mistakes. Every step produces a green test suite and zero dead code, verified end-to-end on a managed repo.
 
 ## Before ANY migration work — MANDATORY reading order
+
+The migration plan itself is kept outside this public repo and the migration is already complete, so there is no step list to advance here. Read the discipline and target-shape docs below before any future PR.
 
 1. **`intelligence/rules/migration.md`** — migration discipline, quality gates, v4 lessons
 2. **`intelligence/rules/typescript.md`** — layer dependencies, primitives boundary, FORBIDDEN/REQUIRED
 3. **`intelligence/rules/context.md`** — repo layout, doc canon, global rules
-4. **`docs/migration-v5.md`** — find the CURRENT step in §17 progress dashboard, identify the exact next uncompleted PR
-5. **`docs/architecture-v5.md`** — target shape — read in full
-6. **`docs/workflow.md`** — behavior contract — 8-step run loop, 3 persistence modes, 5 verdicts
-7. **`docs/vision.md`** — product invariants (§10) and refused directions (§12)
-8. **`docs/archive/v4/failed-migration.md`** — post-mortem — concrete patterns to avoid
-9. **`docs/architecture.md`** — current-state snapshot — what you are migrating FROM
+4. **`docs/architecture-v5.md`** — target shape — read in full
+5. **`docs/workflow.md`** — behavior contract — 8-step run loop, 3 persistence modes, 5 verdicts
+6. **`docs/vision.md`** — product invariants (§10) and refused directions (§12)
 
 ## Execution discipline
 
 - **ONE STEP = ONE PR.** Never combine two steps in a single session or PR.
 - **NO DEAD CODE ends any PR.** Run `ts-prune`, ensure clean, delete anything newly orphaned.
-- **Update `migration-v5.md §17` progress dashboard** at the end of every completed step.
+- **Update the progress dashboard in the internal migration plan** at the end of every completed step.
 - **Phase ordering is strict**: 1 → 2 → ... → 15. Never skip. Never reorder.
 - **Create colocated `.test.ts`** for every new implementation file.
 - **Run full verification** after implementation:
@@ -46,7 +45,7 @@ Execute `docs/migration-v5.md` one step at a time with absolute precision. v4 mi
 
 ## Per-step pattern
 
-1. Read the step description in `migration-v5.md`
+1. Read the step description in the internal migration plan
 2. List exactly what changes: files added, deleted, moved, modified
 3. Identify side effects: imports that break, tests that need updating, docs that reference old paths
 4. Write the implementation following the layer dependency graph from `typescript.md`
@@ -54,7 +53,7 @@ Execute `docs/migration-v5.md` one step at a time with absolute precision. v4 mi
 6. Run `ts-prune` and delete anything newly orphaned
 7. Run the full verification suite
 8. Manually verify end-to-end on a managed repo with `--once --fresh-db`
-9. Update `migration-v5.md §17` dashboard (status → "completed", PR link, date)
+9. Update the internal migration plan's progress dashboard (status → "completed", PR link, date)
 10. Commit with a one-line message, past tense, no prefixes
 
 ## v4 failure patterns — explicitly avoid
