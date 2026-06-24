@@ -9,6 +9,7 @@ import { observeDevelopFile, observePRLabel, observePRState, observeChecks } fro
 import { workItemScore } from "../pipeline/primitives/success-score.js";
 import type { WorkspaceGit } from "../infra/git.js";
 import type { PRManager } from "../delivery/pr-manager.js";
+import type { Logger } from "../logging/logger.js";
 
 // ── Work item file data ──────────────────────────────────────────────
 
@@ -648,12 +649,19 @@ export async function reconcileAndWrite(
     statusSources?: StatusSources;
     recentExecutionIds?: string[];
   };
+  // When the fresh observation says there is no live PR (prState=none), any
+  // prLabel/checks slot carried forward from a prior PR cycle is stale and
+  // must not persist — otherwise reconcileEffectiveStatus re-latches the old
+  // label every cycle (orphan-latch). Drop those slots so KV converges to
+  // the develop-file truth and the App stops showing a phantom PR label.
+  const prGone = prStateObs?.value === "none";
   const mergedSources: StatusSources = {
     ...(priorValue.statusSources ?? {}),
     developFile: developObs,
-    ...(prObs ? { prLabel: prObs } : {}),
+    ...(prObs && !prGone ? { prLabel: prObs } : {}),
     ...(prStateObs ? { prState: prStateObs } : {}),
     ...(checksObs ? { checks: checksObs } : {}),
+    ...(prGone ? { prLabel: undefined, checks: undefined } : {}),
   };
   const drift = computeDrift(mergedSources);
   const reconciled = reconcileEffectiveStatus({
@@ -783,22 +791,54 @@ export interface StateContextVars {
  * hardcoded — adding a new kind + re-running this builder uses the new
  * kind's `terminalStatuses` with no code changes (§8 contract).
  */
+/**
+ * Dedup-window cap for the analyst's KNOWN_ISSUES context. Findings older
+ * than this (by `createdAt`) or already terminal are excluded so the dedup
+ * list can never grow without bound — the saturation that silently killed
+ * discovery (all-time findings injected as "do not report", so the analyst
+ * suppressed every new candidate). Durable lessons from older / rejected
+ * findings live in the analyzer prompts, curated by the retrospective. Tunable.
+ */
+const DEDUP_WINDOW_DAYS = 30;
+const DEDUP_WINDOW_MS = DEDUP_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
 export async function buildStateContext(
   state: StateManager,
   registry: KindRegistry,
   ctx: OperationContext,
+  opts: { now?: number; log?: Logger } = {},
 ): Promise<StateContextVars> {
-  // Known Issues — all findings
+  const now = opts.now ?? Date.now();
+  // Known Issues — the analyst dedup window, deliberately BOUNDED: only
+  // NON-TERMINAL findings created within DEDUP_WINDOW_DAYS are injected.
+  // A merged/completed finding is gone from the code (safe to drop); a
+  // rejected one's "do not report" lesson is migrated into the analyzer
+  // prompt by the retrospective before it ages out. `findings` (the full
+  // set) is still used below for the HISTORICAL_PATTERNS total.
   const findings = await state.listWorkItems(ctx, { kind: "finding" });
+  const cutoff = now - DEDUP_WINDOW_MS;
+  const windowed = findings.filter((f) => {
+    if (registry.isTerminal("finding", f.status)) return false;
+    if (!f.createdAt) return true; // unknown age → keep deduping (conservative)
+    const created = Date.parse(f.createdAt);
+    return Number.isNaN(created) || created >= cutoff;
+  });
   let knownIssues: string;
-  if (findings.length === 0) {
-    knownIssues = "(none — no existing findings)";
+  if (windowed.length === 0) {
+    knownIssues = "(none — no recent open findings)";
   } else {
-    const lines = findings.map((f) =>
+    const lines = windowed.map((f) =>
       `- \`${f.source || f.id}\` — ${f.title} (priority: ${f.priority}, status: ${f.status})`,
     );
-    knownIssues = `**${findings.length} known findings. DO NOT report these again:**\n\n${lines.join("\n")}`;
+    knownIssues = `**${windowed.length} known findings. DO NOT report these again:**\n\n${lines.join("\n")}`;
   }
+  opts.log?.info(
+    `state-context: KNOWN_ISSUES window = ${windowed.length} of ${findings.length} finding(s) (<=${DEDUP_WINDOW_DAYS}d, non-terminal)`,
+    {
+      scope: "state-context", windowedFindings: windowed.length,
+      totalFindings: findings.length, windowDays: DEDUP_WINDOW_DAYS,
+    },
+  );
 
   // Pending Tasks — non-terminal
   const allTasks = await state.listWorkItems(ctx, { kind: "task" });

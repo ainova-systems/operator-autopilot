@@ -110,6 +110,39 @@ describe("reconcileEffectiveStatus", () => {
     });
   });
 
+  it("ignores a stale pr-label and does not latch ready-to-merge when prState is none (orphan-latch regression)", () => {
+    // Regression: 8 findings sat at `ready-to-merge` with no live PR
+    // (codeReviewId=null) while their develop file said `in-progress`.
+    // A prLabel slot (`ai:ready-to-merge`) carried forward from a prior
+    // PR cycle kept winning at the pr-label step every cycle, pinning the
+    // item in non-terminal limbo forever. With prState=none the label is
+    // meaningless and must be skipped so develop-file wins.
+    const result = reconcileEffectiveStatus({
+      sources: {
+        developFile: { value: "in-progress", observedAt: ts(1) },
+        prLabel: { value: "ai:ready-to-merge", observedAt: ts(2) },
+        prState: { value: "none", observedAt: ts(3) },
+      },
+      currentKV: { status: "ready-to-merge" },
+    });
+    expect(result.effectiveStatus).toBe("in-progress");
+    expect(result.effectiveStatusReason).toBe("develop-file");
+  });
+
+  it("still honors pr-label when a PR exists (prState=open)", () => {
+    // Guard: the orphan-latch fix must not break the normal case — when
+    // the PR is live, its label remains the authoritative signal.
+    const result = reconcileEffectiveStatus({
+      sources: {
+        developFile: { value: "in-progress", observedAt: ts(1) },
+        prLabel: { value: "ai:ready-to-merge", observedAt: ts(2) },
+        prState: { value: "open", observedAt: ts(3) },
+      },
+    });
+    expect(result.effectiveStatus).toBe("ready-to-merge");
+    expect(result.effectiveStatusReason).toBe("pr-label");
+  });
+
   it("pr-label that does not map to a known status falls through to develop file", () => {
     const result = reconcileEffectiveStatus({
       sources: {

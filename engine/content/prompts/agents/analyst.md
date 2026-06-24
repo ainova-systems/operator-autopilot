@@ -39,14 +39,16 @@ For each potential issue:
 
 Goal: Skip anything already tracked.
 
-Known findings (already reported — DO NOT re-report these):
-{KNOWN_SOURCES}
-
-Each line has format: `source_key | title`.
-For each verified issue, compare its **title and description** against the known findings above.
-Skip your issue if ANY known finding covers the same underlying problem — even if worded differently.
+Your **State Context** includes a **Known Issues** list — recently-reported findings
+that are still open. For each verified issue, compare its **title and description**
+against that list. Skip your issue if ANY known finding covers the same underlying
+problem — even if worded differently.
 Examples of duplicates: "Symbol() instead of createServiceToken" and "raw Symbol() instead of createServiceToken" — same issue, different wording.
-If the known list shows "(none - all findings are new)", all findings are new.
+If the Known Issues list is empty, treat all your findings as new.
+
+Note: the Known Issues list is intentionally bounded to recent, open findings, so a
+problem fixed long ago is not listed. Your analyzer prompt's "Known false-positive
+patterns" section (if present) is the durable record of what NOT to report.
 
 ### Phase 4: PRIORITIZE — Rank remaining issues
 

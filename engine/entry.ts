@@ -437,7 +437,7 @@ async function main(): Promise<void> {
         // Stages see a populated workspace and reconciled state from the first call.
 
         // Build state context once per action — cached for all agent invocations (V1 behavior)
-        const stateVars = await buildStateContext(state, kindRegistry, actionCtx);
+        const stateVars = await buildStateContext(state, kindRegistry, actionCtx, { log });
 
         // Phase B Part 3 (2026-05-20): handler dispatch is now driven by
         // the `composer` field on `kv:workflow-stages/*` rows. Two

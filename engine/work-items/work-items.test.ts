@@ -806,6 +806,34 @@ describe("buildStateContext", () => {
 
     expect(vars.KNOWN_ISSUES).toContain("`F1`");
   });
+
+  it("excludes terminal and over-age findings from KNOWN_ISSUES (dedup-saturation regression)", async () => {
+    // Regression: buildStateContext used to inject EVERY finding of every
+    // status with no recency cap, so after ~90 findings the analyst's dedup
+    // list saturated and it reported "0 findings" for ~6 weeks. The window
+    // now admits only NON-TERMINAL findings created within DEDUP_WINDOW_DAYS.
+    const now = Date.parse("2026-06-24T00:00:00Z");
+    const findings = [
+      { id: "F-recent", title: "Recent open", source: "scanner", status: "in-progress", priority: 3, createdAt: "2026-06-20T00:00:00Z" },
+      { id: "F-old", title: "Old open", source: "scanner", status: "in-progress", priority: 3, createdAt: "2026-04-01T00:00:00Z" },
+      { id: "F-done", title: "Already fixed", source: "scanner", status: "completed", priority: 3, createdAt: "2026-06-23T00:00:00Z" },
+    ];
+    const state = makeStateMock(vi.fn().mockImplementation(async (_ctx, filters) => {
+      if (filters?.kind === "finding") {
+        return findings.map((f) => ({ ...f, kind: "finding", body: "", updatedAt: "" }));
+      }
+      return [];
+    }));
+
+    const vars = await buildStateContext(state, makeRegistry(), makeCtx(), { now });
+
+    expect(vars.KNOWN_ISSUES).toContain("Recent open");
+    expect(vars.KNOWN_ISSUES).not.toContain("Old open");      // aged out (>30d)
+    expect(vars.KNOWN_ISSUES).not.toContain("Already fixed");  // terminal
+    expect(vars.KNOWN_ISSUES).toContain("1 known findings");
+    // HISTORICAL_PATTERNS keeps the FULL count — it is a stat, not a suppression list.
+    expect(vars.HISTORICAL_PATTERNS).toContain("Total known findings: 3");
+  });
 });
 
 // ── updateWorkItemFileStatus upsert fallback ─────────────────────────

@@ -161,8 +161,13 @@ export function reconcileEffectiveStatus(input: ReconcileInput): ReconcileResult
     }
   }
 
-  // 3. PR label — the live VCS signal.
-  if (sources.prLabel) {
+  // 3. PR label — the live VCS signal. BUT a label is meaningless when no
+  // PR exists (prState=none): a stale `ai:ready-to-merge` slot carried
+  // forward from a prior PR cycle must not re-latch every cycle and pin a
+  // non-terminal item in limbo forever (orphan-latch incident — findings
+  // stuck at ready-to-merge with codeReviewId=null while their develop file
+  // said in-progress). Skip the label and fall through to develop-file.
+  if (sources.prLabel && sources.prState?.value !== "none") {
     const mapped = labelToStatus(sources.prLabel.value);
     if (mapped) {
       return { effectiveStatus: mapped, effectiveStatusReason: "pr-label" };
