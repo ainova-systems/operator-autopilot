@@ -42,6 +42,26 @@ Only add a prompt rule when a pattern appears in **2+ separate improver runs** (
 
 Write rules as timeless project policies. Never reference PR numbers, dates, or weeks in prompt files.
 
+## Goal 1a: Learn From Rejected Findings (analyzer prompt tuning)
+
+Your metrics brief may include an **"Analyzer Rejection Learning"** section. It lists,
+per analyzer prompt file, the findings that analyzer produced which were REJECTED
+(false positive) or marked DUPLICATE. A rejection is already a confirmed signal — a
+human or the planner judged the finding wrong — so you MAY act on the first occurrence
+(this overrides the "2+ runs" rule in Goal 1 for rejections only).
+
+For each analyzer prompt file listed in that section:
+1. Read the prompt file at the path given in the brief.
+2. If it does not already cover the mistake, add or extend a concise
+   **"## Known false-positive patterns — do NOT report"** block that describes what the
+   analyzer keeps getting wrong, generalised from the rejected findings' titles.
+3. Keep edits ADDITIVE and minimal — never delete an analyzer, never narrow it beyond
+   what the rejections justify, never touch frontmatter.
+
+Edit ONLY the analyzer prompt files named in the brief — do not guess paths or rename
+stages. This is how a rejected finding's lesson becomes durable after it ages out of
+the analyst's bounded Known Issues window.
+
 ## Goal 2: Task Queue Optimization
 
 1. **Reprioritize** if recent work changes urgency

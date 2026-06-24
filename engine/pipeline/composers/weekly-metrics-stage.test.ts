@@ -154,6 +154,9 @@ function makeHookDeps(overrides?: Partial<WeeklyMetricsHookDeps>): WeeklyMetrics
   return {
     vcs: makeVCS(),
     state: makeState(),
+    // kv backs the orphan-reconciler's config-driven discovery-kind lookup.
+    // Empty workflow-stages → no discovery kinds → reaper no-ops cleanly.
+    kv: { list: vi.fn().mockResolvedValue([]) } as unknown as WeeklyMetricsHookDeps["kv"],
     prManager: makePRManager(),
     kindRegistry: makeTestKindRegistry(),
     conventions: CONVENTIONS,

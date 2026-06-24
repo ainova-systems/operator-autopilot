@@ -502,7 +502,7 @@ function buildWeeklyMetricsHandler(
     });
     const agentEventStream = new TextBlockEventStream(parseAgentOutput);
     const hookDeps: WeeklyMetricsHookDeps = {
-      vcs: shared.vcs, state: shared.state, prManager: shared.prManager,
+      vcs: shared.vcs, state: shared.state, kv: shared.kv, prManager: shared.prManager,
       kindRegistry: shared.kindRegistry,
       workItemSource,
       agentEventStream,

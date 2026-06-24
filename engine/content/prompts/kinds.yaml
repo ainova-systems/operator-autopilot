@@ -26,7 +26,11 @@ kinds:
     #                 signal than `merged` alone. Computed by the
     #                 reconciler's post-sync aggregation pass; never
     #                 written by an agent or by file frontmatter.
-    terminalStatuses: [merged, completed, failed, rejected, duplicate]
+    #   `cancelled`  — terminal: the engine retired a stuck/over-lifetime
+    #                 finding (no live PR, past its dedup lifetime). Set by
+    #                 the retrospective orphan-reconciler, never by an agent
+    #                 or file frontmatter under normal flow.
+    terminalStatuses: [merged, completed, failed, rejected, duplicate, cancelled]
     # No parent kinds today — findings are top-level discoveries.
     parentKinds: []
 

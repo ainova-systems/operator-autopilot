@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   OperationContext, VCSPlatform, StateManager, ConventionsConfig, PromptSource,
-  KindRegistry, WorkItemSource, AgentEventStream, AgentRoleName,
+  KindRegistry, WorkItemSource, AgentEventStream, AgentRoleName, KVStore,
 } from "@operator/core";
 import { errorMessage } from "@operator/core";
 import type { AgentRunInput } from "../../agents/runtime.js";
@@ -17,6 +17,8 @@ import type { SingletonPayload } from "../primitives/singleton-selector.js";
 import { type StateContextVars } from "../../work-items/work-items.js";
 import { applyAgentEvents } from "../primitives/aop-applier.js";
 import { aggregateRetrospectiveMetrics } from "../primitives/metrics-aggregator.js";
+import { reconcileOrphanedItems } from "../primitives/orphan-reconciler.js";
+import { buildRejectionLearningBrief } from "../primitives/rejection-learning.js";
 import { createScratchStore } from "./_shared/scratch.js";
 import { StageLogicError } from "./errors.js";
 
@@ -58,6 +60,7 @@ const weeklyMetricsScratch = createScratchStore<WeeklyMetricsScratch>();
 export interface WeeklyMetricsHookDeps {
   readonly vcs: VCSPlatform;
   readonly state: StateManager;
+  readonly kv: KVStore;
   readonly prManager: PRManager;
   readonly kindRegistry: KindRegistry;
   readonly conventions: ConventionsConfig;
@@ -130,6 +133,27 @@ export function buildWeeklyMetricsBeforeAgent(deps: WeeklyMetricsHookDeps) {
       });
     }
 
+    // Orphan / lifetime reconciliation — the retrospective OWNS terminalizing
+    // stuck discovery items (non-terminal + no live PR + past lifetime). Runs
+    // before metrics so the brief reflects the reaped items, and the
+    // frontmatter writes land on the retrospective branch / PR. Best-effort:
+    // a failure here must never abort the retrospective.
+    try {
+      await reconcileOrphanedItems(
+        {
+          state: deps.state, kv: deps.kv, registry: deps.kindRegistry,
+          vcs: deps.vcs, prManager: deps.prManager,
+          workItemSource: deps.workItemSource, log: deps.log,
+        },
+        {},
+        ctx,
+      );
+    } catch (err) {
+      deps.log?.warn(`${stage.name}: orphan reconciliation failed (non-fatal)`, {
+        stage: stage.name, scopeKey, error: errorMessage(err),
+      });
+    }
+
     const metrics = await aggregateRetrospectiveMetrics({
       vcs: deps.vcs,
       kindRegistry: deps.kindRegistry,
@@ -137,8 +161,27 @@ export function buildWeeklyMetricsBeforeAgent(deps: WeeklyMetricsHookDeps) {
       conventions: deps.conventions,
     });
 
+    // Append the rejection-learning brief so the improver can turn recurring
+    // false positives into additive analyzer-prompt edits (the durable half of
+    // the bounded-dedup model). Best-effort: never abort the retrospective.
+    let brief = metrics;
+    try {
+      const rejectionBrief = await buildRejectionLearningBrief(
+        {
+          state: deps.state, kv: deps.kv, registry: deps.kindRegistry,
+          workspacePath: deps.workspacePath, log: deps.log,
+        },
+        ctx,
+      );
+      if (rejectionBrief) brief = `${metrics}\n\n${rejectionBrief}`;
+    } catch (err) {
+      deps.log?.warn(`${stage.name}: rejection-learning brief failed (non-fatal)`, {
+        stage: stage.name, scopeKey, error: errorMessage(err),
+      });
+    }
+
     weeklyMetricsScratch.set(ctx, scopeKey, {
-      scopeKey, metrics, success: false, failureReason: null,
+      scopeKey, metrics: brief, success: false, failureReason: null,
     });
     deps.log?.debug(`${stage.name}: metrics brief length=${metrics.length} chars`, {
       stage: stage.name, scopeKey, length: metrics.length,
