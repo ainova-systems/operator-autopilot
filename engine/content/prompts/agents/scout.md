@@ -52,10 +52,13 @@ language: <human language for agent responses, e.g. English>
 context: <path to global context file, e.g. CLAUDE.md>
 
 scripts:
-  # Run once after clone to prepare workspace
-  init: <setup command, e.g. npm ci>
-  # Must pass for any PR to be marked ready
-  verify: <build + lint command>
+  # Run once after clone. MUST install EVERY toolchain that `verify` needs.
+  # In a polyglot repo that means restoring/installing each stack, not just the primary one
+  # (e.g. dotnet restore <sln> && (cd web && npm ci) && (cd worker && npm ci)).
+  init: <install all stacks verify runs>
+  # The ONLY automated post-change gate. MUST build + lint/test EVERY stack the operator
+  # may modify (see "Verify gate" below). One shell command, run from the repo root.
+  verify: <build + lint/test for every modifiable stack>
 
 features:
   analysts: true
@@ -65,8 +68,26 @@ features:
 Rules:
 - Only include fields that are relevant
 - `context` should point to existing global context file (CLAUDE.md, AGENTS.md, .cursorrules)
-- `scripts.verify` should combine build + lint for all stacks
 - Use YAML format (NOT JSON)
+
+#### Verify gate (read this before writing `scripts.verify` / `scripts.init`)
+
+`verify` is the single automated gate that runs after EVERY agent change, regardless of which
+stack the change touched, and a PR is only marked ready when it passes. It is one shell command
+executed from the repo root — it is NOT path-scoped. Therefore:
+
+- `verify` MUST build (and lint/test where those scripts exist) EVERY stack the operator is allowed
+  to modify — i.e. every stack you wrote a `context/*.md` for and did not mark frozen/out-of-scope.
+  Omitting a stack means an agent can break it and the change still passes the gate and ships to a
+  PR labelled ready. A backend-only `verify` on a repo that also has a real frontend build is a
+  **defect**, not an acceptable simplification.
+- `init` MUST install the toolchain for every stack `verify` runs (if `verify` runs `npm run build`
+  in `web/`, `init` must `npm ci` in `web/` — otherwise verify fails on a missing toolchain).
+- Exclude ONLY the frozen / out-of-scope paths you actually identified, and say so in a YAML comment.
+- If building every stack on every change is too slow for a large polyglot repo, you MAY instead set
+  `verify: bash .operator/verify.sh` and generate that script so it diffs the PR against the base
+  branch and runs only the gates for the stacks whose files changed. Never silently drop a modifiable
+  stack from the gate — narrow by changed paths, not by ignoring a stack.
 
 ### File 2: `.operator/context/project.md`
 
