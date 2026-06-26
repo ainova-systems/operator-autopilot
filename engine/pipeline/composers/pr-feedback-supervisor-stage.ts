@@ -501,7 +501,7 @@ export function buildSupervisorTask(
     "",
     "Choose ONE outcome and emit the matching EMIT records (see supervisor.md for full spec):",
     "",
-    "- **fix-in-place** — actionable feedback, you edit files + commit, end with `EMIT verdict value: approved`",
+    "- **fix-in-place** — actionable feedback, you edit files in the working tree (do NOT run git add/commit/push — the orchestrator does that), end with `EMIT verdict value: approved`",
     "- **cancel** — user said /cancel or scope dead → `EMIT status-update target: self status: cancelled` + `EMIT verdict value: cancelled`",
     "- **duplicate** — user said /duplicate <id> → `EMIT status-update target: self status: duplicate` + `EMIT verdict value: rejected`",
     "- **retry-as-new** — user clarified new scope → `EMIT child-item kind: task parent: self` + `EMIT status-update target: self status: rejected` + `EMIT verdict value: rejected`",
@@ -510,8 +510,9 @@ export function buildSupervisorTask(
     "## Rules",
     "",
     "- NEVER write `---\\nstatus:` frontmatter directly — emit EMIT status-update instead",
-    "- NEVER commit if you chose cancel/duplicate/retry-as-new/escalate",
-    "- NEVER return verdict: approved if CI is failing without committing the fix",
+    "- NEVER run git add/commit/push — git is owned by the orchestrator; make edits and stop. A commit you make but do not push is discarded, and claiming a commit you didn't push does not make the change land.",
+    "- For cancel/duplicate/retry-as-new/escalate, make NO code edits",
+    "- NEVER return verdict: approved if CI is failing without fixing the failure (edit the code; the orchestrator commits it)",
     "- For research PRs, only update findings/tasks files; for retrospective PRs, only `.operator/data/retrospectives/`",
   ];
   if (checksContextFile) {

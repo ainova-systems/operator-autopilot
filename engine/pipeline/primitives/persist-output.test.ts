@@ -324,6 +324,78 @@ describe("FileOutputAdapter.persist — frozen signature (Step 8c)", () => {
     expect(prManager.markInReview).not.toHaveBeenCalled();
   });
 
+  it("pushes an agent-authored commit (clean tree, HEAD advanced) and resolves the PR — 2026-06-26 PR #14 silent-loss fix", async () => {
+    // Regression for the init-PR silent-loss bug: the supervisor (cursor-agent)
+    // committed its fix-in-place change DIRECTLY (HEAD advanced from the
+    // pre-agent SHA) and left a clean tree. `commitIfChanged` returns null, so
+    // before the fix persist short-circuited with committed=false and NEVER
+    // pushed — then runStage's resetToBase discarded the commit while the bot
+    // had already reported "Applied review feedback". With preAgentHeadSha
+    // threaded in, persist detects the advanced HEAD, pushes the agent's
+    // commit, and resolves the existing PR exactly like a persist-authored one.
+    const existingPR: CodeReview = {
+      id: 14, title: "[AI:Init]", url: "", branch: "ai/init",
+      baseBranch: "develop", draft: false, labels: [],
+      comments: [], merged: false, closed: false,
+    };
+    const git = makeGit({ commitSha: null, headSha: "770f9b2agentcommit", commitCount: 1 });
+    const prManager = makePRManager();
+    prManager.findOpenPR.mockResolvedValueOnce(existingPR);
+    const vcs = makeVCS();
+
+    const result = await adapter.persist(
+      makeStageDef({ name: "pr-review", branchScope: "pr" }),
+      makeStageInput(), makeAgentResult("approved"),
+      makeWorkspace("ai/init"),
+      makeStagePersistInput({ onSuccess: "in-review", preAgentHeadSha: "07c86525original" }),
+      { git, prManager, vcs }, makeCtx(),
+    );
+
+    expect(git.push).toHaveBeenCalledWith("ai/init");
+    expect(prManager.markInReview).toHaveBeenCalledWith(14);
+    expect(prManager.createDraft).not.toHaveBeenCalled();
+    expect(vcs.createCodeReview).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      committed: true,
+      sha: "770f9b2agentcommit",
+      prNumber: 14,
+      prExisted: true,
+    });
+  });
+
+  it("does NOT push when HEAD is unchanged after the agent run (genuine no-op, preAgentHeadSha set)", async () => {
+    // Defensive twin of the test above: when the agent made no commit (HEAD
+    // identical to the pre-agent SHA) and left a clean tree, the SHA-change
+    // detector must NOT fire a push — the run is a real no-op (escalate /
+    // feedback already addressed) and the existing label-transition path holds.
+    const existingPR: CodeReview = {
+      id: 20, title: "x", url: "", branch: "ai/tasks/T20",
+      baseBranch: "develop", draft: false, labels: [],
+      comments: [], merged: false, closed: false,
+    };
+    const git = makeGit({ commitSha: null, headSha: "unchanged-sha" });
+    const prManager = makePRManager();
+    prManager.findOpenPR.mockResolvedValueOnce(existingPR);
+    const vcs = makeVCS();
+
+    const result = await adapter.persist(
+      makeStageDef({ name: "pr-review", branchScope: "pr" }),
+      makeStageInput(), makeAgentResult("approved"),
+      makeWorkspace("ai/tasks/T20"),
+      makeStagePersistInput({ onSuccess: "in-review", preAgentHeadSha: "unchanged-sha" }),
+      { git, prManager, vcs }, makeCtx(),
+    );
+
+    expect(git.push).not.toHaveBeenCalled();
+    expect(prManager.markInReview).toHaveBeenCalledWith(20);
+    expect(result).toEqual({
+      committed: false,
+      sha: null,
+      prNumber: 20,
+      prExisted: true,
+    });
+  });
+
   it("reuses an existing open PR instead of creating a new one", async () => {
     const existingPR: CodeReview = {
       id: 555,

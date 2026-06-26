@@ -124,6 +124,17 @@ export interface StagePersistInput {
    */
   readonly itemId?: string;
   readonly itemPath?: string;
+  /**
+   * HEAD SHA captured by `runStage` right after workspace checkout, before
+   * the agent ran. persist uses it to detect a code-writing agent that
+   * committed its change DIRECTLY (clean tree, advanced HEAD) rather than
+   * leaving an uncommitted tree. Without it such a commit is never pushed
+   * and `runStage`'s `resetToBase` discards it — the 2026-06-26 PR #14
+   * silent-loss bug (supervisor committed locally, persist saw a clean tree,
+   * never pushed). Empty / omitted ⇒ persist falls back to the dirty-tree
+   * path only (legacy callers / unit tests that don't thread it).
+   */
+  readonly preAgentHeadSha?: string;
 }
 
 /** Result of a `persist` call. */
@@ -177,7 +188,33 @@ export class FileOutputAdapter implements OutputAdapter {
     );
 
     await deps.git.addAll();
-    const sha = await deps.git.commitIfChanged(stagePersistInput.commitMessage);
+    // Reliable change detection from git ground truth — never the agent's
+    // narration. A code-writing agent either (a) leaves its edits
+    // uncommitted, in which case `commitIfChanged` authors the commit here,
+    // or (b) commits the fix itself (cursor-agent does this), leaving a clean
+    // tree with HEAD advanced past the pre-agent SHA. BOTH must be pushed, or
+    // `runStage`'s `resetToBase` discards the work while the engine has
+    // already reported the fix as applied (2026-06-26 PR #14: the supervisor
+    // committed 770f9b2 locally, persist saw a clean tree, never pushed, and
+    // the reset wiped it — the PR head never moved).
+    let sha = await deps.git.commitIfChanged(stagePersistInput.commitMessage);
+    if (!sha && stagePersistInput.preAgentHeadSha) {
+      const headAfter = (await deps.git.headSha().catch(() => "")).trim();
+      if (headAfter && headAfter !== stagePersistInput.preAgentHeadSha) {
+        // The agent committed directly — adopt its HEAD as the commit to
+        // push so the branches below treat it exactly like a persist-authored
+        // commit (push + PR resolve + label transition).
+        sha = headAfter;
+        deps.log?.info(
+          `persist: agent committed directly on ${workspace.branch} (HEAD ${stagePersistInput.preAgentHeadSha.slice(0, 8)} → ${headAfter.slice(0, 8)}) — forwarding to origin`,
+          {
+            stage: stageDef.name, branch: workspace.branch,
+            preAgentHeadSha: stagePersistInput.preAgentHeadSha.slice(0, 12),
+            sha: headAfter.slice(0, 12),
+          },
+        );
+      }
+    }
     if (!sha) {
       // v5 logging audit §14 — "nothing to commit" is a decision. Log it so
       // the INFO stream reflects that we did try and the workspace was clean.

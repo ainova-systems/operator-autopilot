@@ -291,6 +291,20 @@ export async function runStage(
       existedRemote: workspace.existedRemote,
     }, ctx);
 
+    // Capture HEAD after checkout, before the agent runs. persist uses this to
+    // detect an agent that commits its fix directly (clean tree, advanced
+    // HEAD) and forward that commit to origin instead of letting the
+    // finally-block resetToBase discard it. Best-effort — an empty string
+    // makes persist fall back to the dirty-tree-only path.
+    let preAgentHeadSha = "";
+    try {
+      preAgentHeadSha = (await deps.git.headSha()).trim();
+    } catch (err) {
+      deps.log?.warn(`Stage ${stageDef.name}: failed to capture pre-agent HEAD SHA (non-fatal)`, {
+        stage: stageDef.name, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     // 4-5. beforeAgent hook + prompt construction (stage-specific, injected).
     // If the hook returns `processingPRs`, the finally block below guarantees
     // label recovery when the stage does not reach a successful persist.
@@ -377,6 +391,7 @@ export async function runStage(
         onSuccess,
         itemId: workItemId,
         itemPath: extractItemPath(input),
+        preAgentHeadSha,
       },
       { git: deps.git, prManager: deps.prManager, vcs: deps.vcs, log: deps.log,
         kv: deps.kv, workspacePath: deps.workspacePath },
