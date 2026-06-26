@@ -100,15 +100,22 @@ export async function runProject(
     const result = await safeExecute(entry.action, deps, ctx);
     results.push(result);
 
-    // `queue-fill` generators (research) advance their throttle on completion
-    // AND on a skip — a run that found nothing eligible is still an "attempt"
-    // and must not re-fire every cycle. The empty-run counter drives the
-    // exponential backoff: a run that produced an output PR resets it, a run
-    // that produced nothing bumps it (see `updateQueueFillBackoff`).
+    // `queue-fill` state updates, by result:
+    //   - completed → advance throttle AND update backoff (the real signal:
+    //     a run that opened an output PR resets the empty counter, one that
+    //     produced nothing bumps it — see `updateQueueFillBackoff`).
+    //   - skipped "locked" → FULL no-op: a concurrent run already owns the
+    //     work and will record the signal. Touching state here would pollute
+    //     the backoff with lock contention rather than real emptiness.
+    //   - skipped other (no eligible analyzers) → advance the throttle only,
+    //     so research doesn't re-check every cycle, but leave backoff alone
+    //     (no analyzers ran, so it is not evidence the codebase is clean).
     if (entry.schedule.kind === "queue-fill") {
-      if (result.status === "completed" || result.status === "skipped") {
+      if (result.status === "completed") {
         await markScheduleRun(entry, project.id, deps, ctx);
-        await updateQueueFillBackoff(entry.schedule, project.id, result.status, deps, ctx);
+        await updateQueueFillBackoff(entry.schedule, project.id, deps, ctx);
+      } else if (result.status === "skipped" && result.message !== "locked") {
+        await markScheduleRun(entry, project.id, deps, ctx);
       }
     } else if (result.status === "completed") {
       await markScheduleRun(entry, project.id, deps, ctx);
@@ -119,21 +126,19 @@ export async function runProject(
 }
 
 /**
- * After a `queue-fill` run, reset or bump the consecutive-empty-run counter
- * that drives the exponential backoff. "Produced something" is detected by an
- * in-flight output PR existing now: a research run that found findings opens a
- * PR (`inFlightBranchPrefix`); a run that found nothing opens none. A skipped
- * run (no eligible analyzers) is always empty.
+ * After a COMPLETED `queue-fill` run, reset or bump the consecutive-empty-run
+ * counter that drives the exponential backoff. "Produced something" is detected
+ * by an in-flight output PR existing now: a research run that found findings
+ * opens a PR (`inFlightBranchPrefix`); a run that found nothing opens none.
+ * Only ever called for completed runs — skips never touch the backoff.
  */
 async function updateQueueFillBackoff(
   schedule: Extract<ScheduleSpec, { kind: "queue-fill" }>,
   repoId: string,
-  status: ActionResult["status"],
   deps: ProjectRunnerDeps,
   ctx: OperationContext,
 ): Promise<void> {
-  const produced = status === "completed"
-    && await hasInFlightOutput(schedule.inFlightBranchPrefix, deps);
+  const produced = await hasInFlightOutput(schedule.inFlightBranchPrefix, deps);
   if (produced) {
     await deps.state.setCounter(ctx, repoId, schedule.backoffStateKey, 0);
     return;

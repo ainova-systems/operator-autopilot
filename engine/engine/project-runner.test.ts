@@ -490,18 +490,30 @@ describe("runProject — queue-fill backoff", () => {
     expect(state.setCounter).toHaveBeenCalledWith(expect.anything(), "sample", "research-empty", 3);
   });
 
-  it("treats a skipped research run as empty (bumps backoff, advances throttle)", async () => {
+  it("ignores a locked skip (concurrent run owns the work) — no throttle mark, no backoff change", async () => {
     const state = makeState();
     vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
-    vi.mocked(state.getCounter).mockResolvedValue(0);
     const vcs = vcsWithReviews([]);
-    const execute = vi.fn().mockResolvedValue({ action: "research", status: "skipped" });
+    const execute = vi.fn().mockResolvedValue({ action: "research", status: "skipped", message: "locked" });
+    const deps = makeDeps({ state, vcs, executeAction: execute, dispatchRegistry: qfRegistry() });
+
+    await runProject(makeProject(), deps, makeCtx());
+
+    expect(state.markScheduleRun).not.toHaveBeenCalled();
+    expect(state.setCounter).not.toHaveBeenCalled();
+  });
+
+  it("advances the throttle on a no-eligible skip without touching the backoff", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    const vcs = vcsWithReviews([]);
+    const execute = vi.fn().mockResolvedValue({ action: "research", status: "skipped", message: "no-input" });
     const deps = makeDeps({ state, vcs, executeAction: execute, dispatchRegistry: qfRegistry() });
 
     await runProject(makeProject(), deps, makeCtx());
 
     expect(state.markScheduleRun).toHaveBeenCalledWith(expect.anything(), "sample", "research");
-    expect(state.setCounter).toHaveBeenCalledWith(expect.anything(), "sample", "research-empty", 1);
+    expect(state.setCounter).not.toHaveBeenCalled();
   });
 });
 
