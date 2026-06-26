@@ -84,6 +84,13 @@ executed from the repo root — it is NOT path-scoped. Therefore:
 - `init` MUST install the toolchain for every stack `verify` runs (if `verify` runs `npm run build`
   in `web/`, `init` must `npm ci` in `web/` — otherwise verify fails on a missing toolchain).
 - Exclude ONLY the frozen / out-of-scope paths you actually identified, and say so in a YAML comment.
+- **Shell-portable — no POSIX `(cd …)` subshell chains.** `init`/`verify` run in the operator
+  host's shell, which may be Windows `cmd.exe`, not POSIX `sh`. Do NOT chain per-directory steps as
+  `(cd app && npm ci) && (cd admin && npm ci)`: in `cmd.exe` the `(…)` group does NOT isolate the
+  working directory, so the second `cd` runs from the first one's directory and fails ("The system
+  cannot find the path specified"). Use tool-native directory flags that need no `cd` —
+  `npm --prefix <dir> ci`, `npm --prefix <dir> run <script>`, `dotnet build <path>`,
+  `dotnet test <path>` — so one command string works on Windows and Linux alike.
 - If building every stack on every change is too slow for a large polyglot repo, you MAY instead set
   `verify: bash .operator/verify.sh` and generate that script so it diffs the PR against the base
   branch and runs only the gates for the stacks whose files changed. Never silently drop a modifiable
