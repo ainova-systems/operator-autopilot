@@ -393,6 +393,60 @@ export function buildPrFeedbackSupervisorAfterAgent(deps: PrFeedbackSupervisorHo
         applyErrors: applied.applyErrors.length,
       });
 
+      // "Changes applied" detection — true when EITHER the workspace
+      // has uncommitted edits OR the agent advanced HEAD by committing
+      // directly via Bash. Pre-2026-05-20 the check only inspected the
+      // dirty flag; a post-commit clean tree was reported as "No code
+      // changes" even though the agent had committed (PR-887). The
+      // headSha comparison catches that path — falls back to the dirty
+      // check when the pre-agent SHA was not captured. Hoisted above the
+      // verdict branches so the stale-CI guard below sees it too.
+      const workspaceDirty = !(await deps.git.isClean());
+      let postAgentHeadSha = "";
+      try {
+        postAgentHeadSha = (await deps.git.headSha()).trim();
+      } catch (err) {
+        deps.log?.warn(`${stage.name}: failed to capture post-agent HEAD SHA (falling back to dirty-only check)`, {
+          stage: stage.name, prNumber: payload.prId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const headAdvanced = scratch.preAgentHeadSha.length > 0
+        && postAgentHeadSha.length > 0
+        && scratch.preAgentHeadSha !== postAgentHeadSha;
+      const changesApplied = workspaceDirty || headAdvanced;
+
+      // Stale-CI guard — completes the 2026-05-13 stale-CI fix (PR-1186).
+      // `payload.checks` is observed at cycle start, BEFORE the supervisor
+      // edits/commits, so a `failed` verdict resting on it — the verifier
+      // hard-rule "approved while CI failing", or the supervisor declining to
+      // approve over red CI — is judging a run the just-pushed fix already
+      // supersedes. When the supervisor DID push a fix in response to that
+      // failing CI, never latch terminal `ai:failed` on the stale observation:
+      // leave the PR in-review so fresh CI on the new commit decides and the
+      // next pr-feedback cycle re-evaluates (the recovery the 2026-05-13 note
+      // promised but the selector's `ai:failed` exclusion otherwise blocks).
+      // Bounded by the maxReviewAttempts cap in beforeAgent, so a genuinely
+      // unfixed failure still reaches `ai:failed` once the review budget is
+      // spent. Excludes `cancelled` (a human /cancel is a real terminal) and
+      // apply/parse errors (real contract violations, not CI staleness).
+      const effectiveVerdict = (applied.verdict !== "approved" || applied.applyErrors.length > 0)
+        ? applied.verdict
+        : agentResult.verdict;
+      if (effectiveVerdict === "failed" && applied.applyErrors.length === 0 && changesApplied && ciFailing) {
+        await deps.prManager.postBotComment(
+          payload.prId,
+          `Applied review feedback. The failing check(s) were observed on the pre-fix commit (${payload.checks.headSha?.slice(0, 12) ?? "unknown"}); the pushed fix supersedes that run — leaving the PR in review so fresh CI on the new commit decides.${suffix}`,
+          nextAttribution,
+        );
+        deps.log?.info(`${stage.name}: PR #${payload.prId} failed verdict rested on stale pre-fix CI but the supervisor pushed a fix — downgrading to in-review for fresh-CI re-evaluation`, {
+          stage: stage.name, prNumber: payload.prId,
+          effectiveVerdict, ciHead: payload.checks.headSha,
+          changesApplied, workspaceDirty, headAdvanced,
+        });
+        return { verdictOverride: "approved", summaryOverride: applied.summary || agentResult.summary };
+      }
+
       if (applied.verdict !== "approved" || applied.applyErrors.length > 0) {
         const reason = applied.summary || agentResult.summary || "supervisor decision";
         const detail = applied.applyErrors.length > 0
@@ -412,28 +466,6 @@ export function buildPrFeedbackSupervisorAfterAgent(deps: PrFeedbackSupervisorHo
           summaryOverride: applied.summary,
         };
       }
-
-      // "Changes applied" detection — true when EITHER the workspace
-      // has uncommitted edits OR the agent advanced HEAD by committing
-      // directly via Bash. Pre-2026-05-20 the check only inspected the
-      // dirty flag; a post-commit clean tree was reported as "No code
-      // changes" even though the agent had committed (PR-887). The
-      // headSha comparison catches that path — falls back to the dirty
-      // check when the pre-agent SHA was not captured.
-      const workspaceDirty = !(await deps.git.isClean());
-      let postAgentHeadSha = "";
-      try {
-        postAgentHeadSha = (await deps.git.headSha()).trim();
-      } catch (err) {
-        deps.log?.warn(`${stage.name}: failed to capture post-agent HEAD SHA (falling back to dirty-only check)`, {
-          stage: stage.name, prNumber: payload.prId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      const headAdvanced = scratch.preAgentHeadSha.length > 0
-        && postAgentHeadSha.length > 0
-        && scratch.preAgentHeadSha !== postAgentHeadSha;
-      const changesApplied = workspaceDirty || headAdvanced;
 
       if (changesApplied) {
         await deps.prManager.postBotComment(

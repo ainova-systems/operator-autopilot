@@ -483,6 +483,102 @@ describe("supervisor stage-logic", () => {
       expect(result?.verdictOverride).toBeUndefined();
     });
 
+    // Regression for PR-1186 (2026-06-26). The supervisor fixed every
+    // Copilot comment and pushed, but the only red check was an unrelated
+    // flaky backend test on the PRE-FIX commit (`payload.checks.headSha`
+    // captured at cycle start). A `failed` verdict resting on that stale CI
+    // (verifier hard-rule "approved while CI failing", surfaced here as
+    // agentResult.verdict=failed with emptied output) was latched to
+    // `ai:failed`, which the pr-feedback selector then excludes forever — so
+    // the PR stayed failed even after fresh CI on the new commit went green.
+    // Fix: when the supervisor pushed a fix in response to failing CI, the
+    // stale observation must NOT terminate the work — leave it in-review for
+    // a fresh-CI cycle.
+    it("downgrades a failed verdict to in-review when the supervisor pushed a fix over stale failing CI (PR-1186 regression)", async () => {
+      const deps = makeDeps({
+        git: {
+          commitCount: vi.fn().mockResolvedValue(2),
+          isClean: vi.fn().mockResolvedValue(false), // supervisor's fix sits in the tree
+          headSha: vi.fn().mockResolvedValue("sha-pre"),
+        } as unknown as PrFeedbackSupervisorHookDeps["git"],
+      });
+      const ctx = makeCtx();
+      const failingPayload = makePayload({
+        checks: { value: "failing", observedAt: "2026-06-26T13:00:00Z", headSha: "abc123def456789", checks: [] },
+      });
+      const input = makeStageInput(failingPayload);
+      await buildPrFeedbackSupervisorBeforeAgent(deps)(makeStageDef(), input, makeWorkspace("ai/tasks/T20260511-0001"), ctx);
+      const result = await buildPrFeedbackSupervisorAfterAgent(deps)(
+        makeStageDef(), input,
+        // Verifier override empties output → applier defaults to approved,
+        // but the carried agentResult verdict is the terminal `failed`.
+        makeAgentResult("failed", "", "Verifier marked supervisor work as failed: approved while CI failing"),
+        makeWorkspace("ai/tasks/T20260511-0001"), ctx,
+      );
+      expect(result?.verdictOverride).toBe("approved");
+      expect(deps.prManager.markFailed).not.toHaveBeenCalled();
+      expect(deps.prManager.postBotComment).toHaveBeenCalledWith(
+        842,
+        expect.stringContaining("pushed fix supersedes"),
+        expect.any(Object),
+      );
+      expect(deps.prManager.postBotComment).toHaveBeenCalledWith(
+        842,
+        expect.stringContaining("abc123def456"),
+        expect.any(Object),
+      );
+    });
+
+    it("keeps a failed verdict terminal when the supervisor made no changes (no stale-CI downgrade)", async () => {
+      const stream = makeFakeStream([
+        { type: "verdict", value: "failed", summary: "genuinely unrecoverable" } as never,
+      ]);
+      const deps = makeDeps({
+        agentEventStream: stream,
+        git: {
+          commitCount: vi.fn().mockResolvedValue(2),
+          isClean: vi.fn().mockResolvedValue(true), // clean tree, no fix pushed
+          headSha: vi.fn().mockResolvedValue("sha-pre"),
+        } as unknown as PrFeedbackSupervisorHookDeps["git"],
+      });
+      const ctx = makeCtx();
+      const input = makeStageInput(makePayload({
+        checks: { value: "failing", observedAt: "2026-06-26T13:00:00Z", headSha: "abc123", checks: [] },
+      }));
+      await buildPrFeedbackSupervisorBeforeAgent(deps)(makeStageDef(), input, makeWorkspace("ai/tasks/T20260511-0001"), ctx);
+      const result = await buildPrFeedbackSupervisorAfterAgent(deps)(
+        makeStageDef(), input,
+        makeAgentResult("approved", "out"),
+        makeWorkspace("ai/tasks/T20260511-0001"), ctx,
+      );
+      // No fix in the tree → the failure is real, not stale CI → stays failed.
+      expect(result?.verdictOverride).toBe("failed");
+    });
+
+    it("keeps a failed verdict terminal when changes were pushed but CI was passing (downgrade is CI-scoped)", async () => {
+      const stream = makeFakeStream([
+        { type: "verdict", value: "failed", summary: "bad fix" } as never,
+      ]);
+      const deps = makeDeps({
+        agentEventStream: stream,
+        git: {
+          commitCount: vi.fn().mockResolvedValue(2),
+          isClean: vi.fn().mockResolvedValue(false), // changes pushed …
+          headSha: vi.fn().mockResolvedValue("sha-pre"),
+        } as unknown as PrFeedbackSupervisorHookDeps["git"],
+      });
+      const ctx = makeCtx();
+      // … but CI was passing (default), so there is no stale-CI excuse.
+      const input = makeStageInput(makePayload());
+      await buildPrFeedbackSupervisorBeforeAgent(deps)(makeStageDef(), input, makeWorkspace("ai/tasks/T20260511-0001"), ctx);
+      const result = await buildPrFeedbackSupervisorAfterAgent(deps)(
+        makeStageDef(), input,
+        makeAgentResult("approved", "out"),
+        makeWorkspace("ai/tasks/T20260511-0001"), ctx,
+      );
+      expect(result?.verdictOverride).toBe("failed");
+    });
+
     it("emits verdictOverride when applier verdict is rejected (retry-as-new path)", async () => {
       const stream = makeFakeStream([
         { type: "child-item", kind: "task", parent: "self", title: "Spawned replacement", body: "...", priority: 3 } as never,
