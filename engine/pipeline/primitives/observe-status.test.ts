@@ -338,4 +338,32 @@ describe("observeChecks", () => {
     expect(obs.value).toBe("none");
     expect(obs.checks).toEqual([]);
   });
+
+  it("classifies a failing observation as transient via the job log", async () => {
+    const getCheckRuns = vi.fn().mockResolvedValue([
+      { name: "Deploy PR Environment", conclusion: "failure", headSha: "abc1234", jobId: 111 },
+    ]);
+    const getJobLogTail = vi.fn().mockResolvedValue("RUN npm ci\nnpm error code ECONNRESET");
+    const obs = await observeChecks(456, { vcs: { getCheckRuns, getJobLogTail } });
+    expect(obs.value).toBe("failing");
+    expect(obs.failureMode).toBe("transient");
+    expect(getJobLogTail).toHaveBeenCalledWith(111);
+  });
+
+  it("classifies a failing observation as code when the failure is a real test failure", async () => {
+    const getCheckRuns = vi.fn().mockResolvedValue([
+      { name: "Unit", conclusion: "failure", headSha: "abc1234", jobId: 222 },
+    ]);
+    const getJobLogTail = vi.fn().mockResolvedValue("FAIL auth.test.ts\nAssertionError: expected 200");
+    const obs = await observeChecks(456, { vcs: { getCheckRuns, getJobLogTail } });
+    expect(obs.value).toBe("failing");
+    expect(obs.failureMode).toBe("code");
+  });
+
+  it("leaves failureMode undefined when CI is passing", async () => {
+    const getCheckRuns = vi.fn().mockResolvedValue([{ name: "lint", conclusion: "success" }]);
+    const obs = await observeChecks(456, { vcs: { getCheckRuns } });
+    expect(obs.value).toBe("passing");
+    expect(obs.failureMode).toBeUndefined();
+  });
 });

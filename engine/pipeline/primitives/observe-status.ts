@@ -15,7 +15,9 @@ import type {
 } from "@operator/core";
 import type { WorkspaceGit } from "../../infra/git.js";
 import type { PRManager } from "../../delivery/pr-manager.js";
+import type { Logger } from "../../logging/logger.js";
 import { recordTerminalPRStates } from "./pr-state-cache.js";
+import { classifyChecksFailureMode, isFailingConclusion } from "./ci-transient.js";
 
 /**
  * Status observation primitive (Step 14).
@@ -271,7 +273,8 @@ export function observeExecutionVerdict(
 
 /** Deps for {@link observeChecks}. */
 export interface ObserveChecksDeps {
-  readonly vcs: Pick<VCSPlatform, "getCheckRuns">;
+  readonly vcs: Pick<VCSPlatform, "getCheckRuns" | "getJobLogTail">;
+  readonly log?: Logger;
 }
 
 /**
@@ -290,11 +293,8 @@ export function aggregateChecks(checks: ReadonlyArray<CheckRun>): ChecksObservat
   if (checks.length === 0) return "none";
   let pending = false;
   for (const c of checks) {
+    if (isFailingConclusion(c.conclusion)) return "failing";
     const conclusion = c.conclusion?.toLowerCase() ?? "";
-    if (conclusion === "failure" || conclusion === "timed_out"
-        || conclusion === "action_required" || conclusion === "startup_failure") {
-      return "failing";
-    }
     if (conclusion === "" || conclusion === "pending"
         || conclusion === "in_progress" || conclusion === "queued") {
       pending = true;
@@ -321,7 +321,16 @@ export async function observeChecks(
     const checks = await deps.vcs.getCheckRuns(prNumber);
     const value = aggregateChecks(checks);
     const headSha = checks[0]?.headSha;
-    return { value, observedAt, headSha, checks };
+    // Only classify when CI is actually failing — transient detection costs a
+    // job-log fetch per signal-less failing check, so it never runs on green
+    // or pending PRs (the common case).
+    const failureMode = value === "failing"
+      ? await classifyChecksFailureMode(
+          checks.filter((c) => isFailingConclusion(c.conclusion)),
+          { vcs: deps.vcs, log: deps.log },
+        )
+      : undefined;
+    return { value, observedAt, headSha, checks, failureMode };
   } catch {
     return { value: "none", observedAt, checks: [] };
   }

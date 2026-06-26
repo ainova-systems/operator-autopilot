@@ -16,9 +16,14 @@ import type { Comment } from "@operator/core";
  *   - `ciHead`     — head SHA the bot saw when it last ran. New SHA
  *                    means the agent (or a human) pushed code; CI retry
  *                    budget resets.
- *   - `ciAttempt`  — `current/max` retries spent on `ciHead`. Once
- *                    `current >= max` and CI still failing on the same
+ *   - `ciAttempt`  — `current/max` agent fix-attempts spent on `ciHead`.
+ *                    Once `current >= max` and CI still failing on the same
  *                    SHA, pr-lifecycle escalates to `ai:failed`.
+ *   - `ciRerun`    — `current/max` pipeline RE-RUNS spent on `ciHead` for a
+ *                    transient/infra failure. Distinct from `ciAttempt`: a
+ *                    re-run restarts CI without touching code or waking the
+ *                    agent. Once `current >= max` the transient-retry gate
+ *                    stops and the failure falls through to agent review.
  *
  * Footer format (HTML comment, hidden on GitHub UI but greppable):
  *
@@ -26,6 +31,7 @@ import type { Comment } from "@operator/core";
  *   responded: 12345,67890
  *   ci-head: abc12345
  *   ci-attempt: 2/3
+ *   ci-rerun: 1/2
  *   -->
  *
  * The fenced block is single-shot per comment; older parallel marker
@@ -36,6 +42,7 @@ export interface BotAttribution {
   readonly responded: ReadonlySet<string>;
   readonly ciHead?: string;
   readonly ciAttempt?: { readonly current: number; readonly max: number };
+  readonly ciRerun?: { readonly current: number; readonly max: number };
 }
 
 /** Fenced footer block surrounding the structured attribution. */
@@ -52,6 +59,9 @@ export function formatFooter(a: BotAttribution): string {
   if (a.ciHead) lines.push(`ci-head: ${a.ciHead}`);
   if (a.ciAttempt) {
     lines.push(`ci-attempt: ${a.ciAttempt.current}/${a.ciAttempt.max}`);
+  }
+  if (a.ciRerun) {
+    lines.push(`ci-rerun: ${a.ciRerun.current}/${a.ciRerun.max}`);
   }
   if (lines.length === 0) return "";
   return `${FOOTER_OPEN}\n${lines.join("\n")}\n${FOOTER_CLOSE}`;
@@ -95,6 +105,7 @@ export function parseFooter(body: string): BotAttribution {
   const responded = new Set<string>();
   let ciHead: string | undefined;
   let ciAttempt: { current: number; max: number } | undefined;
+  let ciRerun: { current: number; max: number } | undefined;
   for (const raw of block.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
@@ -110,15 +121,22 @@ export function parseFooter(body: string): BotAttribution {
     } else if (key === "ci-head") {
       ciHead = value || undefined;
     } else if (key === "ci-attempt") {
-      const slash = value.indexOf("/");
-      if (slash > 0) {
-        const cur = Number(value.slice(0, slash).trim());
-        const max = Number(value.slice(slash + 1).trim());
-        if (Number.isFinite(cur) && Number.isFinite(max) && max > 0) {
-          ciAttempt = { current: cur, max };
-        }
-      }
+      ciAttempt = parseCounter(value) ?? ciAttempt;
+    } else if (key === "ci-rerun") {
+      ciRerun = parseCounter(value) ?? ciRerun;
     }
   }
-  return { responded, ciHead, ciAttempt };
+  return { responded, ciHead, ciAttempt, ciRerun };
+}
+
+/** Parse a `current/max` counter; returns undefined when malformed. */
+function parseCounter(value: string): { current: number; max: number } | undefined {
+  const slash = value.indexOf("/");
+  if (slash <= 0) return undefined;
+  const current = Number(value.slice(0, slash).trim());
+  const max = Number(value.slice(slash + 1).trim());
+  if (Number.isFinite(current) && Number.isFinite(max) && max > 0) {
+    return { current, max };
+  }
+  return undefined;
 }

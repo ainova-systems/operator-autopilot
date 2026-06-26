@@ -123,6 +123,7 @@ export const checkRunSchema = z.object({
   detailsUrl: z.string().optional(),
   workflowName: z.string().optional(),
   workflowRunId: z.number().int().nonnegative().optional(),
+  jobId: z.number().int().nonnegative().optional(),
   title: z.string().optional(),
   summary: z.string().optional(),
   text: z.string().optional(),
@@ -134,6 +135,16 @@ export const checksObservationSchema = z.object({
   observedAt: z.string().min(1),
   headSha: z.string().optional(),
   checks: z.array(checkRunSchema),
+  /**
+   * Failure classification, set only when `value === "failing"`:
+   *   - `transient` — every failing check looks like infra/network flake
+   *     (ECONNRESET, registry 5xx, runner loss); the engine re-runs the
+   *     pipeline instead of engaging the agent.
+   *   - `code`      — at least one failing check is a genuine code/test
+   *     failure; the agent must respond.
+   * Absent when CI is not failing or no log signal was available.
+   */
+  failureMode: z.enum(["transient", "code"]).optional(),
 });
 
 /** Aggregate of all observation slots — optional because cycle order

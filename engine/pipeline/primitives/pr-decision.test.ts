@@ -35,6 +35,7 @@ function checks(value: ChecksObservation["value"], over: Partial<ChecksObservati
     observedAt: "2026-06-22T10:00:00Z",
     headSha: over.headSha,
     checks: over.checks ?? [],
+    failureMode: over.failureMode,
   };
 }
 
@@ -168,6 +169,57 @@ describe("classifyPrFeedback", () => {
     );
     expect(state.verdict).toBe("needs-review");
     expect(state.ci.attempts).toBe(0);
+  });
+
+  it("classifies a transient failure with re-run budget left as ci-transient (not needs-review)", () => {
+    const failing = check({ name: "Deploy", conclusion: "failure", headSha: "abc" });
+    const state = classifyPrFeedback(
+      signals({ checks: checks("failing", { headSha: "abc", checks: [failing], failureMode: "transient" }) }),
+      { ...CFG, maxCiReRunAttempts: 2 },
+    );
+    expect(state.verdict).toBe("ci-transient");
+    expect(state.ci.transient).toBe(true);
+    expect(state.ci.reRunRemaining).toBe(true);
+    expect(state.ci.reRunAttempts).toBe(0);
+  });
+
+  it("stops re-running and falls through to needs-review once the re-run budget is spent on the same head", () => {
+    const failing = check({ name: "Deploy", conclusion: "failure", headSha: "abc" });
+    const botReply = comment({
+      author: "operator",
+      body: `re-ran ${MARKER}\n<!-- bot:operator/attribution\nci-head: abc\nci-rerun: 2/2\n-->`,
+    });
+    const state = classifyPrFeedback(
+      signals({ comments: [botReply], checks: checks("failing", { headSha: "abc", checks: [failing], failureMode: "transient" }) }),
+      { ...CFG, maxCiReRunAttempts: 2 },
+    );
+    expect(state.verdict).toBe("needs-review");
+    expect(state.ci.reRunRemaining).toBe(false);
+    expect(state.ci.reRunAttempts).toBe(2);
+  });
+
+  it("does not re-run a code failure even with re-run budget configured", () => {
+    const failing = check({ name: "Unit", conclusion: "failure", headSha: "abc" });
+    const state = classifyPrFeedback(
+      signals({ checks: checks("failing", { headSha: "abc", checks: [failing], failureMode: "code" }) }),
+      { ...CFG, maxCiReRunAttempts: 2 },
+    );
+    expect(state.verdict).toBe("needs-review");
+    expect(state.ci.transient).toBe(false);
+  });
+
+  it("re-run budget resets when the head SHA changes", () => {
+    const failing = check({ name: "Deploy", conclusion: "failure", headSha: "def" });
+    const botReply = comment({
+      author: "operator",
+      body: `re-ran ${MARKER}\n<!-- bot:operator/attribution\nci-head: abc\nci-rerun: 2/2\n-->`,
+    });
+    const state = classifyPrFeedback(
+      signals({ comments: [botReply], checks: checks("failing", { headSha: "def", checks: [failing], failureMode: "transient" }) }),
+      { ...CFG, maxCiReRunAttempts: 2 },
+    );
+    expect(state.verdict).toBe("ci-transient");
+    expect(state.ci.reRunAttempts).toBe(0);
   });
 
   it("ranks the oldest unanswered comment timestamp across both streams", () => {

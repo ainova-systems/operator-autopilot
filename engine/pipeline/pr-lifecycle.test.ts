@@ -64,6 +64,7 @@ function makeDeps(overrides: Partial<PrLifecycleDeps>): PrLifecycleDeps {
     markReadyToMerge: vi.fn().mockResolvedValue(undefined),
     markInReview: vi.fn().mockResolvedValue(undefined),
     markFailed: vi.fn().mockResolvedValue(undefined),
+    postBotComment: vi.fn().mockResolvedValue(undefined),
   };
   const vcs = {
     getCodeReviews: vi.fn().mockResolvedValue([]),
@@ -72,6 +73,8 @@ function makeDeps(overrides: Partial<PrLifecycleDeps>): PrLifecycleDeps {
     getComments: vi.fn().mockResolvedValue([]),
     getReviewComments: vi.fn().mockResolvedValue([]),
     getCheckRuns: vi.fn().mockResolvedValue([]),
+    getJobLogTail: vi.fn().mockResolvedValue(undefined),
+    reRunFailedChecks: vi.fn().mockResolvedValue(true),
   };
   return {
     vcs: vcs as never,
@@ -335,7 +338,7 @@ describe("runPrLifecycle", () => {
   it("does nothing when no AI PRs are open", async () => {
     const deps = makeDeps({});
     const result = await runPrLifecycle(deps);
-    expect(result).toEqual({ promoted: 0, merged: 0, closed: 0, skipped: 0 });
+    expect(result).toEqual({ promoted: 0, merged: 0, closed: 0, skipped: 0, reran: 0 });
   });
 
   it("defers promote when there is fresh user feedback since last bot reply", async () => {
@@ -478,6 +481,85 @@ describe("runPrLifecycle", () => {
     // Different head SHA → counter reset → defer to normal CI gate (which
     // skips because checks are failing) but does NOT markFailed.
     expect(deps.prManager.markFailed).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+  });
+
+  it("re-runs the pipeline (not the agent) for a transient CI failure with budget left", async () => {
+    const HEAD = "abc12345";
+    const pr = makePR({
+      id: 820,
+      labels: labelsOf("ai:in-review"),
+      updatedAt: new Date(Date.now() - 5 * HOUR_MS).toISOString(),
+    });
+    const deps = makeDeps({});
+    (deps.vcs.getCodeReviews as ReturnType<typeof vi.fn>).mockResolvedValue([pr]);
+    (deps.vcs.getCheckRuns as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: "Deploy PR Environment", conclusion: "failure", headSha: HEAD, jobId: 111 },
+    ]);
+    (deps.vcs.getJobLogTail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      "RUN npm ci --include=dev\nnpm error code ECONNRESET\nnpm error network aborted",
+    );
+
+    const result = await runPrLifecycle(deps);
+
+    expect(deps.vcs.reRunFailedChecks).toHaveBeenCalledWith(820);
+    expect(deps.prManager.postBotComment).toHaveBeenCalledWith(
+      820,
+      expect.stringContaining("Transient CI failure"),
+      expect.objectContaining({ ciHead: HEAD, ciRerun: { current: 1, max: 2 } }),
+    );
+    expect(result.reran).toBe(1);
+    expect(deps.prManager.markFailed).not.toHaveBeenCalled();
+    expect(deps.prManager.markReadyToMerge).not.toHaveBeenCalled();
+  });
+
+  it("still advances the re-run budget when the platform refuses to re-run (forward progress)", async () => {
+    const HEAD = "abc12345";
+    const pr = makePR({
+      id: 822,
+      labels: labelsOf("ai:in-review"),
+      updatedAt: new Date(Date.now() - 5 * HOUR_MS).toISOString(),
+    });
+    const deps = makeDeps({});
+    (deps.vcs.getCodeReviews as ReturnType<typeof vi.fn>).mockResolvedValue([pr]);
+    (deps.vcs.getCheckRuns as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: "Deploy", conclusion: "failure", headSha: HEAD, jobId: 111 },
+    ]);
+    (deps.vcs.getJobLogTail as ReturnType<typeof vi.fn>).mockResolvedValue("npm error code ECONNRESET");
+    (deps.vcs.reRunFailedChecks as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+
+    const result = await runPrLifecycle(deps);
+
+    expect(result.reran).toBe(1);
+    expect(deps.prManager.postBotComment).toHaveBeenCalledWith(
+      822,
+      expect.stringContaining("Could not re-run"),
+      expect.objectContaining({ ciRerun: { current: 1, max: 2 } }),
+    );
+  });
+
+  it("stops re-running a transient failure once the re-run budget is spent and escalates via the agent path", async () => {
+    const HEAD = "abc12345";
+    const spentFooter = "<!-- bot:operator/attribution\nci-head: " + HEAD + "\nci-rerun: 2/2\n-->";
+    const pr = makePR({
+      id: 821,
+      labels: labelsOf("ai:in-review"),
+      updatedAt: new Date(Date.now() - 5 * HOUR_MS).toISOString(),
+    });
+    const deps = makeDeps({});
+    (deps.vcs.getCodeReviews as ReturnType<typeof vi.fn>).mockResolvedValue([pr]);
+    (deps.vcs.getCheckRuns as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: "Deploy PR Environment", conclusion: "failure", headSha: HEAD, jobId: 111 },
+    ]);
+    (deps.vcs.getJobLogTail as ReturnType<typeof vi.fn>).mockResolvedValue("npm error code ECONNRESET");
+    (deps.vcs.getComments as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "b1", author: "bot", body: `<!-- bot:operator -->\nre-ran\n\n${spentFooter}`, createdAt: "2026-05-01T11:00:00Z" },
+    ]);
+
+    const result = await runPrLifecycle(deps);
+
+    expect(deps.vcs.reRunFailedChecks).not.toHaveBeenCalled();
+    expect(result.reran).toBe(0);
     expect(result.skipped).toBe(1);
   });
 

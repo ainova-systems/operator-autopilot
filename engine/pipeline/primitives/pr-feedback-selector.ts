@@ -150,6 +150,12 @@ export const prFeedbackSelect: InputSelectorFn = async (stageDef, deps, _ctx) =>
   const maxCiRetryAttempts = typeof cfg["maxCiRetryAttempts"] === "number"
     ? (cfg["maxCiRetryAttempts"] as number)
     : 3;
+  // Transient/infra CI failures are re-run by pr-lifecycle, not the agent.
+  // Threading the same budget here is what makes the selector SKIP such a PR
+  // (verdict `ci-transient`) instead of handing the flake to the review agent.
+  const maxCiReRunAttempts = typeof cfg["maxCiReRunAttempts"] === "number"
+    ? (cfg["maxCiReRunAttempts"] as number)
+    : 2;
 
   if (!deps.vcs.getComments || !deps.vcs.getReviewComments) {
     throw new Error(`pr-feedback selector requires vcs.getComments + vcs.getReviewComments (stage: ${stageDef.name})`);
@@ -180,11 +186,11 @@ export const prFeedbackSelect: InputSelectorFn = async (stageDef, deps, _ctx) =>
   for (const pr of candidates) {
     const comments = await getComments(pr.id);
     const reviewComments = await getReviewComments(pr.id);
-    const checks = await observeChecks(pr.id, { vcs: deps.vcs });
+    const checks = await observeChecks(pr.id, { vcs: deps.vcs, log: deps.log });
     const botAttempts = countBotAttempts(comments, marker);
 
     const signals: PrSignals = { comments, reviewComments, checks };
-    const state = classifyPrFeedback(signals, { marker, ignoredBotLogins, maxCiRetryAttempts });
+    const state = classifyPrFeedback(signals, { marker, ignoredBotLogins, maxCiRetryAttempts, maxCiReRunAttempts });
 
     if (state.verdict !== "needs-review") {
       deps.log?.debug(`pr-feedback: PR #${pr.id} skipped (${state.verdict})`, {

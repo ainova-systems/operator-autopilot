@@ -1,6 +1,7 @@
 import type { Octokit } from "@octokit/rest";
 import type { CodeReview, Comment, Label } from "@operator/core";
 import type { CheckRun, CheckAnnotation, PlatformCapabilities, VCSPlatform } from "@operator/core";
+import { reRunFailedJobs, fetchJobLogTail } from "./actions.js";
 
 const SUMMARY_TRUNCATE = 2000;
 const TEXT_TRUNCATE = 4000;
@@ -94,6 +95,23 @@ function extractWorkflowRunId(url: string | null | undefined): number | undefine
   return Number.isFinite(n) ? n : undefined;
 }
 
+const JOB_ID_PATTERN = /\/job\/(\d+)/;
+function extractJobId(url: string | null | undefined): number | undefined {
+  if (typeof url !== "string") return undefined;
+  const m = JOB_ID_PATTERN.exec(url);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Conclusions that count as a hard failure for re-run / transient checks. */
+const FAILING_CONCLUSIONS = new Set([
+  "failure", "timed_out", "action_required", "startup_failure",
+]);
+
+/** Job logs are immutable until a re-run mints new job ids — cache generously. */
+const JOB_LOG_TTL_MS = 300_000;
+
 interface GhComment {
   id: number;
   user?: { login?: string; type?: string } | null;
@@ -142,6 +160,7 @@ export class GitHubVCS implements VCSPlatform {
   };
 
   private readonly getCodeReviewsCache = new Map<string, GetCodeReviewsCacheEntry>();
+  private readonly jobLogCache = new Map<number, { expiresAt: number; value: string | undefined }>();
 
   constructor(
     private readonly octokit: Octokit,
@@ -374,11 +393,45 @@ export class GitHubVCS implements VCSPlatform {
       detailsUrl: cr.details_url ?? cr.html_url ?? undefined,
       workflowName: cr.app?.name ?? undefined,
       workflowRunId: extractWorkflowRunId(cr.details_url),
+      jobId: extractJobId(cr.details_url),
       title: truncate(cr.output?.title, 200),
       summary: truncate(cr.output?.summary, SUMMARY_TRUNCATE),
       text: truncate(cr.output?.text, TEXT_TRUNCATE),
       annotations: annotations.length > 0 ? annotations : undefined,
     };
+  }
+
+  /**
+   * Re-run the failed jobs of every workflow run backing this PR's failing
+   * checks. Collects the distinct run ids of failed Actions checks on the
+   * PR head and asks GitHub to re-run only the failed jobs of each. Returns
+   * `true` when at least one run was re-triggered. The engine calls this for
+   * a transient/infra CI failure so the pipeline is retried without burning
+   * an agent fix-attempt on a non-code problem.
+   */
+  async reRunFailedChecks(codeReviewId: number): Promise<boolean> {
+    const checks = await this.getCheckRuns(codeReviewId);
+    const runIds = checks
+      .filter((c) => FAILING_CONCLUSIONS.has(c.conclusion.toLowerCase()) && typeof c.workflowRunId === "number")
+      .map((c) => c.workflowRunId as number);
+    if (runIds.length === 0) return false;
+    const ok = await reRunFailedJobs(this.octokit, this.owner, this.repo, runIds);
+    if (ok) this.invalidateCodeReviewsCache();
+    return ok;
+  }
+
+  /**
+   * Fetch the tail of a single Actions job's log, cached per job id (logs
+   * are immutable until a re-run mints new ids). Best-effort: returns
+   * `undefined` when the platform refuses or the job has no log.
+   */
+  async getJobLogTail(jobId: number): Promise<string | undefined> {
+    const now = Date.now();
+    const cached = this.jobLogCache.get(jobId);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const value = await fetchJobLogTail(this.octokit, this.owner, this.repo, jobId);
+    this.jobLogCache.set(jobId, { expiresAt: now + JOB_LOG_TTL_MS, value });
+    return value;
   }
 
   private async fetchAnnotations(checkRunId: number): Promise<CheckAnnotation[]> {

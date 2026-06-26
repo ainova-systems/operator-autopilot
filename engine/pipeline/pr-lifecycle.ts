@@ -60,10 +60,19 @@ export interface PrLifecycleResult {
   readonly merged: number;
   readonly closed: number;
   readonly skipped: number;
+  /** Transient/infra CI failures whose pipeline was re-run this sweep. */
+  readonly reran: number;
 }
 
-/** CI retry budget — mirror of the `pr-feedback` selector default. */
+/** Agent fix-attempt budget — mirror of the `pr-feedback` selector default. */
 const MAX_CI_RETRY_ATTEMPTS = 3;
+
+/**
+ * Pipeline re-run budget for a transient/infra CI failure on one head SHA.
+ * Small on purpose: a couple of re-runs clears a genuine flake; beyond that
+ * the failure is probably not transient, so it falls through to agent review.
+ */
+const MAX_CI_RERUN_ATTEMPTS = 2;
 
 /** Resolve a lifecycle field across layers — item < repo < defaults. */
 function resolveField(
@@ -147,7 +156,7 @@ function computeIdleHours(pr: CodeReview): number | null {
 }
 
 /** Fetch the comment + review-comment + checks signals for one PR. */
-async function loadSignals(pr: CodeReview, vcs: VCSPlatform): Promise<PrSignals> {
+async function loadSignals(pr: CodeReview, vcs: VCSPlatform, log?: Logger): Promise<PrSignals> {
   const comments: Comment[] = vcs.getComments ? await vcs.getComments(pr.id) : [];
   let reviewComments: Comment[] = [];
   if (vcs.getReviewComments) {
@@ -157,7 +166,7 @@ async function loadSignals(pr: CodeReview, vcs: VCSPlatform): Promise<PrSignals>
       // Best effort — the main comment stream is enough to detect feedback.
     }
   }
-  const checks = await observeChecks(pr.id, { vcs });
+  const checks = await observeChecks(pr.id, { vcs, log });
   return { comments, reviewComments, checks };
 }
 
@@ -177,7 +186,7 @@ export async function runPrLifecycle(
   const allPRs = await vcs.getCodeReviews({ state: "open" });
   const aiPRs = allPRs.filter((pr) => pr.branch.startsWith(aiPrefix) && !pr.draft);
 
-  let promoted = 0, merged = 0, closed = 0, skipped = 0;
+  let promoted = 0, merged = 0, closed = 0, skipped = 0, reran = 0;
 
   for (const pr of aiPRs) {
     const idleHours = computeIdleHours(pr);
@@ -203,10 +212,48 @@ export async function runPrLifecycle(
     const labels = new Set(pr.labels.map((l) => l.name));
 
     try {
-      const signals = await loadSignals(pr, vcs);
+      const signals = await loadSignals(pr, vcs, log);
       const state = classifyPrFeedback(signals, {
-        marker, ignoredBotLogins, maxCiRetryAttempts: MAX_CI_RETRY_ATTEMPTS,
+        marker, ignoredBotLogins,
+        maxCiRetryAttempts: MAX_CI_RETRY_ATTEMPTS,
+        maxCiReRunAttempts: MAX_CI_RERUN_ATTEMPTS,
       });
+
+      // ── Transient CI re-run gate ──────────────────────────────────
+      // A failing check classified as infra/network flake (ECONNRESET,
+      // registry 5xx, runner loss) with re-run budget left on this head SHA.
+      // The fix is to restart the pipeline, not to wake the agent — so we
+      // re-run the failed jobs and record the attempt in the bot footer. The
+      // counter advances whether or not the platform accepted the re-run, so
+      // a run GitHub refuses to restart still drains the budget and the PR
+      // eventually falls through to agent review instead of looping forever.
+      if (labels.has(inReviewLabel) && state.verdict === "ci-transient") {
+        const next = { current: state.ci.reRunAttempts + 1, max: state.ci.maxReRunAttempts };
+        const failingNames = state.ci.failingChecks.map((c) => c.name).join(", ");
+        const triggered = vcs.reRunFailedChecks ? await vcs.reRunFailedChecks(pr.id) : false;
+        await prManager.postBotComment(
+          pr.id,
+          `🔄 Transient CI failure detected (${failingNames || "—"}) on head \`${state.ci.headSha}\`. ` +
+          `${triggered ? "Re-running the pipeline" : "Could not re-run the pipeline (run not re-runnable)"} ` +
+          `— attempt ${next.current}/${next.max}. No code change is needed; this is an infrastructure flake.`,
+          {
+            responded: state.footer.responded,
+            ciHead: state.ci.headSha,
+            ciAttempt: state.footer.ciAttempt,
+            ciRerun: next,
+          },
+        );
+        log?.info(
+          `pr-lifecycle: PR #${pr.id} transient CI ${triggered ? "re-run triggered" : "re-run unavailable"} (${next.current}/${next.max}) on head ${state.ci.headSha}`,
+          {
+            stage: "pr-lifecycle", action: "ci-rerun", prNumber: pr.id, triggered,
+            ciHead: state.ci.headSha, reRunAttempt: next.current, maxReRunAttempts: next.max,
+            failingChecks: failingNames,
+          },
+        );
+        reran++;
+        continue;
+      }
 
       // ── CI exhaustion gate ────────────────────────────────────────
       // Failing CI with the retry budget spent on the current head SHA →
@@ -313,6 +360,6 @@ export async function runPrLifecycle(
     }
   }
 
-  log?.info(`pr-lifecycle: scan complete (promoted=${promoted}, merged=${merged}, closed=${closed}, skipped=${skipped})`);
-  return { promoted, merged, closed, skipped };
+  log?.info(`pr-lifecycle: scan complete (promoted=${promoted}, merged=${merged}, closed=${closed}, reran=${reran}, skipped=${skipped})`);
+  return { promoted, merged, closed, skipped, reran };
 }

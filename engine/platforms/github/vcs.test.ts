@@ -32,6 +32,14 @@ function createMockOctokit() {
       repos: {
         listBranches: vi.fn(),
       },
+      checks: {
+        listForRef: vi.fn(),
+        listAnnotations: vi.fn(),
+      },
+      actions: {
+        reRunWorkflowFailedJobs: vi.fn().mockResolvedValue({}),
+        downloadJobLogsForWorkflowRun: vi.fn(),
+      },
     },
   };
 }
@@ -455,6 +463,78 @@ describe("GitHubVCS", () => {
       ]);
       const result = await vcs.listBranches();
       expect(result).toEqual(["main", "develop"]);
+    });
+  });
+
+  // ── Check runs + transient CI retry ───────────────────────────────
+
+  describe("getCheckRuns", () => {
+    it("parses workflowRunId and jobId from the details URL", async () => {
+      mock.rest.pulls.get.mockResolvedValueOnce({ data: { head: { sha: "deadbeef" } } });
+      mock.rest.checks.listForRef.mockResolvedValueOnce({
+        data: {
+          check_runs: [{
+            id: 1, name: "Deploy PR Environment", conclusion: "success",
+            details_url: "https://github.com/owner/repo/actions/runs/28230397428/job/83632478650",
+            app: { name: "PR Preview" },
+          }],
+        },
+      });
+      const runs = await vcs.getCheckRuns(42);
+      expect(runs[0].workflowRunId).toBe(28230397428);
+      expect(runs[0].jobId).toBe(83632478650);
+    });
+  });
+
+  describe("reRunFailedChecks", () => {
+    it("re-runs the failed run's failed jobs and returns true", async () => {
+      mock.rest.pulls.get.mockResolvedValue({ data: { head: { sha: "sha1" } } });
+      mock.rest.checks.listForRef.mockResolvedValueOnce({
+        data: {
+          check_runs: [
+            { id: 1, name: "Deploy", conclusion: "failure",
+              details_url: "https://github.com/owner/repo/actions/runs/555/job/111" },
+            { id: 2, name: "E2E", conclusion: "skipped",
+              details_url: "https://github.com/owner/repo/actions/runs/555/job/222" },
+          ],
+        },
+      });
+      mock.paginate.mockResolvedValue([]); // annotations fetch for the failed check
+      const ok = await vcs.reRunFailedChecks(42);
+      expect(ok).toBe(true);
+      expect(mock.rest.actions.reRunWorkflowFailedJobs).toHaveBeenCalledTimes(1);
+      expect(mock.rest.actions.reRunWorkflowFailedJobs).toHaveBeenCalledWith({
+        owner: "owner", repo: "repo", run_id: 555,
+      });
+    });
+
+    it("returns false when there are no failing Actions runs", async () => {
+      mock.rest.pulls.get.mockResolvedValue({ data: { head: { sha: "sha1" } } });
+      mock.rest.checks.listForRef.mockResolvedValueOnce({
+        data: { check_runs: [{ id: 1, name: "Deploy", conclusion: "success", details_url: null }] },
+      });
+      const ok = await vcs.reRunFailedChecks(42);
+      expect(ok).toBe(false);
+      expect(mock.rest.actions.reRunWorkflowFailedJobs).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getJobLogTail", () => {
+    it("fetches the job log and caches by job id", async () => {
+      mock.rest.actions.downloadJobLogsForWorkflowRun.mockResolvedValue({
+        data: "npm error code ECONNRESET",
+      });
+      const a = await vcs.getJobLogTail(111);
+      const b = await vcs.getJobLogTail(111);
+      expect(a).toBe("npm error code ECONNRESET");
+      expect(b).toBe(a);
+      expect(mock.rest.actions.downloadJobLogsForWorkflowRun).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns undefined (and caches it) when the platform refuses", async () => {
+      mock.rest.actions.downloadJobLogsForWorkflowRun.mockRejectedValue({ status: 410 });
+      const out = await vcs.getJobLogTail(222);
+      expect(out).toBeUndefined();
     });
   });
 });

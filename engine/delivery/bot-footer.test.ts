@@ -48,6 +48,12 @@ describe("formatFooter", () => {
     expect(out).toContain("responded: c1");
     expect(out).not.toContain("ci-head");
     expect(out).not.toContain("ci-attempt");
+    expect(out).not.toContain("ci-rerun");
+  });
+
+  it("includes ci-rerun when populated", () => {
+    const a: BotAttribution = { responded: new Set(), ciRerun: { current: 1, max: 2 } };
+    expect(formatFooter(a)).toContain("ci-rerun: 1/2");
   });
 });
 
@@ -61,12 +67,21 @@ describe("parseFooter", () => {
       responded: new Set(["c1", "c2", "c3"]),
       ciHead: "deadbeef",
       ciAttempt: { current: 1, max: 5 },
+      ciRerun: { current: 2, max: 2 },
     };
     const formatted = formatFooter(original);
     const parsed = parseFooter(formatted);
     expect([...parsed.responded].sort()).toEqual(["c1", "c2", "c3"]);
     expect(parsed.ciHead).toBe("deadbeef");
     expect(parsed.ciAttempt).toEqual({ current: 1, max: 5 });
+    expect(parsed.ciRerun).toEqual({ current: 2, max: 2 });
+  });
+
+  it("parses ci-rerun and ignores malformed counters", () => {
+    expect(parseFooter("<!-- bot:operator/attribution\nci-rerun: 1/2\n-->").ciRerun)
+      .toEqual({ current: 1, max: 2 });
+    expect(parseFooter("<!-- bot:operator/attribution\nci-rerun: nope\n-->").ciRerun)
+      .toBeUndefined();
   });
 
   it("recovers attribution embedded inside a real comment body", () => {

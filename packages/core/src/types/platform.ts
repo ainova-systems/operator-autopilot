@@ -30,6 +30,13 @@ export interface CheckRun {
   readonly workflowName?: string;
   /** Workflow run id, useful for log drill-downs in the UI. */
   readonly workflowRunId?: number;
+  /**
+   * Workflow job id (GitHub Actions). Parsed from `details_url` when the
+   * check is an Actions job (`/actions/runs/<run>/job/<job>`). Lets the
+   * engine fetch the single-job log for transient-failure classification
+   * without scraping the whole run's zip. Absent for non-Actions checks.
+   */
+  readonly jobId?: number;
   /** `output.title` — short failure summary. */
   readonly title?: string;
   /** `output.summary` — markdown summary, truncated by the adapter. */
@@ -75,6 +82,28 @@ export interface VCSPlatform {
 
   /** Get CI check runs for a PR's head commit. Returns empty array if unsupported. */
   getCheckRuns?(codeReviewId: number): Promise<CheckRun[]>;
+
+  /**
+   * Optional: re-run the failed jobs of every workflow run backing a PR's
+   * failing checks. Used by `pr-lifecycle` to retry a transient/infra CI
+   * failure (network reset, registry 5xx, runner loss) WITHOUT invoking an
+   * agent — the failure is not in the code, so the right response is to
+   * re-run the pipeline, not to ask the agent to "fix" it. Resolves `true`
+   * when at least one run was re-triggered, `false` when none could be
+   * (no failing Actions run, run too old, platform refused). Adapters that
+   * cannot re-run leave the method out and the transient-retry gate is
+   * skipped for that platform (failing CI falls through to agent review).
+   */
+  reRunFailedChecks?(codeReviewId: number): Promise<boolean>;
+
+  /**
+   * Optional: fetch the tail of a single CI job's log (bounded), used to
+   * classify a failing check as transient/infra vs a genuine code failure.
+   * `jobId` comes from {@link CheckRun.jobId}. Returns `undefined` when the
+   * platform exposes no job logs or the fetch fails — callers treat absence
+   * as "not provably transient" (conservative: hand to the agent).
+   */
+  getJobLogTail?(jobId: number): Promise<string | undefined>;
 
   createBranch(name: string, fromBranch: string): Promise<void>;
   deleteBranch(name: string): Promise<void>;

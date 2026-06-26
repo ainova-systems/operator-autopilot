@@ -65,8 +65,17 @@ export interface PrFeedbackConfig {
   readonly marker: string;
   /** Bot logins whose comments are pure noise and never trigger review. */
   readonly ignoredBotLogins: ReadonlyArray<string>;
-  /** Retry budget for a failing CI run on the same head SHA. */
+  /** Agent fix-attempt budget for a failing CI run on the same head SHA. */
   readonly maxCiRetryAttempts: number;
+  /**
+   * Pipeline re-run budget for a TRANSIENT (infra/network) CI failure on the
+   * same head SHA. `0` (the default when omitted) disables the transient
+   * re-run gate entirely — failing CI then falls straight through to agent
+   * review exactly as before. A positive value lets `pr-lifecycle` re-run the
+   * pipeline up to N times before handing a still-red transient failure to
+   * the agent.
+   */
+  readonly maxCiReRunAttempts?: number;
 }
 
 /** Head-SHA-aware CI retry state, derived once and shared. */
@@ -74,25 +83,36 @@ interface CiState {
   readonly value: ChecksObservation["value"];
   readonly headSha?: string;
   readonly failingChecks: ReadonlyArray<CheckRun>;
-  /** Retries already spent on the current head SHA. */
+  /** Agent fix-attempts already spent on the current head SHA. */
   readonly attempts: number;
   readonly maxAttempts: number;
-  /** Failing AND the retry budget on this head SHA is spent. */
+  /** Failing AND the agent fix-attempt budget on this head SHA is spent. */
   readonly exhausted: boolean;
+  /** True when the failure was classified infra/transient (re-runnable). */
+  readonly transient: boolean;
+  /** Pipeline re-runs already spent on the current head SHA. */
+  readonly reRunAttempts: number;
+  readonly maxReRunAttempts: number;
+  /** Transient failure with re-run budget still available on this head SHA. */
+  readonly reRunRemaining: boolean;
 }
 
 /**
  * The single feedback/CI verdict for an open AI PR:
  *
  *   - `ci-pending`   — CI not yet decided; defer every action until it settles.
- *   - `ci-exhausted` — failing CI and the retry budget on this head SHA is
- *                      spent; the operator has given up, a human must act.
+ *   - `ci-transient` — failing CI classified as infra/network flake with
+ *                      re-run budget left on this head SHA; pr-lifecycle
+ *                      re-runs the pipeline instead of waking the agent.
+ *   - `ci-exhausted` — failing CI and the agent fix-attempt budget on this
+ *                      head SHA is spent; the operator has given up, a human
+ *                      must act.
  *   - `needs-review` — unanswered comment (human OR bot) or a fresh failing
  *                      check; the review agent must respond.
  *   - `clean`        — nothing unanswered and CI is passing / absent; safe to
  *                      promote toward merge.
  */
-type PrFeedbackVerdict = "ci-pending" | "ci-exhausted" | "needs-review" | "clean";
+type PrFeedbackVerdict = "ci-pending" | "ci-transient" | "ci-exhausted" | "needs-review" | "clean";
 
 export interface PrFeedbackState {
   readonly verdict: PrFeedbackVerdict;
@@ -132,6 +152,12 @@ export function classifyPrFeedback(
   const sameHead = !!footer.ciHead && !!checks.headSha && footer.ciHead === checks.headSha;
   const attempts = sameHead ? footer.ciAttempt?.current ?? 0 : 0;
   const exhausted = failingChecks.length > 0 && attempts >= cfg.maxCiRetryAttempts;
+  // Transient re-run budget — counted independently of agent fix-attempts and
+  // reset (like them) when new code lands on a new head SHA.
+  const maxReRunAttempts = cfg.maxCiReRunAttempts ?? 0;
+  const reRunAttempts = sameHead ? footer.ciRerun?.current ?? 0 : 0;
+  const transient = checks.value === "failing" && checks.failureMode === "transient";
+  const reRunRemaining = transient && reRunAttempts < maxReRunAttempts;
   const ci: CiState = {
     value: checks.value,
     headSha: checks.headSha,
@@ -139,6 +165,10 @@ export function classifyPrFeedback(
     attempts,
     maxAttempts: cfg.maxCiRetryAttempts,
     exhausted,
+    transient,
+    reRunAttempts,
+    maxReRunAttempts,
+    reRunRemaining,
   };
 
   const empty: Pick<PrFeedbackState, "freshComments" | "freshReviewComments" | "ci" | "footer"> = {
@@ -153,8 +183,16 @@ export function classifyPrFeedback(
     return { verdict: "ci-pending", ...empty };
   }
 
-  // Failing AND retry budget spent on this head SHA → the operator has
-  // given up; a human must push a fix (new head resets the budget) or close.
+  // Failing transiently (infra/network flake) with re-run budget left → the
+  // fix is to restart the pipeline, not to wake the agent. pr-lifecycle owns
+  // the re-run; the selector skips this PR so no agent attempt is spent.
+  if (reRunRemaining) {
+    return { verdict: "ci-transient", ...empty };
+  }
+
+  // Failing AND the agent fix-attempt budget is spent on this head SHA → the
+  // operator has given up; a human must push a fix (new head resets the
+  // budget) or close.
   if (exhausted) {
     return { verdict: "ci-exhausted", ...empty };
   }
