@@ -95,6 +95,18 @@ export class TestStateManager implements StateManager {
     this.schedules.set(`${repoId}:${action}`, new Date().toISOString());
   }
 
+  // ── Counters (queue-fill backoff state) ──
+
+  readonly counters = new Map<string, number>(); // "repoId:key" → value
+
+  async getCounter(ctx: OperationContext, repoId: string, key: string): Promise<number> {
+    return this.counters.get(`${repoId}:${key}`) ?? 0;
+  }
+
+  async setCounter(ctx: OperationContext, repoId: string, key: string, value: number): Promise<void> {
+    this.counters.set(`${repoId}:${key}`, value);
+  }
+
   // ── Deduplication ──
 
   async isKnownItem(ctx: OperationContext, repoId: string, sourceKey: string): Promise<boolean> {

@@ -123,6 +123,17 @@ const dispatchScheduleSchema = z.discriminatedUnion("kind", [
     guardMinutes: z.number().int().positive(),
     stateKey: z.string().min(1),
   }),
+  z.object({
+    kind: z.literal("queue-fill"),
+    targetKind: z.string().min(1),
+    countStatuses: z.array(z.string().min(1)).min(1),
+    target: z.number().int().positive(),
+    inFlightBranchPrefix: z.string().min(1),
+    baseIntervalMinutes: z.number().int().positive(),
+    maxBackoffMinutes: z.number().int().positive(),
+    stateKey: z.string().min(1),
+    backoffStateKey: z.string().min(1),
+  }),
 ]);
 
 const dispatchPolicySchema = z.object({

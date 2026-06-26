@@ -39,6 +39,8 @@ function makeState(): StateManager {
     saveOutcome: vi.fn(), listOutcomes: vi.fn(),
     isScheduleDue: vi.fn().mockResolvedValue(true),
     markScheduleRun: vi.fn().mockResolvedValue(undefined),
+    getCounter: vi.fn().mockResolvedValue(0),
+    setCounter: vi.fn().mockResolvedValue(undefined),
     isKnownItem: vi.fn(), markKnownItem: vi.fn(), close: vi.fn(),
   } as unknown as StateManager;
 }
@@ -362,6 +364,144 @@ describe("isScheduleDue", () => {
     };
     const result = await isScheduleDue(entry, "repo", deps, makeCtx());
     expect(result).toBe(false);
+  });
+});
+
+// ── isScheduleDue — queue-fill ───────────────────────────────────────
+
+function qfEntry(overrides?: Partial<Extract<ScheduleSpec, { kind: "queue-fill" }>>): StageDispatchEntry {
+  return {
+    action: "research", order: 70,
+    schedule: {
+      kind: "queue-fill", targetKind: "finding", countStatuses: ["pending", "reopened"],
+      target: 5, inFlightBranchPrefix: "ai/research",
+      baseIntervalMinutes: 120, maxBackoffMinutes: 10080,
+      stateKey: "research", backoffStateKey: "research-empty",
+      ...overrides,
+    },
+    isEnabled: () => true,
+  };
+}
+
+function makeItems(n: number): unknown[] {
+  return Array.from({ length: n }, (_, i) => ({ id: `F${i}`, kind: "finding", status: "pending" }));
+}
+
+function vcsWithReviews(reviews: unknown[]): VCSPlatform {
+  return { getCodeReviews: vi.fn().mockResolvedValue(reviews) } as unknown as VCSPlatform;
+}
+
+describe("isScheduleDue — queue-fill", () => {
+  it("is due when backlog is below target, no in-flight PR, throttle elapsed", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(2) as never);
+    vi.mocked(state.isScheduleDue).mockResolvedValue(true);
+    vi.mocked(state.getCounter).mockResolvedValue(0);
+    const deps = makeDeps({ state, vcs: vcsWithReviews([]) });
+
+    expect(await isScheduleDue(qfEntry(), "repo", deps, makeCtx())).toBe(true);
+  });
+
+  it("is NOT due when backlog has reached target", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(5) as never);
+    const deps = makeDeps({ state, vcs: vcsWithReviews([]) });
+
+    expect(await isScheduleDue(qfEntry(), "repo", deps, makeCtx())).toBe(false);
+  });
+
+  it("is NOT due (and skips the backlog query) while an in-flight research PR awaits merge", async () => {
+    const state = makeState();
+    const deps = makeDeps({
+      state,
+      vcs: vcsWithReviews([{ branch: "ai/research/20260101", closed: false }]),
+    });
+
+    expect(await isScheduleDue(qfEntry(), "repo", deps, makeCtx())).toBe(false);
+    expect(state.listWorkItems).not.toHaveBeenCalled();
+  });
+
+  it("applies exponential backoff: effective interval = base * 2^emptyRuns", async () => {
+    const state = makeState();
+    vi.mocked(state.getCounter).mockResolvedValue(3); // 120 * 2^3 = 960
+    vi.mocked(state.isScheduleDue).mockResolvedValue(false); // not elapsed
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    const deps = makeDeps({ state, vcs: vcsWithReviews([]) });
+
+    const due = await isScheduleDue(qfEntry(), "repo", deps, makeCtx());
+    expect(due).toBe(false);
+    expect(state.isScheduleDue).toHaveBeenCalledWith(
+      expect.anything(), "repo", "research", 960,
+    );
+  });
+
+  it("caps the backoff interval at maxBackoffMinutes", async () => {
+    const state = makeState();
+    vi.mocked(state.getCounter).mockResolvedValue(20); // base * 2^20 >> cap
+    vi.mocked(state.isScheduleDue).mockResolvedValue(true);
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    const deps = makeDeps({ state, vcs: vcsWithReviews([]) });
+
+    await isScheduleDue(qfEntry(), "repo", deps, makeCtx());
+    expect(state.isScheduleDue).toHaveBeenCalledWith(
+      expect.anything(), "repo", "research", 10080,
+    );
+  });
+});
+
+// ── runProject — queue-fill backoff counter ──────────────────────────
+
+describe("runProject — queue-fill backoff", () => {
+  function qfRegistry(): StageDispatchRegistry {
+    const reg: StageDispatchRegistry = {
+      normalOrder: [qfEntry()],
+      get: (a) => reg.normalOrder.find((e) => e.action === a),
+      forceChain: (a) => reg.normalOrder.some((e) => e.action === a) ? [a] : undefined,
+    };
+    return reg;
+  }
+
+  it("resets the empty-run counter when research produced an in-flight PR", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    // Eval sees no in-flight PR (due); after the run a research PR exists.
+    const vcs = vcsWithReviews([]);
+    vi.mocked(vcs.getCodeReviews)
+      .mockResolvedValueOnce([]) // eval: no in-flight → due
+      .mockResolvedValueOnce([{ branch: "ai/research/x", closed: false }] as never); // post-run: produced
+    const execute = vi.fn().mockResolvedValue({ action: "research", status: "completed" });
+    const deps = makeDeps({ state, vcs, executeAction: execute, dispatchRegistry: qfRegistry() });
+
+    await runProject(makeProject(), deps, makeCtx());
+
+    expect(state.setCounter).toHaveBeenCalledWith(expect.anything(), "sample", "research-empty", 0);
+  });
+
+  it("bumps the empty-run counter when research produced nothing", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    vi.mocked(state.getCounter).mockResolvedValue(2);
+    const vcs = vcsWithReviews([]); // no research PR before or after
+    const execute = vi.fn().mockResolvedValue({ action: "research", status: "completed" });
+    const deps = makeDeps({ state, vcs, executeAction: execute, dispatchRegistry: qfRegistry() });
+
+    await runProject(makeProject(), deps, makeCtx());
+
+    expect(state.setCounter).toHaveBeenCalledWith(expect.anything(), "sample", "research-empty", 3);
+  });
+
+  it("treats a skipped research run as empty (bumps backoff, advances throttle)", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    vi.mocked(state.getCounter).mockResolvedValue(0);
+    const vcs = vcsWithReviews([]);
+    const execute = vi.fn().mockResolvedValue({ action: "research", status: "skipped" });
+    const deps = makeDeps({ state, vcs, executeAction: execute, dispatchRegistry: qfRegistry() });
+
+    await runProject(makeProject(), deps, makeCtx());
+
+    expect(state.markScheduleRun).toHaveBeenCalledWith(expect.anything(), "sample", "research");
+    expect(state.setCounter).toHaveBeenCalledWith(expect.anything(), "sample", "research-empty", 1);
   });
 });
 

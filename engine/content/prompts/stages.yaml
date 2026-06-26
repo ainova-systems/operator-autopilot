@@ -64,13 +64,23 @@ stages:
     dispatch:
       order: 70
       featureFlags: [dailyResearch]
+      # Queue-driven instead of a fixed daily cron: research fires to keep the
+      # finding backlog topped up, not on a clock. It runs when fewer than
+      # `target` findings are pending AND no research PR is still awaiting human
+      # merge (findings enter the queue only once their PR merges, so don't pile
+      # PRs up). The throttle starts at `baseIntervalMinutes` and doubles after
+      # each run that produced nothing, capped at `maxBackoffMinutes` (7 days) —
+      # so a clean codebase backs off instead of re-scanning every 2h forever.
       schedule:
-        kind: daily
-        # `dailyResearchHour` from defaults.yaml — engine-defaults seed mirrors it.
-        hourUtc: 8
-        # 20h window so daemon restarts within the same UTC day don't double-fire.
-        guardMinutes: 1200
+        kind: queue-fill
+        targetKind: finding
+        countStatuses: [pending, reopened]
+        target: 5
+        inFlightBranchPrefix: ai/research
+        baseIntervalMinutes: 120
+        maxBackoffMinutes: 10080
         stateKey: research
+        backoffStateKey: research-empty
     composer: discovery-iteration
     composerConfig:
       agentRole: analyst

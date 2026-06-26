@@ -53,6 +53,15 @@ export interface StateManager {
   isScheduleDue(ctx: OperationContext, repoId: string, action: string, intervalMinutes: number): Promise<boolean>;
   markScheduleRun(ctx: OperationContext, repoId: string, action: string): Promise<void>;
 
+  /**
+   * Small per-repo integer counters. Used by the `queue-fill` schedule to
+   * track consecutive empty (produced-nothing) runs for exponential backoff.
+   * `getCounter` returns 0 for an unset key. Distinct from schedule tracking
+   * (which stores timestamps) — this stores a plain integer.
+   */
+  getCounter(ctx: OperationContext, repoId: string, key: string): Promise<number>;
+  setCounter(ctx: OperationContext, repoId: string, key: string, value: number): Promise<void>;
+
   // Deduplication (known_items table, backed by Shield in production)
   isKnownItem(ctx: OperationContext, repoId: string, sourceKey: string): Promise<boolean>;
   markKnownItem(ctx: OperationContext, repoId: string, sourceKey: string): Promise<void>;

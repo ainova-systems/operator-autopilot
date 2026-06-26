@@ -6,12 +6,14 @@ import type { OperationContext, VCSPlatform } from "@operator/core";
 import type { StageDef } from "../types.js";
 import {
   discoverySelect,
-  shouldRunAnalyzer,
+  analyzerCadence,
+  ANALYZER_THROTTLE_MINUTES,
   loadAnalyzerDefs,
   formatDate,
   type DiscoveryPayload,
 } from "./discovery-selector.js";
 import type { BootstrapSelectorDeps } from "./item-selector.js";
+import { TestStateManager } from "../../test-helpers/test-state-manager.js";
 
 function makeCtx(): OperationContext {
   return {
@@ -58,36 +60,30 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-function makeDeps(log?: BootstrapSelectorDeps["log"]): BootstrapSelectorDeps {
-  return { vcs: makeVCS(), workspacePath, log };
+function makeDeps(
+  log?: BootstrapSelectorDeps["log"],
+  state?: BootstrapSelectorDeps["state"],
+): BootstrapSelectorDeps {
+  return { vcs: makeVCS(), workspacePath, log, state };
 }
 
-describe("shouldRunAnalyzer", () => {
-  it("daily always runs", () => {
-    expect(shouldRunAnalyzer("daily", 1, 1)).toBe(true);
-    expect(shouldRunAnalyzer("daily", 5, 1)).toBe(true);
-  });
-
-  it("empty schedule defaults to daily (true)", () => {
-    expect(shouldRunAnalyzer("", 3, 1)).toBe(true);
+describe("analyzerCadence", () => {
+  it("daily and empty schedule run every cycle", () => {
+    expect(analyzerCadence("daily")).toBe("every");
+    expect(analyzerCadence("")).toBe("every");
   });
 
   it("on-demand never runs automatically", () => {
-    expect(shouldRunAnalyzer("on-demand", 1, 1)).toBe(false);
+    expect(analyzerCadence("on-demand")).toBe("never");
   });
 
-  it("weekly runs on retroDay only", () => {
-    expect(shouldRunAnalyzer("weekly", 1, 1)).toBe(true);
-    expect(shouldRunAnalyzer("weekly", 2, 1)).toBe(false);
+  it("weekly and weekly:N are throttled (run at most ~once per 7 days)", () => {
+    expect(analyzerCadence("weekly")).toBe("throttled");
+    expect(analyzerCadence("weekly:3")).toBe("throttled");
   });
 
-  it("weekly:N runs on day N only", () => {
-    expect(shouldRunAnalyzer("weekly:3", 3, 1)).toBe(true);
-    expect(shouldRunAnalyzer("weekly:3", 1, 1)).toBe(false);
-  });
-
-  it("unknown schedule string falls through to true (permissive default)", () => {
-    expect(shouldRunAnalyzer("monthly", 1, 1)).toBe(true);
+  it("unknown schedule string falls through to every (permissive default)", () => {
+    expect(analyzerCadence("monthly")).toBe("every");
   });
 });
 
@@ -256,14 +252,23 @@ describe("discoverySelect", () => {
     expect(res!.scopeKey).toBe("20260407");
   });
 
-  it("respects retroDay from selectorConfig for weekly analyzers", async () => {
-    // Weekly analyzer fires only when dow === retroDay. We cannot easily
-    // fake `new Date().getUTCDay()`, so we use the `weekly:N` variant
-    // with a concrete N so the test is deterministic.
-    const today = new Date().getUTCDay() || 7;
-    await writeFile(join(analystDir, "weekly.md"), `---\nschedule: weekly:${today}\n---\n\nBody`);
+  it("runs a weekly analyzer the first time then throttles it for 7 days", async () => {
+    await writeFile(join(analystDir, "weekly.md"), `---\nschedule: weekly:3\n---\n\nBody`);
+    const state = new TestStateManager();
+    // First cycle: never run before → due → included AND its run is marked.
+    const first = await discoverySelect(makeStageDef(), makeDeps(undefined, state), makeCtx());
+    expect((first!.data as DiscoveryPayload).analyzers.map((a) => a.id)).toContain("weekly");
+    expect(
+      await state.isScheduleDue(makeCtx(), "sample", "analyzer:weekly", ANALYZER_THROTTLE_MINUTES),
+    ).toBe(false);
+    // Second cycle immediately after: throttled → excluded → no eligible → null.
+    const second = await discoverySelect(makeStageDef(), makeDeps(undefined, state), makeCtx());
+    expect(second).toBeNull();
+  });
+
+  it("runs weekly analyzers unthrottled when no state manager is wired (fallback)", async () => {
+    await writeFile(join(analystDir, "weekly.md"), `---\nschedule: weekly\n---\n\nBody`);
     const res = await discoverySelect(makeStageDef(), makeDeps(), makeCtx());
-    expect(res).not.toBeNull();
     expect((res!.data as DiscoveryPayload).analyzers.map((a) => a.id)).toContain("weekly");
   });
 

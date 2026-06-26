@@ -11,6 +11,16 @@ import type { ProjectFeaturesConfig } from "../types/config.js";
  *   window of `guardMinutes` since the last run.
  * - `weekly`     — fires once per ISO week on `dayOfWeek` (1=Mon..7=Sun),
  *   gated by `guardMinutes`.
+ * - `queue-fill` — queue-driven (backpressure). Fires to keep a work-item
+ *   queue topped up: when fewer than `target` items of `targetKind` (in any
+ *   of `countStatuses`) exist AND no stage output is already in flight
+ *   (`inFlightBranchPrefix` — an open PR on that branch means findings await
+ *   human merge, so don't pile up another), throttled by an interval that
+ *   starts at `baseIntervalMinutes` and **doubles after every consecutive
+ *   run that produced nothing** (tracked in `backoffStateKey`), capped at
+ *   `maxBackoffMinutes`. Replaces a blind cron for generators like research:
+ *   the engine refills work on demand and backs off when the codebase yields
+ *   nothing, instead of running on a fixed clock.
  */
 export type ScheduleSpec =
   | { readonly kind: "always" }
@@ -30,6 +40,29 @@ export type ScheduleSpec =
       readonly dayOfWeek: number;
       readonly guardMinutes: number;
       readonly stateKey: string;
+    }
+  | {
+      readonly kind: "queue-fill";
+      /** Work-item kind whose backlog this stage replenishes (e.g. `finding`). */
+      readonly targetKind: string;
+      /** Statuses that count as "in the queue" (e.g. `["pending", "reopened"]`). */
+      readonly countStatuses: readonly string[];
+      /** Desired minimum backlog depth — fire while below this. */
+      readonly target: number;
+      /**
+       * Branch prefix of this stage's own output PRs (e.g. `ai/research`). An
+       * open PR on that prefix means the stage's last output still awaits human
+       * merge — skip so research PRs don't pile up faster than they merge.
+       */
+      readonly inFlightBranchPrefix: string;
+      /** Throttle floor: shortest gap between runs when productive. */
+      readonly baseIntervalMinutes: number;
+      /** Backoff ceiling: longest gap after repeated empty runs (e.g. 7 days). */
+      readonly maxBackoffMinutes: number;
+      /** Schedule-state key for the throttle (last-run timestamp). */
+      readonly stateKey: string;
+      /** Counter key for consecutive empty (produced-nothing) runs. */
+      readonly backoffStateKey: string;
     };
 
 /**

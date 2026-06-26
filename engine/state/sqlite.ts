@@ -9,6 +9,10 @@ CREATE TABLE IF NOT EXISTS schedule_state (
   repo_id TEXT NOT NULL, action TEXT NOT NULL, last_run TEXT NOT NULL,
   PRIMARY KEY (repo_id, action)
 );
+CREATE TABLE IF NOT EXISTS counters (
+  repo_id TEXT NOT NULL, key TEXT NOT NULL, value INTEGER NOT NULL,
+  PRIMARY KEY (repo_id, key)
+);
 CREATE TABLE IF NOT EXISTS execution_log (
   id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, trace_id TEXT NOT NULL,
   pipeline TEXT NOT NULL, agent TEXT, started_at TEXT NOT NULL, finished_at TEXT,
@@ -205,6 +209,22 @@ export class SQLiteStateManager implements StateManager {
       INSERT INTO schedule_state (repo_id, action, last_run) VALUES (?, ?, ?)
       ON CONFLICT(repo_id, action) DO UPDATE SET last_run = excluded.last_run
     `).run(repoId, action, now);
+  }
+
+  // ── Counters (queue-fill backoff state) ─────────────────────────────
+
+  async getCounter(ctx: OperationContext, repoId: string, key: string): Promise<number> {
+    const row = this.db.prepare(
+      "SELECT value FROM counters WHERE repo_id = ? AND key = ?",
+    ).get(repoId, key) as { value: number } | undefined;
+    return row ? row.value : 0;
+  }
+
+  async setCounter(ctx: OperationContext, repoId: string, key: string, value: number): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO counters (repo_id, key, value) VALUES (?, ?, ?)
+      ON CONFLICT(repo_id, key) DO UPDATE SET value = excluded.value
+    `).run(repoId, key, value);
   }
 
   // ── Deduplication ───────────────────────────────────────────────────

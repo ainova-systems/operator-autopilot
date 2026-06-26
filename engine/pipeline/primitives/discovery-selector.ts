@@ -26,8 +26,9 @@ import { errorMessage } from "@operator/core";
  *   2. Enumerate `*.md` entries alphabetically (deterministic ordering).
  *      Non-readable directory → null (skip with reason `no-analyzer-dir`).
  *   3. Parse each analyzer's frontmatter (`schedule`, `enabled`, optional
- *      `path`). Skip `enabled: false`. Skip `schedule` that does not match
- *      the caller's current day-of-week via {@link shouldRunAnalyzer}.
+ *      `path`). Skip `enabled: false` and `on-demand`. `weekly*` analyzers are
+ *      throttled to ~once per 7 days via per-analyzer schedule state; `daily`
+ *      runs every cycle (see {@link analyzerCadence}).
  *   4. Return `{scopeKey: todayDate, data: {date, analyzers}, reason}`
  *      with the filtered list. When zero analyzers survive filtering
  *      → null (skip with reason `no-eligible-analyzers`).
@@ -50,26 +51,30 @@ export interface DiscoveryPayload {
   readonly analyzers: readonly AnalyzerDef[];
 }
 
+/** A `weekly`/`weekly:N` analyzer runs at most once per this many minutes. */
+export const ANALYZER_THROTTLE_MINUTES = 7 * 24 * 60; // 7 days
+
 /**
- * Day-of-week schedule filter. Ported from v4 `runAnalyzers` so existing
- * analyzer frontmatter keeps working without migration. Accepted values:
+ * Classify an analyzer's `schedule` frontmatter into a run cadence. Under the
+ * stage-level `queue-fill` schedule the research stage no longer fires on a
+ * fixed daily clock, so the old day-of-week semantics (`weekly:N` = "run on
+ * Tuesday") no longer compose — they are reinterpreted as a frequency:
  *
- *   - `""` / `"daily"` / `"unknown"` → always runs
- *   - `"on-demand"` → never runs in automatic mode
- *   - `"weekly"` → runs on `retroDay`
- *   - `"weekly:N"` → runs on day-of-week `N` (Monday=1…Sunday=7)
+ *   - `""` / `"daily"` / unknown → `"every"`     (runs on every research cycle)
+ *   - `"on-demand"`              → `"never"`      (manual / forced only)
+ *   - `"weekly"` / `"weekly:N"`  → `"throttled"`  (≤ once per 7 days; the `:N`
+ *      day is ignored — what mattered was "run less often than daily")
+ *
+ * The selector applies the throttle via per-analyzer schedule state, so a
+ * `weekly:N` analyzer keeps running roughly weekly without depending on the
+ * cycle landing on a specific weekday. Existing `weekly:N` frontmatter keeps
+ * parsing — no managed-repo migration required.
  */
-export function shouldRunAnalyzer(
-  schedule: string,
-  currentDow: number,
-  retroDay: number,
-): boolean {
-  if (!schedule || schedule === "daily") return true;
-  if (schedule === "on-demand") return false;
-  if (schedule === "weekly") return currentDow === retroDay;
-  const weeklyMatch = schedule.match(/^weekly:(\d)$/);
-  if (weeklyMatch) return currentDow === parseInt(weeklyMatch[1], 10);
-  return true;
+export function analyzerCadence(schedule: string): "every" | "never" | "throttled" {
+  if (!schedule || schedule === "daily") return "every";
+  if (schedule === "on-demand") return "never";
+  if (schedule === "weekly" || /^weekly:\d$/.test(schedule)) return "throttled";
+  return "every";
 }
 
 /** Parse flat `key: value` frontmatter. Keeps semantics of v4 `parseFrontmatterFields`. */
@@ -127,18 +132,14 @@ export async function loadAnalyzerDefs(
   return defs;
 }
 
-export const discoverySelect: InputSelectorFn = async (stageDef, deps, _ctx) => {
+export const discoverySelect: InputSelectorFn = async (stageDef, deps, ctx) => {
   const cfg = stageDef.selectorConfig ?? {};
   const discoveryDir = typeof cfg["discoveryDir"] === "string"
     ? (cfg["discoveryDir"] as string)
     : ".operator/analyst";
-  const retroDay = typeof cfg["retroDay"] === "number"
-    ? (cfg["retroDay"] as number)
-    : 1;
   const date = typeof cfg["date"] === "string"
     ? (cfg["date"] as string)
     : formatDate(new Date());
-  const dow = new Date().getUTCDay() || 7; // 0 (Sun) → 7 for ISO Mon..Sun
 
   const absoluteDir = join(deps.workspacePath, discoveryDir);
   const all = await loadAnalyzerDefs(absoluteDir, deps.log);
@@ -159,12 +160,29 @@ export const discoverySelect: InputSelectorFn = async (stageDef, deps, _ctx) => 
       });
       continue;
     }
-    if (!shouldRunAnalyzer(analyzer.schedule, dow, retroDay)) {
-      deps.log?.info(`discovery: analyzer ${analyzer.id} not due today (schedule=${analyzer.schedule}, dow=${dow})`, {
+    const cadence = analyzerCadence(analyzer.schedule);
+    if (cadence === "never") {
+      deps.log?.info(`discovery: analyzer ${analyzer.id} is on-demand only, skipping`, {
         stage: stageDef.name, selector: "discovery", analyzerId: analyzer.id,
-        reason: "schedule-not-due", schedule: analyzer.schedule, dow,
+        reason: "on-demand", schedule: analyzer.schedule,
       });
       continue;
+    }
+    if (cadence === "throttled") {
+      const throttleKey = `analyzer:${analyzer.id}`;
+      const due = deps.state
+        ? await deps.state.isScheduleDue(ctx, ctx.repoId, throttleKey, ANALYZER_THROTTLE_MINUTES)
+        : true;
+      if (!due) {
+        deps.log?.info(`discovery: analyzer ${analyzer.id} throttled (ran within ${ANALYZER_THROTTLE_MINUTES}m), skipping`, {
+          stage: stageDef.name, selector: "discovery", analyzerId: analyzer.id,
+          reason: "throttled", schedule: analyzer.schedule,
+        });
+        continue;
+      }
+      // Commit the run now so the ~weekly cadence holds even when the
+      // queue-fill stage fires several times in one day.
+      if (deps.state) await deps.state.markScheduleRun(ctx, ctx.repoId, throttleKey);
     }
     filtered.push(analyzer);
   }
