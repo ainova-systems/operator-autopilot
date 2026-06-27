@@ -162,7 +162,9 @@ export async function applyAgentEvents(
         case "child-item": {
           const kind = event.kind as WorkItemKind;
           const id = event.id ?? (await deps.registry.generateId(kind, active.date));
-          const parentId = resolveTarget(event.parent, active.workItem);
+          // `parent` is optional: discovery findings are top-level (no parent).
+          // Resolve it only when the agent supplied one.
+          const parentId = event.parent ? resolveTarget(event.parent, active.workItem) : undefined;
           const record: WorkItemRecord = {
             id,
             kind,
@@ -176,7 +178,7 @@ export async function applyAgentEvents(
           };
           const created = await deps.source.create(record, ctx);
           childItems.push(created);
-          deps.log?.info(`aop-applier: created child-item ${created.id} (kind=${kind}, parent=${parentId})`, {
+          deps.log?.info(`aop-applier: created child-item ${created.id} (kind=${kind}, parent=${parentId ?? "(root)"})`, {
             scope: "aop-applier", emitType: "child-item",
             childId: created.id, kind, parentId,
           });

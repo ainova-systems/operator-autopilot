@@ -154,6 +154,33 @@ describe("applyAgentEvents — F4 generic AOP applier", () => {
     expect(result.summary).toContain("1 child-item(s)");
   });
 
+  it("creates a top-level (parentless) child-item when parent is omitted — discovery finding (2026-06-27 zero-findings fix)", async () => {
+    // Research/discovery has no active work-item; its findings are roots.
+    // Before the fix a required `parent` dropped every such finding.
+    const stream = fakeStream({
+      events: [
+        { type: "child-item", kind: "finding", title: "Tenant leak in FileItem create", body: "b", priority: 1, source: "security#F-001" },
+      ],
+      diagnostics: [],
+    });
+
+    const result = await applyAgentEvents(
+      "raw",
+      { stream, source, registry },
+      { date: "20260627" }, // no active work-item (singleton discovery stage)
+      makeCtx(),
+    );
+
+    expect(source.created).toHaveLength(1);
+    expect(source.created[0]).toMatchObject({
+      kind: "finding", title: "Tenant leak in FileItem create", priority: 1, status: "pending",
+    });
+    expect(source.created[0].parentId).toBeUndefined();
+    expect(source.created[0].id).toMatch(/^F20260627-/);
+    expect(result.applied.childItems).toHaveLength(1);
+    expect(result.verdict).toBe("approved");
+  });
+
   it("respects an explicit child-item id and source field", async () => {
     const stream = fakeStream({
       events: [

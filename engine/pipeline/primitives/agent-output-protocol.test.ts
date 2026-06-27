@@ -75,6 +75,36 @@ describe("parseAgentOutput — every EMIT type", () => {
     expect(r.events[0]).toMatchObject({ type: "child-item", body: "" });
   });
 
+  it("parses a parent-less child-item — research findings have no parent (2026-06-27 zero-findings regression)", () => {
+    // The analyst prompt's contract is "provide kind/title/priority/source/
+    // body only". A required `parent` made every research finding fail
+    // validation and get silently dropped. Parent is now optional.
+    const text = block(
+      "child-item",
+      [
+        "kind: finding",
+        'title: "FileItem create omits projectId (tenant leak)"',
+        "priority: 1",
+        'source: "security#FINDING-001"',
+        "body: |",
+        "  **Severity**: critical",
+        "  Multi-tenant isolation gap.",
+      ].join("\n"),
+    );
+    const r = parseAgentOutput(text);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.events).toEqual([
+      {
+        type: "child-item",
+        kind: "finding",
+        title: "FileItem create omits projectId (tenant leak)",
+        priority: 1,
+        source: "security#FINDING-001",
+        body: "**Severity**: critical\nMulti-tenant isolation gap.\n",
+      },
+    ]);
+  });
+
   it("parses status-update", () => {
     const text = block("status-update", "target: self\nstatus: in-progress\nreason: planning complete");
     const r = parseAgentOutput(text);

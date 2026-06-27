@@ -24,7 +24,16 @@ import { z } from "zod";
 export const emitChildItemSchema = z.object({
   type: z.literal("child-item"),
   kind: z.string().min(1),
-  parent: z.string().min(1),
+  /**
+   * Parent work-item id — `"self"` for the active item, or an explicit id.
+   * OPTIONAL: discovery stages (research) emit TOP-LEVEL items that have no
+   * parent. The analyst prompt's contract is "provide kind/title/priority/
+   * source/body only", so a required `parent` made every research finding
+   * fail validation and get silently dropped — the 2026-06-27 zero-findings
+   * root cause (research could never create a finding). When omitted the
+   * applier creates a parentless (root) item.
+   */
+  parent: z.string().min(1).optional(),
   title: z.string().min(1),
   body: z.string().default(""),
   priority: z.number().int().min(1).max(8).optional(),
