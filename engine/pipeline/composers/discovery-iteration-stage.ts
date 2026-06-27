@@ -6,7 +6,7 @@ import type {
   WorkItemSource, AgentEventStream, AgentRoleName, WorkItemKind,
 } from "@operator/core";
 import { errorMessage } from "@operator/core";
-import type { AgentRunInput, AgentRuntime } from "../../agents/runtime.js";
+import type { AgentRunInput, AgentRuntime, AgentEventSink } from "../../agents/runtime.js";
 import type { AgentsFile } from "../../config/schemas.js";
 import type { PRManager } from "../../delivery/pr-manager.js";
 import type { Logger } from "../../logging/logger.js";
@@ -119,12 +119,27 @@ function payloadOf(stageName: string, input: StageInput): DiscoveryPayload {
   return data;
 }
 
+/**
+ * Head+tail excerpt of an agent's raw output for the per-analyzer INFO line.
+ * The full output also lands in `execution-logs` via the history sink; this
+ * keeps the single log line readable while still surfacing what the analyst
+ * concluded (e.g. why it emitted zero findings).
+ */
+function outputExcerpt(output: string, max = 1200): string {
+  const trimmed = output.trim();
+  if (trimmed.length <= max) return trimmed;
+  const headLen = Math.floor(max * 0.6);
+  const tailLen = Math.floor(max * 0.4);
+  return `${trimmed.slice(0, headLen)}\n…[${trimmed.length - headLen - tailLen} chars omitted]…\n${trimmed.slice(-tailLen)}`;
+}
+
 async function runSingleAnalyzer(
   deps: DiscoveryIterationHookDeps,
   stageName: string,
   ctx: OperationContext,
   date: string,
   analyzer: AnalyzerDef,
+  history: AgentEventSink,
 ): Promise<string | null> {
   deps.log?.info(`${stageName}: running analyzer ${analyzer.id} (schedule=${analyzer.schedule})`, {
     stage: stageName, analyzerId: analyzer.id, schedule: analyzer.schedule,
@@ -167,9 +182,18 @@ async function runSingleAnalyzer(
     reviewEnabled: role.review,
     reviewCriteria,
     cwd: deps.workspacePath,
+    // Route each analyzer's run through the stage's execution-history sink so
+    // its full prompt + output land in `execution-logs` — without this the
+    // analyst's reasoning (and WHY it emitted zero findings) is invisible
+    // outside the daemon's console.
+    history,
   };
 
   const result = await deps.agentRuntime.run(runInput, ctx);
+  deps.log?.info(`${stageName}: analyzer ${analyzer.id} agent output (${result.output.length} chars)`, {
+    stage: stageName, analyzerId: analyzer.id, outputChars: result.output.length,
+    outputExcerpt: outputExcerpt(result.output),
+  });
 
   const applied = await applyAgentEvents(
     result.output,
@@ -219,13 +243,14 @@ export function buildDiscoveryIterationBeforeAgent(deps: DiscoveryIterationHookD
     input: StageInput,
     _workspace: WorkspaceHandle,
     ctx: OperationContext,
+    history: AgentEventSink,
   ): Promise<void> => {
     const payload = payloadOf(stage.name, input);
     const date = payload.date;
 
     const iter = await iterateBestEffort(
       payload.analyzers,
-      (analyzer) => runSingleAnalyzer(deps, stage.name, ctx, date, analyzer),
+      (analyzer) => runSingleAnalyzer(deps, stage.name, ctx, date, analyzer, history),
       {
         onItemError: (analyzer, err) => {
           deps.log?.error(`${stage.name}: analyzer ${analyzer.id} failed`, {

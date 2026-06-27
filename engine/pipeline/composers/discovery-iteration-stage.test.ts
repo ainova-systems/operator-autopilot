@@ -256,6 +256,15 @@ describe("buildDiscoveryIterationBeforeAgent", () => {
     expect(deps.state.upsertWorkItem).toHaveBeenCalled();
   });
 
+  it("routes each analyzer run through the execution-history sink so its output is captured", async () => {
+    const deps = makeHookDeps();
+    const input = makeInput("20260407", [{ id: "security", body: "Scan" }]);
+    const history = { event: vi.fn().mockResolvedValue(undefined) };
+    await buildDiscoveryIterationBeforeAgent(deps)(makeStageDef(), input, makeWorkspace(), makeCtx(), history);
+    const runInput = (deps.agentRuntime.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(runInput.history).toBe(history);
+  });
+
   it("runs multiple analyzers in the order the payload specified", async () => {
     const deps = makeHookDeps();
     const input = makeInput("20260407", [

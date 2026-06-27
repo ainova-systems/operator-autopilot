@@ -1,5 +1,5 @@
 import type { OperationContext, EventBus, VCSPlatform, IdempotencyGuard, StateManager, ConventionsConfig, WorkItem, KVStore } from "@operator/core";
-import type { AgentRunInput } from "../agents/runtime.js";
+import type { AgentRunInput, AgentEventSink } from "../agents/runtime.js";
 import type { WorkspaceGit } from "../infra/git.js";
 import type { PRManager } from "../delivery/pr-manager.js";
 import type { Logger } from "../logging/logger.js";
@@ -93,6 +93,14 @@ export interface RunStageDeps {
     input: StageInput,
     workspace: WorkspaceHandle,
     ctx: OperationContext,
+    /**
+     * This stage's execution-history sink. Hooks that drive their own agent
+     * runs (the discovery iteration runs one analyst per analyzer) pass it as
+     * `AgentRunInput.history` so each sub-run's full prompt + output lands in
+     * `execution-logs`, exactly like a normal single-agent stage. Hooks that
+     * do not run sub-agents simply ignore it.
+     */
+    history: AgentEventSink,
   ) => Promise<{ processingPRs?: readonly number[] } | void>;
   /**
    * Optional post-agent hook — runs AFTER invokeAgent but BEFORE persistOutput.
@@ -310,7 +318,7 @@ export async function runStage(
     // label recovery when the stage does not reach a successful persist.
     if (deps.beforeAgent) {
       deps.log?.debug(`Stage ${stageDef.name}: running beforeAgent hook`, { stage: stageDef.name });
-      const hookResult = await deps.beforeAgent(stageDef, input, workspace, ctx);
+      const hookResult = await deps.beforeAgent(stageDef, input, workspace, ctx, history);
       if (hookResult?.processingPRs && hookResult.processingPRs.length > 0) {
         processingPRs = hookResult.processingPRs;
       }
