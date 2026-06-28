@@ -1080,11 +1080,27 @@ function parsePriority(val: string | undefined): Priority {
 
 function parseFrontmatterFields(block: string): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const line of block.split("\n")) {
+  // Split on CRLF *or* LF. Managed-repo files checked out on Windows (or with
+  // git `autocrlf`) carry `\r\n`; a bare `\n` split leaves a trailing `\r`,
+  // and `(.*)$` (no `m` flag) refuses to match across it — so every field
+  // silently fails to parse and the work item loses its title / priority /
+  // source / created_at (id/kind/status survive only by filename + prefix +
+  // default luck). Observed 2026-06-28: CRLF finding files ingested with
+  // `title: untitled`, `priority: 5`, and no `source`, breaking PR titles,
+  // selection order, and source-based dedup.
+  for (const line of block.split(/\r?\n/)) {
     const match = line.match(/^(\w[\w_]*):\s*(.*)$/);
-    if (match) {
-      result[match[1]] = match[2].replace(/^["']|["']$/g, "").trim();
-    }
+    if (!match) continue;
+    const value = match[2].trim();
+    // Strip YAML wrapping quotes ONLY when the value is fully wrapped in a
+    // matching pair. A naive strip of any leading/trailing quote mangles a
+    // value that merely *contains* quotes (e.g. a title `foo "bar"` would
+    // lose its closing quote → `foo "bar`).
+    const wrapped =
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")));
+    result[match[1]] = wrapped ? value.slice(1, -1) : value;
   }
   return result;
 }

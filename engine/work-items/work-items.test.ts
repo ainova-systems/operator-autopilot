@@ -161,6 +161,36 @@ describe("readWorkItemFile", () => {
     expect(parsed.parentId).toBe("F20260322-0001");
   });
 
+  it("parses CRLF frontmatter and titles containing quotes (regression)", async () => {
+    // Regression (2026-06-28): managed-repo files checked out on Windows (or
+    // with git autocrlf) carry `\r\n`. The old `block.split("\n")` left a
+    // trailing `\r` that `(.*)$` (no `m` flag) refused to match, so EVERY
+    // field failed to parse — findings ingested as `title: untitled`,
+    // `priority: 5`, and no `source`, breaking PR titles, selection order,
+    // and source-based dedup. The naive quote strip also mangled a title
+    // that merely *contained* quotes (dropping its closing `"`).
+    const content =
+      "---\r\n" +
+      "id: F20260627-6A394BE7\r\n" +
+      "kind: finding\r\n" +
+      'title: Dashboard surfaces Storage as "memory store" instead of "data store"\r\n' +
+      "status: pending\r\n" +
+      "priority: 4\r\n" +
+      "source: consistency#FINDING-001\r\n" +
+      "created_at: '2026-06-27T13:55:13Z'\r\n" +
+      "---\r\n\r\nBody line\r\n";
+    const path = join(tempDir, "F20260627-6A394BE7.md");
+    await writeFile(path, content);
+
+    const parsed = await readWorkItemFile(path);
+    expect(parsed.title).toBe('Dashboard surfaces Storage as "memory store" instead of "data store"');
+    expect(parsed.priority).toBe(4);
+    expect(parsed.source).toBe("consistency#FINDING-001");
+    expect(parsed.status).toBe("pending");
+    expect(parsed.createdAt).toBe("2026-06-27T13:55:13Z");
+    expect(parsed.body).toBe("Body line");
+  });
+
 
   it("infers kind from ID prefix (legacy fallback, no registry)", async () => {
     const content = "---\nid: F20260322-0001\ntitle: Test\nstatus: pending\npriority: 5\ncreated_at: now\n---\n\nBody\n";
