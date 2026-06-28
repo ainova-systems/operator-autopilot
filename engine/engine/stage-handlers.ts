@@ -554,7 +554,7 @@ function buildBootstrapInitHandler(
     const conv = shared.config.conventions;
     const scaffoldDirs = getConfigStringArray(cfg, "scaffoldDirs", [
       "context", "analyst", "creator", "verifier", "planner", "improver",
-      "data/tasks", "data/findings", "data/retrospectives",
+      "data/tasks", "data/findings", "data/requests", "data/retrospectives",
     ]);
     const readmeTemplate = getConfigString(cfg, "readmeTemplate", "operator-user-readme.md");
     const commitMessage = getConfigString(cfg, "commitMessage", "Initialize .operator for AI Operator");

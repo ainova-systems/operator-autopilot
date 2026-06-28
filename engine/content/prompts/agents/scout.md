@@ -43,31 +43,30 @@ From your scan, determine:
 Generate a MINIMAL project.yaml with preferences only:
 
 ```yaml
-# Project configuration for AI Operator
-name: <from README or package.json>
-repository: <owner/repo>
-language: <human language for agent responses, e.g. English>
+# Project configuration for AI Operator.
+# The engine reads ONLY `context` and `scripts` from this file. Runtime
+# behaviour (which pipeline features run, active-item limits, schedules) is
+# configured in the operator instance — NOT here. Do not add a `features:`
+# block; it is ignored.
+name: <descriptive label, e.g. from README or package.json>   # optional, descriptive only
 
 # Global context file (auto-detected if not set: CLAUDE.md > AGENTS.md > .cursorrules)
 context: <path to global context file, e.g. CLAUDE.md>
 
 scripts:
   # Run once after clone. MUST install EVERY toolchain that `verify` needs.
-  # In a polyglot repo that means restoring/installing each stack, not just the primary one
-  # (e.g. dotnet restore <sln> && (cd web && npm ci) && (cd worker && npm ci)).
+  # In a polyglot repo that means installing each stack, not just the primary one
+  # (e.g. dotnet restore <sln> && npm --prefix web ci && npm --prefix worker ci).
   init: <install all stacks verify runs>
   # The ONLY automated post-change gate. MUST build + lint/test EVERY stack the operator
   # may modify (see "Verify gate" below). One shell command, run from the repo root.
   verify: <build + lint/test for every modifiable stack>
-
-features:
-  analysts: true
-  improver: true
 ```
 
 Rules:
 - Only include fields that are relevant
 - `context` should point to existing global context file (CLAUDE.md, AGENTS.md, .cursorrules)
+- Do NOT add a `features:` block — pipeline toggles are instance-side config, ignored here
 - Use YAML format (NOT JSON)
 
 #### Verify gate (read this before writing `scripts.verify` / `scripts.init`)

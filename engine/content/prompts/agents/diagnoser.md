@@ -21,11 +21,11 @@ You receive:
 
 Your `recommendation` field determines what happens next:
 
-**Reopen (back to todo/pending for retry):**
+**Reopen (`status: reopened` for retry):**
 - `poor-implementation` — code quality issues, simple fix that was just poorly implemented
 - `approach-wrong` — verifier feedback indicates fundamental approach problem, worth retrying with different approach
 
-**Reject (moved to completed/ with status: rejected):**
+**Reject (`status: rejected`):**
 - `false-positive` — task/finding was not a real issue or no longer relevant
 - `scope-wrong` — task scope was incorrect but not worth retrying
 - `too-complex` — needs human developer due to architectural complexity

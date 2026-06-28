@@ -4,51 +4,47 @@ Automated AI engineering system. The **operator core is domain-agnostic** — it
 
 ## How It Works
 
-The operator runs on a schedule (every 5 minutes) and performs these actions:
+The operator runs on a schedule (every few minutes) and performs these actions:
 
-1. **Branch cleanup** - deletes `ai/*` branches where PRs are merged or closed
-2. **PR review** - responds to comments on open `ai/*` PRs, applies requested changes
-3. **Finding selection** - picks highest-priority finding from `pending/`, creates draft PR with deep analysis
-4. **Finding execution** - runs planner agent on pending finding PRs (validates findings, generates tasks)
-5. **Task selection** - picks highest-priority task from `todo/`, creates draft PR with `ai:pending` label
-6. **Task execution** - runs creator agent on pending task PRs (up to 3 retries)
-7. **Daily research** (once per day at 08:00 UTC):
-   - Runs analyzers to scan codebase
-   - Processes rejected PRs (reopens or rejects tasks/findings)
-   - Each analyzer outputs 0-1 finding directly (deduped against existing findings)
-8. **Weekly optimization** (Monday) - reviews task stats, patterns, suggests improvements
+1. **Branch cleanup** — deletes `ai/*` branches whose PRs are merged or closed
+2. **PR review** — responds to comments and CI on open `ai/*` PRs, applies requested changes
+3. **Research** — runs analyzers to scan the codebase and writes new findings (`status: pending`) into a research PR. Findings enter the queue once that PR is merged.
+4. **Finding planning** — picks the highest-priority pending finding, validates it, generates tasks, and opens a PR. Tasks enter the queue once that PR is merged.
+5. **Task execution** — picks the highest-priority pending task, implements the change, and opens a PR for review.
+6. **Retrospective** (weekly) — learns from merged/rejected PR feedback and tunes agent prompts and analyzer rules.
 
-All changes go through PRs. Nothing is merged without human approval.
+All changes go through PRs. **Nothing is merged without human approval** — each stage advances only after a human merges the previous stage's PR.
+
+## Work items live FLAT — status is frontmatter, not a folder
+
+> **Every work item is a single `.md` file directly inside its kind directory** (`.operator/data/findings/`, `.operator/data/tasks/`, …). The file's `status:` frontmatter field is its lifecycle state. **The directory is NOT the status.**
+>
+> Do **NOT** create status subdirectories such as `pending/`, `todo/`, `completed/`, or `reopened/`, and do **NOT** move files between folders to change their state. The engine reads each data directory **non-recursively**, so any file nested in a subdirectory is invisible to it and will be silently dropped from the queue. To change a work item's state, change its `status:` field (the operator does this for you).
 
 ## Quick Start
 
 ### 1. Project Config
 
-`project.yaml` - project preferences:
+`project.yaml` — the engine reads only `context` and `scripts` from it:
 
 ```yaml
-name: YourProject
-repository: org/repo
-language: English
-context: CLAUDE.md
+name: YourProject          # optional, descriptive only
+context: CLAUDE.md         # global context file loaded for all agents
 
 scripts:
-  init: npm ci
-  verify: npm run lint && npm run build
-
-features:
-  analysts: true
-  improver: true
+  init: npm ci                              # run once after clone (install toolchains)
+  verify: npm run lint && npm run build     # the post-change gate, run after every agent change
 ```
 
-- `context` - global context file loaded for all agents (auto-detected if omitted: `AGENTS.md` → `CLAUDE.md` → `.cursorrules` → `OPERATOR.md`)
-- `scripts.init` - run before agent execution (install deps)
-- `scripts.verify` - run after agent changes (build/lint check)
-- `features` - toggle research pipeline components
+- `context` — global context file loaded for all agents (auto-detected if omitted: `AGENTS.md` → `CLAUDE.md` → `.cursorrules` → `OPERATOR.md`)
+- `scripts.init` — run before agent execution (install dependencies)
+- `scripts.verify` — run after agent changes (build/lint/test gate)
+
+> Pipeline features (which stages run), active-item limits, and schedules are configured **in the operator instance**, not in `project.yaml`.
 
 ### 2. Phase Rule Folders
 
-The operator core provides generic agent templates. **Domain-specific knowledge lives here** in phase-specific rule folders. During execution, the operator dynamically discovers matching rules based on the `path` frontmatter and injects them into agent prompts.
+The operator core provides generic agent templates. **Domain-specific knowledge lives here** in phase-specific rule folders. During execution, the operator discovers matching rules based on the `path` frontmatter and injects them into agent prompts.
 
 **Frontmatter fields (same for all folders):**
 - `path` (optional): glob pattern for file filtering (default: `*`)
@@ -56,12 +52,12 @@ The operator core provides generic agent templates. **Domain-specific knowledge 
 - `enabled` (optional): `true`/`false` (default: `true`)
 
 **Folder purposes:**
-- `context/` - loaded for ALL agents, path-filtered by affected files. General project knowledge.
-- `analyst/` - each file = one independent analyzer run during daily research
-- `creator/` - rules for task execution (creator agent). Path-matched to task's target files.
-- `verifier/` - rules for PR review. Path-matched to changed files in the PR.
-- `planner/` - rules for finding verification and task generation. Path-matched to finding's target.
-- `improver/` - rules for weekly optimization agent.
+- `context/` — loaded for ALL agents, path-filtered by affected files. General project knowledge.
+- `analyst/` — each file = one independent analyzer run during research
+- `creator/` — rules for task execution (creator agent). Path-matched to the task's target files.
+- `verifier/` — rules for PR review. Path-matched to the changed files in the PR.
+- `planner/` — rules for finding validation and task generation. Path-matched to the finding's target.
+- `improver/` — rules for the weekly retrospective agent.
 
 **Example: verifier rule for backend code**
 
@@ -77,89 +73,86 @@ path: "Source/Backend/**"
 - Named exports only, no default exports
 ```
 
-**How discovery works:**
-1. Pipeline worker detects target path (e.g. changed files in PR)
-2. Calls `discover_matching_rules("verifier", "Source/Backend/**")`
-3. Finds all rules where `path` overlaps with target, skips `enabled: false`
-4. Merges matching rule bodies into agent prompt via `--rules-from verifier`
-5. If no rules found, falls back to generic agent behavior
+**How rule discovery works:**
+1. The pipeline detects the target path (e.g. the changed files in a PR, or a task's affected files).
+2. It selects every rule in the relevant phase folder whose `path` glob overlaps that target, skipping `enabled: false`.
+3. The matching rule bodies are merged into the agent's prompt for that run.
+4. If no rules match, the agent falls back to its generic behavior.
 
 ### 3. That's It
 
-The operator handles everything else: scheduling, branch management, PR creation, retries, label management, findings tracking.
+The operator handles everything else: scheduling, branch management, PR creation, retries, label management, and work-item status tracking.
 
 ## Directory Structure
 
 ```
 .operator/
-├── project.yaml                    # Project config
-├── context/                        # Context files (loaded for ALL agents)
-│   ├── project.md                  # Project overview, always loaded
+├── project.yaml                    # Project config (engine reads `context` + `scripts`)
+├── context/                        # Context files (loaded for ALL agents, path-filtered)
+│   ├── project.md                  # Project overview, always loaded (path: "*")
 │   ├── frontend.md                 # path: Source/Frontend/**
 │   └── backend.md                  # path: Source/Backend/**
-├── analyst/                        # Each file = one analyzer run
-│   ├── code-quality.md             # Code quality rules
-│   ├── security.md                 # Security audit rules
-│   └── consistency.md              # Consistency checks
-├── creator/                        # Execution rules (path-filtered)
-├── verifier/                       # Review rules (path-filtered)
-├── planner/                        # Planning rules (path-filtered)
-├── improver/                       # Optimization rules
-├── data/
-│   ├── tasks/
-│   │   ├── todo/                   # Pending tasks (status: pending, in-progress, or reopened)
-│   │   └── completed/              # All finished tasks (status: completed, failed, or rejected)
-│   │       └── {YYYY}/{YYYY-MM}/   # Organized by date
-│   ├── findings/
-│   │   ├── pending/                 # New findings (status: pending or reopened)
-│   │   └── completed/               # All finished findings (status: completed or rejected)
-│   │       └── {YYYY}/{YYYY-MM}/   # Organized by date
-│   └── retrospectives/             # Weekly optimization reports
+├── analyst/                        # Each file = one analyzer run during research
+│   ├── code-quality.md
+│   ├── security.md
+│   └── consistency.md
+├── creator/                        # Task-execution rules (path-filtered)
+├── verifier/                       # PR-review rules (path-filtered)
+├── planner/                        # Finding-validation / task-generation rules (path-filtered)
+├── improver/                       # Retrospective (optimization) rules
+├── data/                           # Work items — FLAT per kind; status lives in frontmatter
+│   ├── findings/                   # F{YYYYMMDD}-{id}.md
+│   ├── tasks/                      # T{YYYYMMDD}-{id}.md
+│   ├── requests/                   # R{YYYYMMDD}-{id}.md
+│   └── retrospectives/             # W{YYYYMMDD}.md
 └── README.md
 ```
 
+There are no per-status or per-date subdirectories — see the callout above.
+
 ## Task Lifecycle
 
+A task is one file at `.operator/data/tasks/{ID}.md`; only its `status:` field changes:
+
 ```
-todo/ (status: pending)
-  ↓  task-select picks task, creates branch ai/tasks/{ID}, draft PR + ai:pending
-todo/ (status: in-progress)  - branch existence indicates active work
-  ↓  task-execute runs creator agent (3 retries)
+status: pending
+  ↓  task-select picks it, creates branch ai/tasks/{ID}, opens a draft PR + ai:pending
+status: in-progress            (branch existence indicates active work)
+  ↓  task-execute runs the creator agent (with retries)
   ├── SUCCESS → PR marked ready + ai:in-review → review cycle open
-  │           → AI verifies PR clean → ai:ready-to-merge → human merges → completed/
+  │           → AI verifies PR clean → ai:ready-to-merge → human merges → status: completed
   └── FAILURE → PR stays draft + ai:failed → see Troubleshooting below
 ```
 
 ### PR Labels
 
-- `ai:pending` - task selected, awaiting execution
-- `ai:processing` - execution in progress OR PR review in progress
-- `ai:in-review` - changes applied, review loop open (CI / human comments re-enter pr-review)
-- `ai:ready-to-merge` - AI verified PR without changes; human merge is the remaining step
-- `ai:failed` - execution failed after retries
+- `ai:pending` — task selected, awaiting execution
+- `ai:processing` — execution in progress OR PR review in progress
+- `ai:in-review` — changes applied, review loop open (CI / human comments re-enter pr-review)
+- `ai:ready-to-merge` — AI verified the PR without changes; human merge is the remaining step
+- `ai:failed` — execution failed after retries
 
 ### Rejection Flow
 
 When a user closes a task or finding PR without merging:
-1. Next daily research run detects closed PR
-2. Diagnoser evaluates and recommends action:
-   - **Reopen** (`poor-implementation`, `approach-wrong`): task/finding stays in `todo/`/`pending/` with `status: reopened` for retry (max 2 reopens)
-   - **Reject** (`false-positive`, `too-complex`, `scope-wrong`, etc.): moved to `completed/` with `status: rejected`
-3. Reopened items are automatically selected for a new attempt
-4. After 2 failed reopens, items are force-rejected
+1. A later research run detects the closed PR.
+2. The diagnoser evaluates it and recommends an action:
+   - **Reopen** (`poor-implementation`, `approach-wrong`): the item's `status:` is set to `reopened` for a retry (max 2 reopens).
+   - **Reject** (`false-positive`, `too-complex`, `scope-wrong`, etc.): the item's `status:` is set to `rejected`.
+3. Reopened items are automatically selected for a new attempt.
+4. After 2 failed reopens, items are force-rejected.
 
-## Task File Format
+## Work Item File Format
 
 ```yaml
 ---
-id: "T20260122-001"
+id: "T20260122-0001"
 title: "Fix permission check in document handler"
+kind: task
 priority: 1
-complexity: low
 status: pending
 created_at: "2026-01-22T08:00:00Z"
-sources:
-  - "data/findings/pending/F20260122-001.md"
+source: "F20260122-0001"      # the finding this task came from (optional)
 ---
 
 # Fix permission check in document handler
@@ -178,68 +171,63 @@ Steps the creator agent should follow.
 - Existing tests pass
 ```
 
-Task IDs follow format `T{YYYYMMDD}-{NNN}` (date of creation + sequence number).
-
-Priority: 1 (highest) to 5 (lowest). Task-select picks lowest number first.
+IDs follow `{PREFIX}{YYYYMMDD}-{ID}` (F=finding, T=task, R=request, W=retrospective). Priority: 1 (highest) to 8 (lowest); selectors pick the lowest number first. The orchestrator owns every frontmatter field — agents never edit `status:` directly.
 
 ## Customization
 
-**Add domain rules** - create `.md` files in phase folders (`creator/`, `verifier/`, `planner/`, `improver/`). Use `path` frontmatter to scope rules to specific file patterns.
+**Add domain rules** — create `.md` files in phase folders (`creator/`, `verifier/`, `planner/`, `improver/`). Use the `path` frontmatter to scope rules to specific file patterns.
 
-**Add shared context** - edit or add files in `context/`. These are loaded for ALL agents, path-filtered by affected files. Changes take effect after merge to develop.
+**Add shared context** — edit or add files in `context/`. These are loaded for ALL agents, path-filtered by affected files. Changes take effect after merge to the base branch.
 
-**Control analyzer schedule** - use `schedule` in analyzer frontmatter:
+**Control analyzer schedule** — use `schedule` in analyzer frontmatter:
 ```yaml
 ---
 schedule: weekly:2    # Run on Tuesday (1=Mon, 7=Sun)
 ---
 ```
-Schedule options: `daily` (every research run), `weekly` (on improver day), `weekly:N` (specific day), `on-demand` (manual only).
+Schedule options: `daily` (every research run), `weekly` (on retrospective day), `weekly:N` (specific day), `on-demand` (manual only).
 
-**Disable specific analysis** - set `enabled: false` in analyzer frontmatter:
+**Disable specific analysis** — set `enabled: false` in analyzer frontmatter:
 ```yaml
 ---
 enabled: false
 ---
 ```
 
-**Disable pipeline components** - in `project.yaml`:
-```yaml
-features:
-  analysts: false
-  improver: false
-```
+**Change the verify command** — update `scripts.verify` in `project.yaml`. This runs after every agent execution to validate changes.
 
-**Change verify commands** - update `scripts.verify` in `project.yaml`. This runs after every agent execution to validate changes.
+**Enable / disable pipeline stages** — pipeline features and active-item limits are managed in the operator instance configuration, not in `project.yaml`.
 
-## Completed Tasks
+## Finished Work Items
 
-`data/tasks/completed/` contains all finished tasks organized in `{YYYY}/{YYYY-MM}/` directories.
+Finished work items stay in their flat kind directory; their `status:` field records the outcome:
 
-**Task statuses:**
-- `completed` — successfully implemented and merged
+- `completed` — non-PR stage finished successfully
+- `merged` — the item's PR was merged (terminal success for finding/task)
 - `failed` — execution failed after all retries exhausted
-- `rejected` — PR closed by verifier without merging (with rejection analysis)
+- `rejected` — PR closed without merging (with rejection analysis)
+- `duplicate` — superseded by another item
 
-Failed and rejected tasks include additional fields (`failed_at`/`rejected_at` timestamps) and rejection analysis when applicable.
+Failed and rejected items carry extra frontmatter (`failed_at` / `rejected_at`) and rejection analysis when applicable.
 
 ## Troubleshooting
 
 ### Task execution failed (`ai:failed`)
-1. Check PR comments for failure analysis
-2. Add comments with specific feedback
-3. Remove `ai:failed` label → PR review will process comments and retry
+1. Check the PR comments for the failure analysis.
+2. Add comments with specific feedback.
+3. Remove the `ai:failed` label → PR review will process the comments and retry.
 
 ### Task not being selected
-- At capacity (check `maxActiveTasks` in operator config, default: 2)
-- Branch already exists (previous attempt still open)
-- Task was previously rejected (closed PR without merge)
-- Domain conflict with in-progress task (same files/folders)
+- At capacity (the operator instance caps active tasks)
+- Branch already exists (a previous attempt is still open)
+- The task was previously rejected (PR closed without merge)
+- Domain conflict with an in-progress task (same files/folders)
 
 ### No new tasks created
-- All findings from analyzers already exist in `findings/pending/` or `findings/completed/` (dedup by source key)
-- Planner creates tasks only from validated findings (dedup by source)
+- The findings backlog is empty — a research PR must be **merged** before its findings enter the queue.
+- All analyzer findings already exist (deduped by the `source:` field).
+- The planner creates tasks only from validated findings.
 
 ### Duplicate findings
-- Dedup is based on `source:` field in finding frontmatter (e.g., `backend-consistency#FINDING-001`)
-- Existing findings in `findings/pending/` and `findings/completed/` are scanned automatically
+- Dedup is based on the `source:` field in finding frontmatter (e.g. `backend-consistency#FINDING-001`).
+- Existing findings in `.operator/data/findings/` are scanned automatically by their `status:`.

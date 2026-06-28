@@ -3,7 +3,7 @@
 **Status**: Failed after {MAX_RETRIES} attempts
 
 ### Task Details
-See task file in `.operator/data/tasks/completed/` for full task description.
+See task file in `.operator/data/tasks/{TASK_ID}.md` for full task description.
 
 ### Failure Reason
 {FAILURE_REASON}

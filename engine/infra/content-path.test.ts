@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readFile, access, mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { readFile, access, mkdtemp, rm, mkdir, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolveContentPath } from "./content-path.js";
@@ -131,5 +131,40 @@ describe("resolveContentPath", () => {
     expect(promptsRoot).not.toBe(defaultsRoot);
     expect(promptsRoot.endsWith("prompts")).toBe(true);
     expect(defaultsRoot.endsWith("defaults")).toBe(true);
+  });
+
+  it("no bundled prompt or template references a directory-as-status layout", async () => {
+    // Regression (2026-06-28): following stale README + prompt guidance (and
+    // Copilot/Bugbot comments echoing it), the pr-review/supervisor agent
+    // relocated merged research findings from the flat `.operator/data/findings/`
+    // directory into a `pending/` subdirectory. `syncFilesToState` reads each
+    // kind directory NON-RECURSIVELY, so the findings became invisible and were
+    // never ingested as work items — the repo completed 0 tasks while research
+    // PRs piled up. The v5 model is flat-dir + frontmatter `status:`; bundled
+    // content must never describe or instruct a directory-as-status layout
+    // (`findings/pending/`, `tasks/todo/`, `tasks/completed/`, …) or the drift
+    // re-enters and agents/bots re-break the ingest contract.
+    const forbidden = /\b(findings|tasks|requests|retrospectives)\/(pending|todo|completed|in-progress|reopened|done)\b/i;
+
+    async function walk(dir: string): Promise<string[]> {
+      const files: string[] = [];
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) files.push(...(await walk(full)));
+        else if (/\.(md|txt|ya?ml)$/.test(entry.name)) files.push(full);
+      }
+      return files;
+    }
+
+    const offenders: string[] = [];
+    for (const root of [resolveContentPath("prompts"), resolveContentPath("templates")]) {
+      for (const file of await walk(root)) {
+        const body = await readFile(file, "utf-8");
+        body.split("\n").forEach((line, idx) => {
+          if (forbidden.test(line)) offenders.push(`${file}:${idx + 1}: ${line.trim()}`);
+        });
+      }
+    }
+    expect(offenders, `directory-as-status drift found:\n${offenders.join("\n")}`).toEqual([]);
   });
 });
