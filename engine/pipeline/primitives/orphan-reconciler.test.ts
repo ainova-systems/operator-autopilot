@@ -13,13 +13,19 @@ const NOW = Date.parse("2026-06-24T00:00:00Z");
 const OLD = "2026-04-01T00:00:00Z";   // > 30 days before NOW
 const RECENT = "2026-06-20T00:00:00Z"; // < 30 days before NOW
 
-// finding kind WITH `cancelled` terminal (mirrors the kinds.yaml change).
+// finding + task kinds WITH `cancelled` terminal (mirrors the kinds.yaml change).
 const KIND_ENTRIES: readonly WorkItemKindEntry[] = [
   {
     name: "finding", label: "Finding", idPrefix: "F", dataDir: "findings",
     branchPrefix: "ai/findings", prPrefix: "[AI:Finding]",
     terminalStatuses: ["merged", "completed", "failed", "rejected", "duplicate", "cancelled"],
     parentKinds: [],
+  },
+  {
+    name: "task", label: "Task", idPrefix: "T", dataDir: "tasks",
+    branchPrefix: "ai/tasks", prPrefix: "[AI:Task]",
+    terminalStatuses: ["merged", "completed", "failed", "rejected", "duplicate", "cancelled"],
+    parentKinds: ["finding"],
   },
 ];
 
@@ -217,7 +223,24 @@ describe("reconcileOrphanedItems", () => {
     expect(workItemSource.updateStatus).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores a discovery stage that declares no output kind", async () => {
+  it("reaps stuck TASKS too — reapable kinds come from any producing stage, not just discovery", async () => {
+    const state = new TestStateManager();
+    state.workItems.set("T1", { ...finding("T1", "ready-to-merge", OLD), kind: "task" });
+    const taskStage = {
+      category: "workflow-stages", key: "finding-plan",
+      value: { selector: "per-item", outputSink: { kind: "task" } },
+    } as unknown as KVEntry;
+    const { deps, workItemSource } = makeDeps(state, { kv: makeKv([taskStage]) });
+
+    const result = await reconcileOrphanedItems(deps, { now: NOW }, makeCtx());
+
+    expect(result).toEqual({ scanned: 1, terminalized: 1, skipped: 0 });
+    const [ref, status] = workItemSource.updateStatus.mock.calls[0];
+    expect(ref).toEqual({ id: "T1", kind: "task" });
+    expect(status).toBe("cancelled");
+  });
+
+  it("ignores a stage that declares no output kind", async () => {
     const state = new TestStateManager();
     state.workItems.set("F1", finding("F1", "ready-to-merge", OLD));
     const noKindStage = {

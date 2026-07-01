@@ -25,9 +25,11 @@ import { observePRState } from "./observe-status.js";
  * gets an INFO line with the prior status, branch, and PR state.
  *
  * Config-driven — NOTHING here hardcodes a stage name, kind, or path. The set
- * of kinds to reap is resolved from `kv:workflow-stages/*` (every stage whose
- * `selector` is `discovery` declares its output kind via `outputSink.kind`),
- * and each item's branch comes from `KindRegistry.branchPrefixFor(kind)`.
+ * of kinds to reap is resolved from `kv:workflow-stages/*` (every stage that
+ * PRODUCES a work item declares its kind via `outputSink.kind` — findings from
+ * research, tasks from finding-plan, retrospectives from retrospective; manual
+ * kinds nobody produces, e.g. `request`, are excluded), and each item's branch
+ * comes from `KindRegistry.branchPrefixFor(kind)`.
  *
  * Reaping rule (conservative — the human owns merging live PRs):
  *   - candidate = non-terminal AND in a "limbo" status (NOT `pending`, which
@@ -79,23 +81,22 @@ export interface OrphanReconcilerResult {
 }
 
 /**
- * Resolve the work-item kinds produced by discovery stages, from config.
- * A stage with `selector === "discovery"` emits items of `outputSink.kind`.
- * No hardcoded `"finding"` — a renamed or added discovery stage is covered
- * automatically.
+ * Resolve the work-item kinds the engine PRODUCES, from config. Any stage
+ * that declares an `outputSink.kind` emits that kind (findings, tasks,
+ * retrospectives, …). No hardcoded `"finding"`/`"task"` — a renamed or added
+ * producing stage is covered automatically; manual kinds nobody produces are
+ * left alone.
  */
-async function discoveryKinds(kv: KVStore, log?: Logger): Promise<WorkItemKind[]> {
+async function reapableKinds(kv: KVStore, log?: Logger): Promise<WorkItemKind[]> {
   const rows = await kv.list("workflow-stages");
   const kinds = new Set<WorkItemKind>();
   for (const row of rows) {
     const stage = row.value as WorkflowStageEntry;
-    if (stage?.selector === "discovery" && stage.outputSink?.kind) {
-      kinds.add(stage.outputSink.kind);
-    }
+    if (stage?.outputSink?.kind) kinds.add(stage.outputSink.kind);
   }
   if (kinds.size === 0) {
-    log?.info("orphan-reconciler: no discovery stages in config, nothing to reconcile", {
-      scope: "orphan-reconciler", reason: "no-discovery-stages",
+    log?.info("orphan-reconciler: no stage produces a work-item kind, nothing to reconcile", {
+      scope: "orphan-reconciler", reason: "no-produced-kinds",
     });
   }
   return [...kinds];
@@ -114,7 +115,7 @@ export async function reconcileOrphanedItems(
   const now = opts.now ?? Date.now();
   const lifetimeDays = opts.lifetimeDays ?? ORPHAN_LIFETIME_DAYS;
   const lifetimeMs = lifetimeDays * DAY_MS;
-  const kinds = await discoveryKinds(deps.kv, deps.log);
+  const kinds = await reapableKinds(deps.kv, deps.log);
 
   let scanned = 0;
   let terminalized = 0;
