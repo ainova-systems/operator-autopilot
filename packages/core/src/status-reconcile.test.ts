@@ -143,6 +143,23 @@ describe("reconcileEffectiveStatus", () => {
     expect(result.effectiveStatusReason).toBe("pr-label");
   });
 
+  it("ignores a stale pr-label when the PR is closed, not just gone (closed-PR-latch regression)", () => {
+    // The first orphan-latch fix only skipped the label for prState=none.
+    // A PR closed WITHOUT merge (prState=closed) keeps its last label
+    // (`ai:ready-to-merge`) too; trusting it still latched the item. The
+    // label is live only for an OPEN PR — closed → develop-file decides.
+    const result = reconcileEffectiveStatus({
+      sources: {
+        developFile: { value: "pending", observedAt: ts(1) },
+        prLabel: { value: "ai:ready-to-merge", observedAt: ts(2) },
+        prState: { value: "closed", observedAt: ts(3) },
+      },
+      currentKV: { status: "ready-to-merge" },
+    });
+    expect(result.effectiveStatus).toBe("pending");
+    expect(result.effectiveStatusReason).toBe("develop-file");
+  });
+
   it("pr-label that does not map to a known status falls through to develop file", () => {
     const result = reconcileEffectiveStatus({
       sources: {

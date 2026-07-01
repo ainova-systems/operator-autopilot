@@ -161,13 +161,17 @@ export function reconcileEffectiveStatus(input: ReconcileInput): ReconcileResult
     }
   }
 
-  // 3. PR label — the live VCS signal. BUT a label is meaningless when no
-  // PR exists (prState=none): a stale `ai:ready-to-merge` slot carried
-  // forward from a prior PR cycle must not re-latch every cycle and pin a
-  // non-terminal item in limbo forever (orphan-latch incident — findings
-  // stuck at ready-to-merge with codeReviewId=null while their develop file
-  // said in-progress). Skip the label and fall through to develop-file.
-  if (sources.prLabel && sources.prState?.value !== "none") {
+  // 3. PR label — but a label reflects live state ONLY while the PR is open.
+  // Once the PR is gone (`none`), closed, or merged, its last label is
+  // historical and must not drive status — trusting it re-latches a stale
+  // value every cycle and pins a non-terminal item in limbo forever
+  // (orphan-latch: findings/tasks stuck at `ready-to-merge` with a dead PR
+  // while their develop file said in-progress/pending). Honor the label only
+  // for an OPEN PR; when no prState was observed (older cycles) keep
+  // back-compat and honor it. For closed/merged/none, fall through so the
+  // execution verdict or develop file decides.
+  const prLabelIsLive = sources.prState === undefined || sources.prState.value === "open";
+  if (sources.prLabel && prLabelIsLive) {
     const mapped = labelToStatus(sources.prLabel.value);
     if (mapped) {
       return { effectiveStatus: mapped, effectiveStatusReason: "pr-label" };
