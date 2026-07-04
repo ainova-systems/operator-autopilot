@@ -1,0 +1,25 @@
+# Project configuration for AI Operator.
+# The engine reads ONLY `context` and `scripts` from this file. Runtime behaviour
+# (which pipeline features run, active-item limits, schedules) is configured in the
+# operator instance — NOT here. No `features:` block; it would be ignored.
+name: Operator (operator-autopilot)
+
+# Global context file loaded for all agents.
+# Auto-detect order is AGENTS.md → CLAUDE.md → .cursorrules → .operator/OPERATOR.md; only AGENTS.md exists here.
+# AGENTS.md indexes the authoritative rules under intelligence/rules/*.
+context: AGENTS.md
+
+scripts:
+  # Run once after clone. Root `npm ci` installs EVERY workspace the gate touches
+  # (engine at root + packages/core + packages/adapters + app) via npm workspaces,
+  # and rebuilds the better-sqlite3 native binding. Requires Node.js >= 24.
+  init: npm ci
+  # The single post-change gate — matches the CI merge precondition in
+  # .github/workflows/tests.yml (typecheck + lint + test, all CI-blocking).
+  # Covers every modifiable stack from the repo root, no per-directory `cd`:
+  #   - typecheck: `tsc --noEmit` for engine/packages + app workspace typecheck
+  #   - lint:      eslint over the whole tree + ts-prune + knip dead-code gates
+  #   - test:      vitest run --coverage (>=90% lines/functions/statements; primitives >=95%)
+  # There is no separate frontend build stage in CI; the app is gated through its
+  # workspace typecheck and the app/src/lib vitest coverage, so it is not omitted.
+  verify: npm run typecheck && npm run lint && npm test
