@@ -5,7 +5,7 @@
 name: Operator (operator-autopilot)
 
 # Global context file loaded for all agents.
-# Auto-detect order is CLAUDE.md > AGENTS.md > .cursorrules; only AGENTS.md exists here.
+# Auto-detect order is AGENTS.md → CLAUDE.md → .cursorrules → .operator/OPERATOR.md; only AGENTS.md exists here.
 # AGENTS.md indexes the authoritative rules under intelligence/rules/*.
 context: AGENTS.md
 

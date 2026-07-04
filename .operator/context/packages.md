@@ -9,8 +9,8 @@ Two workspaces with a strict, ESLint-enforced dependency direction. Full rules:
 
 ## `@operator/core` (`packages/core/src/**`)
 The contract every other workspace depends on.
-- Exports ONLY types, interfaces, and error classes. Error class constructors are the single permitted runtime — everything else in `types/` and `interfaces/` is type-only.
-- Imports nothing at runtime (type-only from Node built-ins is fine). NEVER imports `@operator/adapters`, `@operator/engine`, or `@operator/app`.
+- Exports types, interfaces, Zod schemas, and error classes. Permitted runtime: schema values and error class constructors; `types/` and `interfaces/` are type-only.
+- Imports only `zod` at runtime (type-only from Node built-ins is fine). NEVER imports `@operator/adapters`, `@operator/engine`, or `@operator/app`.
 - Platform-neutral vocabulary only: `CodeReview`, `WorkItem`. `PullRequest` / `Issue` / `MergeRequest` are forbidden here (they belong in `engine/platforms/github/**`).
 - Interfaces are PascalCase with no `I` prefix (`VCSPlatform`, not `IVCSPlatform`). Every error carries a `code: string`.
 - `WorkItem.kind` is `string` backed by the KV kind registry — do NOT reintroduce a closed `"finding" | "task" | ...` union.

@@ -13,7 +13,7 @@ The operator runs on a schedule (every few minutes) and performs these actions:
 5. **Task execution** — picks the highest-priority pending task, implements the change, and opens a PR for review.
 6. **Retrospective** (weekly) — learns from merged/rejected PR feedback and tunes agent prompts and analyzer rules.
 
-All changes go through PRs. **Nothing is merged without human approval** — each stage advances only after a human merges the previous stage's PR.
+All changes go through PRs. By default each stage uses `merge: gated` (human approval required), but stages may be configured with `merge: auto` so the bot enables native VCS auto-merge when CI is green and the reviewer agent approved — see `docs/workflow.md` §6.
 
 ## Work items live FLAT — status is frontmatter, not a folder
 
@@ -36,7 +36,7 @@ scripts:
   verify: npm run lint && npm run build     # the post-change gate, run after every agent change
 ```
 
-- `context` — global context file loaded for all agents (auto-detected if omitted: `AGENTS.md` → `CLAUDE.md` → `.cursorrules` → `OPERATOR.md`)
+- `context` — global context file loaded for all agents (auto-detected if omitted: `AGENTS.md` → `CLAUDE.md` → `.cursorrules` → `.operator/OPERATOR.md`)
 - `scripts.init` — run before agent execution (install dependencies)
 - `scripts.verify` — run after agent changes (build/lint/test gate)
 

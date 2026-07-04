@@ -16,7 +16,7 @@ an observability UI (`@operator/app`) from day one.
 ## Repository Shape
 npm-workspaces monorepo, TypeScript throughout, Node.js >= 24.
 - `engine/**` — the daemon (flat, no `src/`); composition root is `engine/entry.ts`.
-- `packages/core/**` — `@operator/core`: shared types, interfaces, Zod schemas, error classes. Zero runtime deps.
+- `packages/core/**` — `@operator/core`: shared types, interfaces, Zod schemas, error classes. Minimal runtime (`zod` + schema/error exports only; no cross-workspace imports).
 - `packages/adapters/**` — `@operator/adapters`: concrete KVStore / kind-registry / VCS implementations.
 - `app/**` — `@operator/app`: Next.js 15 + React 19 observability + config-edit UI (read-only KV access).
 - `config/` — instance config (`repos.yaml`, seed-mirror source). `docs/` — canonical docs. `intelligence/` — AI prompt framework.
@@ -31,7 +31,7 @@ Do not restate them here — reference them:
 
 ## Architectural Principles
 ### Engine + packages (TypeScript, strict)
-- Package boundaries (enforced by ESLint `no-restricted-imports`): `core` imports nothing runtime; `adapters` imports only `core`; `engine` imports `core` + `adapters`; `app` imports `core` types + `adapters` read-only, never `engine` runtime. No upward/cross-package imports.
+- Package boundaries (enforced by ESLint `no-restricted-imports`): `core` imports only `zod` (runtime schemas + errors; no other workspaces); `adapters` imports only `core`; `engine` imports `core` + `adapters`; `app` imports `core` types + `adapters` read-only, never `engine` runtime. No upward/cross-package imports.
 - Layer graph inside `engine/`: strictly downward (see `intelligence/rules/typescript.md`). `platforms/` never imports `agents/`, `storage/` never imports `pipeline/`, etc.
 - Primitives boundary: only `engine/pipeline/primitives/**` may call `git.*`, `PRManager.*`, `VCSPlatform.*`, `AgentRuntime.run`, or write KV. Stages compose primitives; they never reach past the boundary.
 - `runStage` is generic: new stage behaviour is config in `engine/content/prompts/stages.yaml` + a prompt file, NOT a new file under `pipeline/stages/`.
