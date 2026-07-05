@@ -28,7 +28,7 @@ import { singletonSelect } from "./singleton-selector.js";
  * primitive is unit-testable with a fake VCS and a real temp workspace path.
  */
 export interface BootstrapSelectorDeps {
-  readonly vcs: Pick<VCSPlatform, "getCodeReviews"> & Partial<Pick<VCSPlatform, "getComments" | "getReviewComments" | "getCheckRuns">>;
+  readonly vcs: Pick<VCSPlatform, "getCodeReviews"> & Partial<Pick<VCSPlatform, "getComments" | "getReviewComments" | "getReviewThreads" | "getCheckRuns">>;
   /** Absolute path to the managed repo checkout on disk. */
   readonly workspacePath: string;
   /**

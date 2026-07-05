@@ -138,6 +138,28 @@ describe("parseAgentOutput — every EMIT type", () => {
     });
   });
 
+  it("parses comment-reply and coerces a numeric thread id to string", () => {
+    const text = block(
+      "comment-reply",
+      "thread: 123456789\ndisposition: fixed\nnote: added the missing null guard",
+    );
+    const r = parseAgentOutput(text);
+    expect(r.diagnostics).toHaveLength(0);
+    expect(r.events[0]).toEqual({
+      type: "comment-reply",
+      thread: "123456789",
+      disposition: "fixed",
+      note: "added the missing null guard",
+    });
+  });
+
+  it("rejects comment-reply with an invalid disposition", () => {
+    const text = block("comment-reply", "thread: 42\ndisposition: maybe\nnote: unsure");
+    const r = parseAgentOutput(text);
+    expect(r.events).toHaveLength(0);
+    expect(r.diagnostics[0].code).toBe("validation-failed");
+  });
+
   it("parses error with default recoverable=true", () => {
     const text = block("error", "code: ENV_BUILD_OFFLINE\nmessage: CI runner unreachable");
     const r = parseAgentOutput(text);

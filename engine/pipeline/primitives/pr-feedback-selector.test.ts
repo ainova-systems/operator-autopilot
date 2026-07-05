@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import type { OperationContext, CodeReview, Comment, ConventionsConfig } from "@operator/core";
+import type { OperationContext, CodeReview, Comment, ConventionsConfig, ReviewThread } from "@operator/core";
 import {
   prFeedbackSelect,
   countBotAttempts,
   formatFeedback,
   formatFullThread,
   detectPrType,
+  toReviewThreadRefs,
 } from "./pr-feedback-selector.js";
 import type { StageDef } from "../types.js";
 
@@ -72,15 +73,22 @@ function makeDeps(overrides?: {
   prs?: CodeReview[];
   comments?: Record<number, Comment[]>;
   reviewComments?: Record<number, Comment[]>;
+  reviewThreads?: Record<number, ReviewThread[]>;
+  reviewThreadsThrows?: boolean;
   checkRuns?: Record<number, Array<{ name: string; conclusion: string; completedAt?: string; headSha?: string }>>;
   checkRunsThrows?: boolean;
-}): { deps: Parameters<typeof prFeedbackSelect>[1]; mocks: { getComments: ReturnType<typeof vi.fn>; getReviewComments: ReturnType<typeof vi.fn>; log: { info: ReturnType<typeof vi.fn>; debug: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; child: ReturnType<typeof vi.fn> } } } {
+}): { deps: Parameters<typeof prFeedbackSelect>[1]; mocks: { getComments: ReturnType<typeof vi.fn>; getReviewComments: ReturnType<typeof vi.fn>; getReviewThreads: ReturnType<typeof vi.fn>; log: { info: ReturnType<typeof vi.fn>; debug: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; child: ReturnType<typeof vi.fn> } } } {
   const prs = overrides?.prs ?? [];
   const comments = overrides?.comments ?? {};
   const reviewComments = overrides?.reviewComments ?? {};
+  const reviewThreads = overrides?.reviewThreads ?? {};
   const checkRuns = overrides?.checkRuns ?? {};
   const getComments = vi.fn<(id: number) => Promise<Comment[]>>(async (id) => comments[id] ?? []);
   const getReviewComments = vi.fn<(id: number) => Promise<Comment[]>>(async (id) => reviewComments[id] ?? []);
+  const getReviewThreads = vi.fn<(id: number) => Promise<ReviewThread[]>>(async (id) => {
+    if (overrides?.reviewThreadsThrows) throw new Error("graphql-scope-failure");
+    return reviewThreads[id] ?? [];
+  });
   const getCheckRuns = vi.fn<(id: number) => Promise<Array<{ name: string; conclusion: string; completedAt?: string; headSha?: string }>>>(async (id) => {
     if (overrides?.checkRunsThrows) throw new Error("check-runs-api-failure");
     return checkRuns[id] ?? [];
@@ -92,13 +100,13 @@ function makeDeps(overrides?: {
   const deps: Parameters<typeof prFeedbackSelect>[1] = {
     vcs: {
       getCodeReviews: vi.fn<() => Promise<CodeReview[]>>().mockResolvedValue(prs),
-      getComments, getReviewComments, getCheckRuns,
+      getComments, getReviewComments, getReviewThreads, getCheckRuns,
     } as unknown as Parameters<typeof prFeedbackSelect>[1]["vcs"],
     workspacePath: "/tmp/ws",
     conventions: CONVENTIONS,
     log: log as unknown as Parameters<typeof prFeedbackSelect>[1]["log"],
   };
-  return { deps, mocks: { getComments, getReviewComments, log } };
+  return { deps, mocks: { getComments, getReviewComments, getReviewThreads, log } };
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────
@@ -119,11 +127,11 @@ describe("formatFeedback", () => {
     expect(formatFeedback([], [], [])).toBe("");
   });
 
-  it("includes review comments with path prefix", () => {
+  it("includes review comments with the id + path handle for disposition mapping", () => {
     const reviewComments: Comment[] = [
       { id: "1", author: "r", body: "tweak", createdAt: "", path: "src/x.ts" },
     ];
-    expect(formatFeedback([], reviewComments, [])).toContain("[Review on src/x.ts]");
+    expect(formatFeedback([], reviewComments, [])).toContain("[Review #1 on src/x.ts]");
   });
 
   it("appends CI failure block when ciFailures is non-empty", () => {
@@ -158,6 +166,26 @@ describe("detectPrType", () => {
 
   it("falls back to the raw second segment for unknown kinds", () => {
     expect(detectPrType("feature/x")).toBe("x");
+  });
+});
+
+describe("toReviewThreadRefs", () => {
+  it("projects threads and drops empty comment ids", () => {
+    const threads: ReviewThread[] = [
+      {
+        id: "THREAD_A",
+        isResolved: false,
+        authorType: "Bot",
+        comments: [
+          { id: "100", author: "copilot", body: "x", createdAt: "" },
+          { id: "", author: "copilot", body: "reply w/o id", createdAt: "" },
+        ],
+      },
+    ];
+    const refs = toReviewThreadRefs(threads);
+    expect(refs).toEqual([
+      { threadId: "THREAD_A", isResolved: false, authorType: "Bot", commentIds: ["100"] },
+    ]);
   });
 });
 
@@ -328,6 +356,79 @@ describe("prFeedbackSelect", () => {
     expect(payload.branch).toBe("ai/tasks/T-ABC");
     expect(payload.prType).toBe("task");
     expect(payload.newFeedback).toContain("please fix");
+  });
+
+  it("carries review-thread refs and fresh review comment ids for the picked PR", async () => {
+    const { deps, mocks } = makeDeps({
+      prs: [makePR({ id: 210, branch: "ai/tasks/T-THREADS" })],
+      reviewComments: {
+        210: [
+          { id: "77", author: "copilot", body: "add a null check", createdAt: "2026-07-01T10:00:00Z", authorType: "Bot", path: "src/a.ts" },
+        ],
+      },
+      reviewThreads: {
+        210: [
+          {
+            id: "THREAD_77",
+            isResolved: false,
+            authorType: "Bot",
+            comments: [{ id: "77", author: "copilot", body: "add a null check", createdAt: "2026-07-01T10:00:00Z", authorType: "Bot", path: "src/a.ts" }],
+          },
+        ],
+      },
+    });
+    const result = await prFeedbackSelect(makeStageDef(), deps, makeCtx());
+    expect(result).not.toBeNull();
+    const payload = result!.data as {
+      reviewThreads: Array<{ threadId: string; commentIds: string[] }>;
+      freshReviewCommentIds: string[];
+      newFeedback: string;
+    };
+    expect(payload.freshReviewCommentIds).toEqual(["77"]);
+    expect(payload.reviewThreads).toEqual([
+      { threadId: "THREAD_77", isResolved: false, authorType: "Bot", commentIds: ["77"] },
+    ]);
+    expect(payload.newFeedback).toContain("[Review #77 on src/a.ts]");
+    // Threads are fetched only for the winner, not every candidate.
+    expect(mocks.getReviewThreads).toHaveBeenCalledTimes(1);
+    expect(mocks.getReviewThreads).toHaveBeenCalledWith(210);
+  });
+
+  it("degrades to no review-thread refs when the threads fetch fails", async () => {
+    const { deps, mocks } = makeDeps({
+      prs: [makePR({ id: 211, branch: "ai/tasks/T-DEGRADE" })],
+      reviewComments: {
+        211: [
+          { id: "88", author: "copilot", body: "tweak", createdAt: "2026-07-01T10:00:00Z", authorType: "Bot", path: "src/b.ts" },
+        ],
+      },
+      reviewThreadsThrows: true,
+    });
+    const result = await prFeedbackSelect(makeStageDef(), deps, makeCtx());
+    expect(result).not.toBeNull();
+    const payload = result!.data as { reviewThreads: unknown[] };
+    expect(payload.reviewThreads).toEqual([]);
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("getReviewThreads failed"),
+      expect.any(Object),
+    );
+  });
+
+  it("carries empty review-thread refs when the platform has no thread support", async () => {
+    const { deps } = makeDeps({
+      prs: [makePR({ id: 212, branch: "ai/tasks/T-NOTHREADS" })],
+      reviewComments: {
+        212: [
+          { id: "5", author: "copilot", body: "x", createdAt: "2026-07-01T10:00:00Z", authorType: "Bot", path: "src/c.ts" },
+        ],
+      },
+    });
+    // Platform adapter without review-thread support.
+    delete (deps.vcs as { getReviewThreads?: unknown }).getReviewThreads;
+    const result = await prFeedbackSelect(makeStageDef(), deps, makeCtx());
+    expect(result).not.toBeNull();
+    const payload = result!.data as { reviewThreads: unknown[] };
+    expect(payload.reviewThreads).toEqual([]);
   });
 
   it("picks oldest-fresh-comment PR when multiple qualify (FIFO)", async () => {

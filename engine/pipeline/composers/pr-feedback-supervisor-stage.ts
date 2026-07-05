@@ -20,6 +20,7 @@ import type { PrFeedbackPayload } from "../primitives/pr-feedback-selector.js";
 import { writeChecksContextFile } from "../primitives/checks-context.js";
 import type { BotAttribution } from "../../delivery/bot-footer.js";
 import { applyAgentEvents } from "../primitives/aop-applier.js";
+import { applyThreadDispositions } from "./_shared/thread-dispositions.js";
 import { createScratchStore } from "./_shared/scratch.js";
 import { StageLogicError } from "./errors.js";
 
@@ -393,6 +394,22 @@ export function buildPrFeedbackSupervisorAfterAgent(deps: PrFeedbackSupervisorHo
         applyErrors: applied.applyErrors.length,
       });
 
+      // Answer + resolve inline review threads the supervisor disposed of
+      // this cycle. Runs on every agent path (fix-in-place, cancel, escalate,
+      // …) so no reviewer comment is left without a note. Bot threads (Copilot)
+      // are resolved; human threads get the note but stay open for the human.
+      if (payload.reviewThreads.length > 0 || applied.commentReplies.length > 0) {
+        await applyThreadDispositions({
+          prId: payload.prId,
+          stage: stage.name,
+          commentReplies: applied.commentReplies,
+          reviewThreads: payload.reviewThreads,
+          freshReviewCommentIds: payload.freshReviewCommentIds,
+          prManager: deps.prManager,
+          log: deps.log,
+        });
+      }
+
       // "Changes applied" detection — true when EITHER the workspace
       // has uncommitted edits OR the agent advanced HEAD by committing
       // directly via Bash. Pre-2026-05-20 the check only inspected the
@@ -539,8 +556,26 @@ export function buildSupervisorTask(
     "- **retry-as-new** — user clarified new scope → `EMIT child-item kind: task parent: self` + `EMIT status-update target: self status: rejected` + `EMIT verdict value: rejected`",
     "- **escalate** — ambiguous/contradictory comments → `EMIT verdict value: approved` (no code changes, no status update)",
     "",
+    "## Answering inline review comments (REQUIRED)",
+    "",
+    "Every `[Review #<id> …]` entry below is an inline review thread you MUST answer with exactly one `EMIT comment-reply`, whichever outcome you pick:",
+    "",
+    "- Code change addresses it → `disposition: fixed`",
+    "- Comment is wrong / out of scope / already satisfied → `disposition: not-applicable`",
+    "",
+    "```",
+    "=== EMIT comment-reply ===",
+    "thread: 123456789        # copy the #<id> from the [Review #<id> …] line",
+    "disposition: fixed",
+    "note: Added the missing null guard in login().",
+    "=== END EMIT ===",
+    "```",
+    "",
+    "The `#<id>` is the review comment id — copy it verbatim. Leave NO inline comment without a comment-reply; the note is what the reviewer reads. (Top-level PR comments and CI failures are answered by your verdict + summary, not by comment-reply.)",
+    "",
     "## Rules",
     "",
+    "- Emit one `EMIT comment-reply` for EVERY `[Review #<id> …]` entry — fixed or not-applicable, always with a note",
     "- NEVER write `---\\nstatus:` frontmatter directly — emit EMIT status-update instead",
     "- NEVER run git add/commit/push — git is owned by the orchestrator; make edits and stop. A commit you make but do not push is discarded, and claiming a commit you didn't push does not make the change land.",
     "- For cancel/duplicate/retry-as-new/escalate, make NO code edits",

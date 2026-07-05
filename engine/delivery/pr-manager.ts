@@ -157,6 +157,31 @@ export class PRManager {
     );
   }
 
+  /**
+   * Reply inside a review thread, carrying the legacy `commentMarker` so the
+   * bot's own reply is never re-classified as fresh feedback by the selector
+   * (which excludes any comment containing the marker). The visible note is
+   * the per-comment disposition (fixed / not-applicable). No-op when the
+   * platform exposes no review-thread reply support.
+   */
+  async postThreadReply(threadId: string, body: string): Promise<void> {
+    if (!this.vcs.replyToReviewThread) return;
+    await this.vcs.replyToReviewThread({
+      threadId,
+      body: `${this.conventions.commentMarker}\n\n${body}`,
+    });
+  }
+
+  /**
+   * Mark a review thread resolved. Applied only to bot-authored threads by
+   * the caller once the disposition note is posted. No-op when the platform
+   * exposes no thread-resolution support.
+   */
+  async resolveThread(threadId: string): Promise<void> {
+    if (!this.vcs.resolveReviewThread) return;
+    await this.vcs.resolveReviewThread(threadId);
+  }
+
   /** Find open PR for a branch. Returns null if not found. */
   async findOpenPR(branch: string): Promise<CodeReview | null> {
     const prs = await this.vcs.getCodeReviews();

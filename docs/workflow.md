@@ -558,6 +558,8 @@ Reopens cap: 2. Past that, the Operator stops autonomously and files an `ai:manu
 
 Any unread human comment on an open `ai/*` PR triggers the `pr-review` stage next cycle. That stage is just another `run` instance — creator amends the branch, same eight steps, same reviewer verdict, same mode rules.
 
+Every inline review comment the supervisor handles (human or bot, e.g. Copilot) is answered in its own thread: the supervisor emits one `EMIT comment-reply` per comment — `fixed` when a code change addresses it, `not-applicable` when it is wrong or out of scope — and the orchestrator posts that note as a threaded reply. Bot-authored threads are then marked resolved; human threads keep the note but stay open for the human to resolve. Top-level PR comments and CI failures are still answered by the single summary comment + `responded` footer. No inline reviewer comment is left silently unanswered.
+
 Attempt cap per PR: `initial_commits + N` (default N=5). On cap, PR gets `ai:failed`, warning comment, stop processing until human intervenes.
 
 ### 13.4 Ignore the PR

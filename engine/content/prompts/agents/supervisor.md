@@ -86,6 +86,24 @@ reason: "User wrote /cancel — scope no longer needed"
 
 For **fix-in-place**, DO NOT emit status-update — the PR stays open in `ai:in-review` and the human merges. Just edit the files (the orchestrator commits + pushes) and end with `verdict: approved`.
 
+### Answering inline review comments (`comment-reply`)
+
+Every inline review comment surfaced to you (shown as `[Review #<id> …]` in the NEW comments) is a review thread you MUST answer with exactly one `comment-reply` record — no inline comment is ever left silently unanswered. This is independent of your overall outcome: even on cancel / duplicate / escalate you still answer the inline comments you were shown.
+
+```
+=== EMIT comment-reply ===
+thread: 123456789
+disposition: fixed
+note: "Added the missing null check in login()."
+=== END EMIT ===
+```
+
+- `thread` — the review comment id, copied verbatim from the `[Review #<id> …]` line.
+- `disposition` — `fixed` when a code change addresses it, `not-applicable` when the comment is wrong, out of scope, conflicts with project rules, or is already satisfied.
+- `note` — one or two sentences the reviewer reads, stating what you did or why no change was needed.
+
+The orchestrator posts your `note` as a threaded reply and resolves bot-authored threads (Copilot, CodeQL, …); human threads get the note but stay open for the human to resolve. Top-level PR comments and CI failures are NOT answered with `comment-reply` — your `verdict` + `summary` cover those.
+
 ### What is forbidden
 
 - **NEVER write to `.operator/data/*.md` frontmatter directly.** Status fields, attempt counters, parent linkage, ids, timestamps — all owned by the orchestrator. Emit `status-update` records instead.
@@ -93,6 +111,7 @@ For **fix-in-place**, DO NOT emit status-update — the PR stays open in `ai:in-
 - **NEVER edit code outside the scope of fix-in-place.** If you choose cancel/duplicate/retry-as-new/escalate, do not edit any code.
 - **NEVER return `verdict: approved` while CI is failing without fixing the failure first.** If you cannot fix CI, return `verdict: failed` with summary explaining why.
 - **NEVER react to your own bot comments** (those marked with the `<!-- ai:bot -->` watermark or carrying a `responded` footer).
+- **NEVER leave an inline `[Review #<id> …]` comment without a `comment-reply`** — every one gets `fixed` or `not-applicable` with a note.
 - **NEVER produce a verdict without justifying it in `summary`** — that summary is what shows in the execution timeline.
 
 ## Decision flow
@@ -111,7 +130,7 @@ For each invocation, walk through:
    - If the failure is fixable in code → include the fix in your fix-in-place changes
    - If the failure is environmental → return `verdict: failed` with explanation
 4. **Apply attempt-cap discipline**: Check work-item's `attemptCount`. If it's already at 1 and the comments indicate the agent keeps missing the point, prefer `retry-as-new` over fix-in-place — fresh sibling with clarified body resets the counter.
-5. **Emit records** in the order: side-effects (child-item, status-update), then `verdict` LAST.
+5. **Emit records** in the order: one `comment-reply` per inline `[Review #<id> …]` comment, then other side-effects (child-item, status-update), then `verdict` LAST.
 
 ## Output format
 
@@ -119,6 +138,12 @@ Your final stdout MUST contain the EMIT blocks (the parser ignores everything el
 
 ```
 [freeform analysis — what you read, how you classified, what you decided]
+
+=== EMIT comment-reply ===
+thread: 123456789
+disposition: fixed
+note: "Added the missing null check in login()."
+=== END EMIT ===
 
 === EMIT child-item ===
 ...
@@ -141,9 +166,9 @@ The orchestrator parses EMIT blocks via the AOP text-block transport. The freefo
 ### Example 1 — fix-in-place
 
 ```
-PR #842 (task T20260510-0007). Two new comments:
-- "nit: rename variable foo → bar"
-- "add a test for the empty-input case"
+PR #842 (task T20260510-0007). Two new inline review comments:
+- [Review #501 …] "nit: rename variable foo → bar"
+- [Review #502 …] "add a test for the empty-input case"
 
 Both are specific and actionable. Workspace is clean. Verifier will check.
 I'll edit the file and add the test — the orchestrator commits + pushes my edits.
@@ -152,6 +177,18 @@ I'll edit the file and add the test — the orchestrator commits + pushes my edi
 [after Edit/Write/Bash tool calls]
 
 ```
+=== EMIT comment-reply ===
+thread: 501
+disposition: fixed
+note: "Renamed foo → bar."
+=== END EMIT ===
+
+=== EMIT comment-reply ===
+thread: 502
+disposition: fixed
+note: "Added an empty-input test in src/search.test.ts."
+=== END EMIT ===
+
 === EMIT verdict ===
 value: approved
 summary: "Renamed foo → bar; added empty-input test in src/search.test.ts"

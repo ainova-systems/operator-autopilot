@@ -79,6 +79,29 @@ export const emitNoteSchema = z.object({
 });
 
 /**
+ * Answer a single inline review thread the agent handled this cycle. The
+ * orchestrator posts `note` as a threaded reply on `thread` and, when the
+ * thread was opened by a bot (Copilot, CodeQL, …), marks it resolved.
+ * Human-opened threads get the reply but are left open for the human.
+ *
+ * Every inline review comment surfaced to the agent MUST get exactly one
+ * of these — `fixed` when a code change addresses it, `not-applicable`
+ * when the comment is wrong, out of scope, or already satisfied. The
+ * `note` states which and why, so no reviewer comment is ever left
+ * silently unanswered.
+ *
+ * `thread` is the handle shown to the agent in the feedback block (the
+ * review comment's numeric id); `z.coerce` accepts it whether the agent
+ * writes it as a YAML number or a quoted string.
+ */
+export const emitCommentReplySchema = z.object({
+  type: z.literal("comment-reply"),
+  thread: z.coerce.string().pipe(z.string().min(1)),
+  disposition: z.enum(["fixed", "not-applicable"]),
+  note: z.string().min(1),
+});
+
+/**
  * Structured error with a stable `code` for programmatic handling.
  * `recoverable: false` forces the execution verdict to `failed`
  * regardless of any later `verdict` event.
@@ -123,6 +146,7 @@ export const agentEventSchema = z.discriminatedUnion("type", [
   emitStatusUpdateSchema,
   emitBodyUpdateSchema,
   emitNoteSchema,
+  emitCommentReplySchema,
   emitErrorSchema,
   emitRecoverySchema,
   emitVerdictSchema,
@@ -132,6 +156,7 @@ export type EmitChildItem = z.infer<typeof emitChildItemSchema>;
 export type EmitStatusUpdate = z.infer<typeof emitStatusUpdateSchema>;
 export type EmitBodyUpdate = z.infer<typeof emitBodyUpdateSchema>;
 export type EmitNote = z.infer<typeof emitNoteSchema>;
+export type EmitCommentReply = z.infer<typeof emitCommentReplySchema>;
 export type EmitError = z.infer<typeof emitErrorSchema>;
 export type EmitRecovery = z.infer<typeof emitRecoverySchema>;
 export type EmitVerdict = z.infer<typeof emitVerdictSchema>;
@@ -146,6 +171,7 @@ export const AGENT_EVENT_TYPES = [
   "status-update",
   "body-update",
   "note",
+  "comment-reply",
   "error",
   "recovery",
   "verdict",

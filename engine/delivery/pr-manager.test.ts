@@ -157,6 +157,44 @@ describe("PRManager", () => {
     expect(vcs.postComment).toHaveBeenCalledWith(42, expect.stringContaining("Applied changes."));
   });
 
+  it("postThreadReply replies with the marker prepended", async () => {
+    const replyToReviewThread = vi.fn().mockResolvedValue(undefined);
+    const vcs = makeVCS({ replyToReviewThread });
+    const pm = new PRManager(vcs, CONVENTIONS);
+
+    await pm.postThreadReply("THREAD_A", "Addressed — added the guard.");
+
+    expect(replyToReviewThread).toHaveBeenCalledWith({
+      threadId: "THREAD_A",
+      body: expect.stringContaining("<!-- bot:operator -->"),
+    });
+    expect(replyToReviewThread).toHaveBeenCalledWith({
+      threadId: "THREAD_A",
+      body: expect.stringContaining("added the guard"),
+    });
+  });
+
+  it("postThreadReply is a no-op when the platform has no thread-reply support", async () => {
+    const vcs = makeVCS();
+    const pm = new PRManager(vcs, CONVENTIONS);
+    await expect(pm.postThreadReply("THREAD_A", "note")).resolves.toBeUndefined();
+  });
+
+  it("resolveThread resolves via the platform", async () => {
+    const resolveReviewThread = vi.fn().mockResolvedValue(undefined);
+    const vcs = makeVCS({ resolveReviewThread });
+    const pm = new PRManager(vcs, CONVENTIONS);
+
+    await pm.resolveThread("THREAD_A");
+    expect(resolveReviewThread).toHaveBeenCalledWith("THREAD_A");
+  });
+
+  it("resolveThread is a no-op when the platform has no thread-resolve support", async () => {
+    const vcs = makeVCS();
+    const pm = new PRManager(vcs, CONVENTIONS);
+    await expect(pm.resolveThread("THREAD_A")).resolves.toBeUndefined();
+  });
+
   it("findOpenPR returns matching PR", async () => {
     const vcs = makeVCS({
       getCodeReviews: vi.fn().mockResolvedValue([

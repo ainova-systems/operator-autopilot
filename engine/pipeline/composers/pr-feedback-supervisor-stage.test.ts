@@ -5,6 +5,7 @@ import type {
 } from "@operator/core";
 import type { AgentsFile } from "../../config/schemas.js";
 import type { StageDef, StageInput, AgentResult } from "../types.js";
+import type { ReviewThreadRef } from "../primitives/pr-feedback-selector.js";
 import {
   buildPrFeedbackSupervisorBeforeAgent,
   buildPrFeedbackSupervisorBuildRunInput,
@@ -43,6 +44,7 @@ function makePayload(overrides: Partial<{
   newFeedback: string; fullThread: string; respondedIds: string[];
   ciAttempts: number; maxCiRetryAttempts: number; botAttempts: number;
   oldestFreshAt: string;
+  reviewThreads: ReviewThreadRef[]; freshReviewCommentIds: string[];
   checks: { value: "passing" | "failing" | "pending" | "none"; observedAt: string; headSha?: string; checks: never[] };
 }>) {
   return {
@@ -58,6 +60,8 @@ function makePayload(overrides: Partial<{
     respondedIds: [],
     ciAttempts: 0,
     maxCiRetryAttempts: 3,
+    reviewThreads: [] as ReviewThreadRef[],
+    freshReviewCommentIds: [] as string[],
     ...overrides,
   };
 }
@@ -114,6 +118,8 @@ function makeDeps(overrides: Partial<PrFeedbackSupervisorHookDeps> = {}): PrFeed
   const prManager = {
     markProcessing: vi.fn().mockResolvedValue(undefined),
     postBotComment: vi.fn().mockResolvedValue(undefined),
+    postThreadReply: vi.fn().mockResolvedValue(undefined),
+    resolveThread: vi.fn().mockResolvedValue(undefined),
     markFailed: vi.fn().mockResolvedValue(undefined),
   };
   const git = {
@@ -304,6 +310,41 @@ describe("supervisor stage-logic", () => {
         expect.any(Object),
       );
       expect(result).toBeUndefined();
+    });
+
+    it("replies to and resolves inline review threads from comment-reply dispositions", async () => {
+      const stream = makeFakeStream([
+        { type: "comment-reply", thread: "100", disposition: "fixed", note: "added the guard" } as never,
+        { type: "comment-reply", thread: "200", disposition: "not-applicable", note: "non-null by contract" } as never,
+        { type: "verdict", value: "approved", summary: "Handled 2 review comments" } as never,
+      ]);
+      const deps = makeDeps({
+        git: {
+          commitCount: vi.fn().mockResolvedValue(2),
+          isClean: vi.fn().mockResolvedValue(false),
+        } as unknown as PrFeedbackSupervisorHookDeps["git"],
+        agentEventStream: stream,
+      });
+      const ctx = makeCtx();
+      const input = makeStageInput(makePayload({
+        reviewThreads: [
+          { threadId: "THREAD_BOT", isResolved: false, authorType: "Bot", commentIds: ["100"] },
+          { threadId: "THREAD_HUMAN", isResolved: false, authorType: "User", commentIds: ["200"] },
+        ],
+        freshReviewCommentIds: ["100", "200"],
+      }));
+      await buildPrFeedbackSupervisorBeforeAgent(deps)(makeStageDef(), input, makeWorkspace("ai/tasks/T20260511-0001"), ctx);
+      await buildPrFeedbackSupervisorAfterAgent(deps)(
+        makeStageDef(), input,
+        makeAgentResult("approved", "out"),
+        makeWorkspace("ai/tasks/T20260511-0001"), ctx,
+      );
+      // Both threads get a reply note …
+      expect(deps.prManager.postThreadReply).toHaveBeenCalledWith("THREAD_BOT", expect.stringContaining("added the guard"));
+      expect(deps.prManager.postThreadReply).toHaveBeenCalledWith("THREAD_HUMAN", expect.stringContaining("non-null by contract"));
+      // … but only the bot thread is resolved; the human thread stays open.
+      expect(deps.prManager.resolveThread).toHaveBeenCalledWith("THREAD_BOT");
+      expect(deps.prManager.resolveThread).not.toHaveBeenCalledWith("THREAD_HUMAN");
     });
 
     it("posts no-changes comment on approved + clean workspace AND HEAD unchanged", async () => {

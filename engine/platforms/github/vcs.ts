@@ -1,7 +1,12 @@
 import type { Octokit } from "@octokit/rest";
-import type { CodeReview, Comment, Label } from "@operator/core";
+import type { CodeReview, Comment, Label, ReviewThread } from "@operator/core";
 import type { CheckRun, CheckAnnotation, PlatformCapabilities, VCSPlatform } from "@operator/core";
 import { reRunFailedJobs, fetchJobLogTail } from "./actions.js";
+import {
+  fetchReviewThreads,
+  replyToReviewThread,
+  resolveReviewThread,
+} from "./review-threads.js";
 
 const SUMMARY_TRUNCATE = 2000;
 const TEXT_TRUNCATE = 4000;
@@ -325,6 +330,27 @@ export class GitHubVCS implements VCSPlatform {
       owner: this.owner, repo: this.repo, issue_number: codeReviewId, body,
     });
     return mapComment(data as unknown as GhComment);
+  }
+
+  // ── Review threads (inline diff conversations, GraphQL) ─────────────
+
+  /**
+   * List the PR's resolvable review threads with resolved state + root-author
+   * type. GraphQL-only (REST exposes neither the thread node id nor the
+   * resolved flag). Delegates to {@link fetchReviewThreads}.
+   */
+  async getReviewThreads(codeReviewId: number): Promise<ReviewThread[]> {
+    return fetchReviewThreads(this.octokit, this.owner, this.repo, codeReviewId);
+  }
+
+  /** Post a threaded reply, keyed by the thread's GraphQL node id. */
+  async replyToReviewThread(input: { threadId: string; body: string }): Promise<void> {
+    await replyToReviewThread(this.octokit, input.threadId, input.body);
+  }
+
+  /** Mark a review thread resolved, keyed by its GraphQL node id. */
+  async resolveReviewThread(threadId: string): Promise<void> {
+    await resolveReviewThread(this.octokit, threadId);
   }
 
   // ── Labels (ports gh-label.sh) ──────────────────────────────────────

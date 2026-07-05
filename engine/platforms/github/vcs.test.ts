@@ -300,6 +300,62 @@ describe("GitHubVCS", () => {
     });
   });
 
+  // ── Review threads ────────────────────────────────────────────────
+
+  describe("review threads", () => {
+    it("getReviewThreads maps GraphQL nodes", async () => {
+      mock.graphql.mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  id: "THREAD_A",
+                  isResolved: false,
+                  comments: {
+                    nodes: [
+                      {
+                        databaseId: 501,
+                        body: "add a guard",
+                        path: "src/a.ts",
+                        createdAt: "2026-07-01T10:00:00Z",
+                        author: { login: "copilot", __typename: "Bot" },
+                        authorAssociation: "NONE",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+      const threads = await vcs.getReviewThreads(42);
+      expect(threads).toHaveLength(1);
+      expect(threads[0]).toMatchObject({ id: "THREAD_A", authorType: "Bot" });
+      expect(threads[0].comments[0].id).toBe("501");
+    });
+
+    it("replyToReviewThread issues the reply mutation", async () => {
+      mock.graphql.mockResolvedValueOnce({});
+      await vcs.replyToReviewThread({ threadId: "THREAD_A", body: "done" });
+      expect(mock.graphql).toHaveBeenCalledWith(
+        expect.stringContaining("addPullRequestReviewThreadReply"),
+        { threadId: "THREAD_A", body: "done" },
+      );
+    });
+
+    it("resolveReviewThread issues the resolve mutation", async () => {
+      mock.graphql.mockResolvedValueOnce({});
+      await vcs.resolveReviewThread("THREAD_A");
+      expect(mock.graphql).toHaveBeenCalledWith(
+        expect.stringContaining("resolveReviewThread"),
+        { threadId: "THREAD_A" },
+      );
+    });
+  });
+
   // ── Labels ────────────────────────────────────────────────────────
 
   describe("getLabels", () => {

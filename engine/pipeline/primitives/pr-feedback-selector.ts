@@ -1,7 +1,34 @@
-import type { CodeReview, Comment } from "@operator/core";
+import type { CodeReview, Comment, ReviewThread } from "@operator/core";
 import type { InputSelectorFn } from "./item-selector.js";
 import { observeChecks } from "./observe-status.js";
 import { classifyPrFeedback, type PrSignals } from "./pr-decision.js";
+
+/**
+ * Compact review-thread reference carried in the payload so the stage's
+ * `afterAgent` can answer + resolve inline comments without re-fetching. Kept
+ * here (with the payload) so both the primitive that builds it and the
+ * composer helper that consumes it share one definition.
+ */
+export interface ReviewThreadRef {
+  /** Provider node id used to reply / resolve (GraphQL id on GitHub). */
+  readonly threadId: string;
+  /** Already-resolved on the platform. */
+  readonly isResolved: boolean;
+  /** Author type of the thread root — only bot threads are auto-resolved. */
+  readonly authorType?: "User" | "Bot";
+  /** REST comment ids of every comment in the thread — correlation handles. */
+  readonly commentIds: ReadonlyArray<string>;
+}
+
+/** Project platform review threads into the compact payload refs. */
+export function toReviewThreadRefs(threads: ReadonlyArray<ReviewThread>): ReviewThreadRef[] {
+  return threads.map((t) => ({
+    threadId: t.id,
+    isResolved: t.isResolved,
+    authorType: t.authorType,
+    commentIds: t.comments.map((c) => c.id).filter((id) => id.length > 0),
+  }));
+}
 
 /**
  * pr-feedback selector — picks an open AI PR that has unanswered feedback
@@ -59,6 +86,19 @@ export interface PrFeedbackPayload {
   /** Retry counter on the current `ciHead` — `current/max`. */
   readonly ciAttempts: number;
   readonly maxCiRetryAttempts: number;
+  /**
+   * Resolvable inline review threads on this PR (empty when the platform
+   * has no thread support). `pr-review.afterAgent` maps each supervisor
+   * `comment-reply` disposition onto a thread here to post the note +
+   * resolve bot-authored threads.
+   */
+  readonly reviewThreads: ReadonlyArray<ReviewThreadRef>;
+  /**
+   * Ids of the fresh inline review comments the supervisor was asked to
+   * address this cycle — used by `afterAgent` to detect any comment left
+   * without a disposition note (the "every comment gets a note" invariant).
+   */
+  readonly freshReviewCommentIds: ReadonlyArray<string>;
 }
 
 export function countBotAttempts(comments: ReadonlyArray<Comment>, marker: string): number {
@@ -75,7 +115,10 @@ export function formatFeedback(
     parts.push(userComments.map((c) => `[PR Comment] @${c.author}: ${c.body}`).join("\n\n"));
   }
   if (userReviewComments.length > 0) {
-    parts.push(userReviewComments.map((c) => `[Review on ${c.path ?? "unknown"}] @${c.author}: ${c.body}`).join("\n\n"));
+    // The `#<id>` handle is the reference the supervisor copies into its
+    // `EMIT comment-reply` records so the orchestrator can map each
+    // disposition back onto the review thread to reply + resolve.
+    parts.push(userReviewComments.map((c) => `[Review #${c.id} on ${c.path ?? "unknown"}] @${c.author}: ${c.body}`).join("\n\n"));
   }
   if (ciFailures.length > 0) {
     parts.push(
@@ -219,6 +262,8 @@ export const prFeedbackSelect: InputSelectorFn = async (stageDef, deps, _ctx) =>
         checks,
         respondedIds: [...nextResponded],
         ciAttempts: state.ci.attempts, maxCiRetryAttempts,
+        reviewThreads: [],
+        freshReviewCommentIds: state.freshReviewComments.map((c) => c.id),
       },
     });
     deps.log?.info(`pr-feedback: PR #${pr.id} has unanswered feedback (${state.freshComments.length + state.freshReviewComments.length} comments, ${ciFailures.length} CI failures, ci-head=${state.ci.headSha ?? "—"} ci-attempt=${state.ci.attempts}/${maxCiRetryAttempts}, total bot-replies=${botAttempts})`, {
@@ -240,15 +285,33 @@ export const prFeedbackSelect: InputSelectorFn = async (stageDef, deps, _ctx) =>
 
   ranked.sort((a, b) => a.payload.oldestFreshAt.localeCompare(b.payload.oldestFreshAt));
   const picked = ranked[0];
-  deps.log?.info(`pr-feedback: selected PR #${picked.pr.id} (${picked.payload.prType}) for stage ${stageDef.name}`, {
+
+  // Fetch the resolvable review threads for the winner only — the stage's
+  // afterAgent needs them to answer + resolve inline comments, and they are
+  // wasted work on the PRs we skip. Best-effort: a GraphQL scope/transport
+  // failure disables per-thread replies for this cycle (the top-level summary
+  // comment + footer still answer the feedback) rather than aborting review.
+  let reviewThreads: ReviewThreadRef[] = [];
+  if (deps.vcs.getReviewThreads) {
+    try {
+      reviewThreads = toReviewThreadRefs(await deps.vcs.getReviewThreads(picked.pr.id));
+    } catch (err) {
+      deps.log?.warn(`pr-feedback: getReviewThreads failed for PR #${picked.pr.id} — inline replies disabled this cycle`, {
+        stage: stageDef.name, selector: "pr-feedback", prNumber: picked.pr.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  deps.log?.info(`pr-feedback: selected PR #${picked.pr.id} (${picked.payload.prType}) for stage ${stageDef.name} (${reviewThreads.length} review thread(s))`, {
     stage: stageDef.name, selector: "pr-feedback", decision: "proceed",
     prNumber: picked.pr.id, branch: picked.pr.branch, prType: picked.payload.prType,
-    botAttempts: picked.payload.botAttempts,
+    botAttempts: picked.payload.botAttempts, reviewThreads: reviewThreads.length,
   });
 
   return {
     scopeKey: String(picked.pr.id),
-    data: picked.payload,
+    data: { ...picked.payload, reviewThreads },
     reason: `fresh-${picked.payload.oldestFreshAt}`,
   };
 };

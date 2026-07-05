@@ -64,6 +64,28 @@ export interface Comment {
   readonly authorType?: "User" | "Bot";
 }
 
+/**
+ * A resolvable review conversation on a code review — the platform-neutral
+ * shape of a GitHub PR "review thread". Inline review comments (human or bot,
+ * e.g. Copilot) live in threads that can be replied to and marked resolved;
+ * top-level conversation comments are NOT threads and carry no such state.
+ *
+ * The engine uses this to answer every inline comment it handles with a note
+ * and (for bot-authored threads) resolve the thread. Unlike {@link Comment},
+ * a thread carries the provider node `id` required to reply/resolve, plus the
+ * resolved flag so a selector can skip already-answered threads.
+ */
+export interface ReviewThread {
+  /** Provider node id used to reply to / resolve the thread (GraphQL id on GitHub). */
+  readonly id: string;
+  /** Whether the thread has already been marked resolved on the platform. */
+  readonly isResolved: boolean;
+  /** Comments in the thread, oldest first; `comments[0]` is the root. */
+  readonly comments: Comment[];
+  /** Author type of the root comment — drives the bot-vs-human resolve policy. */
+  readonly authorType?: "User" | "Bot";
+}
+
 export interface CodeReview {
   readonly id: number;
   readonly title: string;

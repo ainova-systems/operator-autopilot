@@ -1,4 +1,4 @@
-import type { CodeReview, Comment, Label, WorkItem } from "./domain.js";
+import type { CodeReview, Comment, Label, ReviewThread, WorkItem } from "./domain.js";
 
 export interface PlatformCapabilities {
   readonly codeReviews: boolean;
@@ -75,6 +75,29 @@ export interface VCSPlatform {
   getComments(codeReviewId: number): Promise<Comment[]>;
   getReviewComments(codeReviewId: number): Promise<Comment[]>;
   postComment(codeReviewId: number, body: string): Promise<Comment>;
+
+  /**
+   * Optional: list the code review's resolvable review threads (inline
+   * diff conversations) with their resolved state and root-author type.
+   * Used by the pr-feedback flow to answer every handled inline comment
+   * with a note and resolve bot-authored threads. Adapters whose platform
+   * has no thread concept leave this out and the reply/resolve step is
+   * skipped (the engine falls back to its top-level summary comment).
+   */
+  getReviewThreads?(codeReviewId: number): Promise<ReviewThread[]>;
+  /**
+   * Optional: post a reply comment inside an existing review thread,
+   * keyed by the thread's provider node {@link ReviewThread.id}. Used to
+   * leave the per-comment disposition note (fixed / not-applicable).
+   */
+  replyToReviewThread?(input: { threadId: string; body: string }): Promise<void>;
+  /**
+   * Optional: mark a review thread resolved, keyed by its provider node
+   * {@link ReviewThread.id}. Applied only to bot-authored threads once the
+   * engine has posted its disposition note — human threads are left open
+   * for the human to resolve.
+   */
+  resolveReviewThread?(threadId: string): Promise<void>;
 
   getLabels(codeReviewId: number): Promise<Label[]>;
   addLabel(codeReviewId: number, label: string): Promise<void>;

@@ -1,6 +1,6 @@
 import type {
   AgentEvent, AgentEventStream, AgentEventDiagnostic,
-  EmitNote, EmitError, EmitRecovery,
+  EmitNote, EmitCommentReply, EmitError, EmitRecovery,
   KindRegistry, OperationContext, Priority,
   WorkItemKind, WorkItemRecord, WorkItemRef, WorkItemSource, WorkItemStatus,
 } from "@operator/core";
@@ -121,6 +121,13 @@ export interface AopApplyResult {
   };
   /** Pass-through events the caller surfaces to PR / execution-history. */
   readonly notes: ReadonlyArray<EmitNote>;
+  /**
+   * Per-inline-review-thread dispositions the agent produced. The applier
+   * only collects them (like {@link notes}); the caller posts the note as a
+   * threaded reply and resolves bot-authored threads. Empty for stages that
+   * do not answer review threads.
+   */
+  readonly commentReplies: ReadonlyArray<EmitCommentReply>;
   readonly errors: ReadonlyArray<EmitError>;
   readonly recoveries: ReadonlyArray<EmitRecovery>;
   /** Per-event application failures — included in the `failed` verdict path. */
@@ -146,6 +153,7 @@ export async function applyAgentEvents(
   const statusUpdates: WorkItemRef[] = [];
   const bodyUpdates: WorkItemRef[] = [];
   const notes: EmitNote[] = [];
+  const commentReplies: EmitCommentReply[] = [];
   const errorEvents: EmitError[] = [];
   const recoveries: EmitRecovery[] = [];
   const applyErrors: AopApplyError[] = [];
@@ -215,6 +223,14 @@ export async function applyAgentEvents(
           deps.log?.debug(`aop-applier: note (${event.visibility}) for ${event.target}`, {
             scope: "aop-applier", emitType: "note",
             target: event.target, visibility: event.visibility,
+          });
+          break;
+        }
+        case "comment-reply": {
+          commentReplies.push(event);
+          deps.log?.debug(`aop-applier: comment-reply (${event.disposition}) for thread ${event.thread}`, {
+            scope: "aop-applier", emitType: "comment-reply",
+            thread: event.thread, disposition: event.disposition,
           });
           break;
         }
@@ -290,6 +306,7 @@ export async function applyAgentEvents(
   if (statusUpdates.length > 0) tally.push(`${statusUpdates.length} status-update(s)`);
   if (bodyUpdates.length > 0) tally.push(`${bodyUpdates.length} body-update(s)`);
   if (notes.length > 0) tally.push(`${notes.length} note(s)`);
+  if (commentReplies.length > 0) tally.push(`${commentReplies.length} comment-reply(ies)`);
   if (errorEvents.length > 0) tally.push(`${errorEvents.length} error event(s)`);
   if (recoveries.length > 0) tally.push(`${recoveries.length} recovery event(s)`);
   if (tally.length > 0) summaryParts.push(`applied: ${tally.join(", ")}`);
@@ -301,6 +318,7 @@ export async function applyAgentEvents(
     diagnostics: parseResult.diagnostics,
     applied: { childItems, statusUpdates, bodyUpdates },
     notes,
+    commentReplies,
     errors: errorEvents,
     recoveries,
     applyErrors,

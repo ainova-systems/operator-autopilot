@@ -255,6 +255,25 @@ describe("applyAgentEvents — F4 generic AOP applier", () => {
     expect(source.statusUpdates).toHaveLength(0);
   });
 
+  it("collects comment-reply events without applying them (caller posts + resolves threads)", async () => {
+    const stream = fakeStream({
+      events: [
+        { type: "comment-reply", thread: "12345", disposition: "fixed", note: "added the guard" },
+        { type: "comment-reply", thread: "67890", disposition: "not-applicable", note: "value is non-null by caller contract" },
+      ],
+      diagnostics: [],
+    });
+    const result = await applyAgentEvents(
+      "raw", { stream, source, registry },
+      { workItem: { id: "F20260508-0001", kind: "finding" } }, makeCtx(),
+    );
+    expect(result.commentReplies).toHaveLength(2);
+    expect(result.commentReplies[0]).toMatchObject({ thread: "12345", disposition: "fixed" });
+    expect(result.summary).toContain("comment-reply(ies)");
+    expect(source.created).toHaveLength(0);
+    expect(source.statusUpdates).toHaveLength(0);
+  });
+
   it("forces verdict=failed when an error event is non-recoverable", async () => {
     const stream = fakeStream({
       events: [
