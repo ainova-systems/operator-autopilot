@@ -48,7 +48,7 @@ The operator core provides generic agent templates. **Domain-specific knowledge 
 
 **Frontmatter fields (same for all folders):**
 - `path` (optional): glob pattern for file filtering (default: `*`)
-- `schedule` (optional, analysts only): `daily`, `weekly`, `weekly:N` (N=1-7, Mon-Sun), `on-demand`
+- `schedule` (optional, analysts only): `daily` (every research cycle), `weekly` (throttled to at most once per 7 days), `on-demand` (manual only). Frequency, not calendar — see "Control analyzer frequency" below.
 - `enabled` (optional): `true`/`false` (default: `true`)
 
 **Folder purposes:**
@@ -179,13 +179,15 @@ IDs follow `{PREFIX}{YYYYMMDD}-{ID}` (F=finding, T=task, R=request, W=retrospect
 
 **Add shared context** — edit or add files in `context/`. These are loaded for ALL agents, path-filtered by affected files. Changes take effect after merge to the base branch.
 
-**Control analyzer schedule** — use `schedule` in analyzer frontmatter:
+**Control analyzer frequency** — use `schedule` in analyzer frontmatter:
 ```yaml
 ---
-schedule: weekly:2    # Run on Tuesday (1=Mon, 7=Sun)
+schedule: weekly    # throttled: runs at most once per 7 days
 ---
 ```
-Schedule options: `daily` (every research run), `weekly` (on retrospective day), `weekly:N` (specific day), `on-demand` (manual only).
+Schedule options: `daily` (every research cycle — the default queue-filler cadence), `weekly` (throttled to at most once per 7 days), `on-demand` (manual only).
+
+The research stage itself is **queue-driven, not calendar-driven**: it fires when the pending-finding backlog drops below its target and backs off exponentially while runs produce nothing new. `schedule` therefore expresses relative frequency, not a day of the week. Legacy `weekly:N` values still parse for compatibility, but the day number is ignored — `weekly:N` behaves exactly like `weekly`.
 
 **Disable specific analysis** — set `enabled: false` in analyzer frontmatter:
 ```yaml

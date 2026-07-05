@@ -14,7 +14,7 @@ The core claim of this document: **there is one generic stage loop, every featur
 4. If user closes the init PR without merging, the next cycle **retries init with a different approach**. Scout reads `previous_prs` metadata and varies the proposal. This continues until the user merges, or sets `enabled: false` in `config/repos.yaml`.
 5. After the init PR is merged, normal operation begins. The Operator:
    - Picks up the seed findings as pending work and opens **finding PRs** with task plans (one PR per finding).
-   - Runs daily research at the configured UTC hour, producing more findings over time.
+   - Runs research on a queue-fill schedule — it fires when the pending-finding backlog drops below its target and backs off exponentially while runs produce nothing new — producing more findings exactly when the queue needs them.
    - Produces **task PRs** with code changes once the user accepts a finding's plan.
    - Reviews and amends PRs when the user leaves comments.
    - Runs a weekly retrospective that produces findings about the Operator's own performance (prompt tweaks, analyzer changes).
