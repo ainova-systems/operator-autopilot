@@ -101,7 +101,7 @@ git-operator-autopilot/
 ├── packages/
 │   ├── core/                        @operator/core — shared contracts (types,
 │   │   └── src/                        interfaces, Zod schemas, error classes;
-│   │                                    runtime: Zod schema values + error constructors)
+│   │                                    runtime: Zod schema values + error class constructors)
 │   │       ├── types/                  WorkItem, CodeReview, OperationContext,
 │   │       │                             WorkItemKind (open string), domain types
 │   │       ├── interfaces/             KVStore, VCSPlatform, AgentProvider,
