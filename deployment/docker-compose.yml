@@ -4,6 +4,11 @@
 # replica (SQLite is not multi-writer safe). One container; rely on
 # `restart: unless-stopped` to survive host / Docker-daemon restarts.
 #
+# Redeploy: the operator's own VM uses a self-hosted-runner push deploy
+# (deployment/deploy.sh, driven by ../.github/workflows/build-image.yml) and
+# runs WITHOUT the watchtower service below. Manual / generic deployments can
+# instead opt into registry auto-poll with `--profile watchtower`.
+#
 # Local / VM:  docker compose -f deployment/docker-compose.yml up -d --build
 # Portainer:   Stacks -> Add stack -> Web editor -> paste -> set env -> Deploy
 #              (set OPERATOR_IMAGE to a pushed tag; drop the `build:` block).
@@ -57,21 +62,27 @@ services:
       # (testcontainers, docker compose, image builds):
       # - /var/run/docker.sock:/var/run/docker.sock
 
-  # Auto-redeploy. Watches the registry for a new operator-engine image (the
-  # tag rebuilds nightly + on every master push — see
-  # ../.github/workflows/build-image.yml) and recreates the container, so the
-  # bundled agent CLIs (claude-code + cursor-agent) and engine code stay current
-  # without a manual pull. `--label-enable` scopes it to operator-engine only.
-  # `--stop-timeout 300s` matches the engine's SIGTERM drain budget so a swap
-  # never interrupts an in-flight cycle. The daily `--schedule` fires after the
-  # CI build window (build cron is 04:17 UTC).
+  # Optional registry auto-poll — OFF by default (guarded by the `watchtower`
+  # profile). The operator's own VM redeploys through the self-hosted-runner
+  # push deploy instead and never starts this service. Enable it for a manual /
+  # generic deployment (a fork, or a Portainer stack with no runner):
+  #   docker compose -f deployment/docker-compose.yml --profile watchtower up -d
+  # It watches the registry for a new operator-engine image (rebuilt nightly +
+  # on every master push — see ../.github/workflows/build-image.yml) and
+  # recreates the container so the bundled agent CLIs (claude-code +
+  # cursor-agent) and engine code stay current without a manual pull.
+  # `--label-enable` scopes it to operator-engine only; `--stop-timeout 300s`
+  # matches the engine's SIGTERM drain budget so a swap never interrupts an
+  # in-flight cycle; the daily `--schedule` fires after the CI build window
+  # (build cron is 04:17 UTC).
   #
   # If OPERATOR_IMAGE points at a PRIVATE registry, Watchtower needs pull creds:
   # mount a Docker config.json (`- ~/.docker/config.json:/config.json:ro`) or set
-  # REPO_USER / REPO_PASS. Remove this service for manual, reviewed redeploys.
+  # REPO_USER / REPO_PASS.
   watchtower:
     image: containrrr/watchtower:latest
     container_name: operator-watchtower
+    profiles: ["watchtower"]
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

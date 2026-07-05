@@ -9,9 +9,11 @@ internal scheduler drives cycles on the configured interval; the supervisor
 | File | Purpose |
 |---|---|
 | `Dockerfile` | Self-contained engine image — Node + git + gh + ripgrep + the agent CLIs (Claude Code + Cursor Agent). No external base image. |
-| `docker-compose.yml` | Always-on `operator-engine` service: restart policy, graceful stop, state volume. |
+| `docker-compose.yml` | Always-on `operator-engine` service (restart policy, graceful stop, state volume) + an opt-in `watchtower` profile for registry auto-poll. |
+| `deploy.sh` | Push-based redeploy — pull a pinned image, recreate `operator-engine`, prune. Run by the deploy job and by hand on the VM. |
+| `self-hosted-runner.md` | Sets up the operator's own VM to redeploy itself through a self-hosted runner. |
 | `.env.example` | Environment template (image tag, log level, secrets). |
-| `../.github/workflows/build-image.yml` | CI that builds + pushes the image to GHCR on push. **Does not deploy.** |
+| `../.github/workflows/build-image.yml` | CI that builds + pushes the image to GHCR, then (on `master`) redeploys it via the self-hosted runner. |
 
 ## Invariants
 
@@ -64,18 +66,24 @@ CLIs (Claude Code + Cursor Agent) re-fetch the latest upstream rather than
 restoring the frozen install layers from cache. See "Keeping the agent CLIs
 current" in `../docs/deployment.md`.
 
-Rolling a new image out:
+**The operator's own VM (self-improvement loop).** A second job in
+`../.github/workflows/build-image.yml` runs on a self-hosted runner (label
+`operator-deploy`) and, on `master` only, redeploys the freshly built image via
+`deploy.sh` — so every merge and every nightly refresh reaches the running
+daemon with no manual step. One-time VM setup is in `self-hosted-runner.md`.
 
+**Manual / generic deployments (forks, Portainer).** No runner? Roll a new
+image out yourself, or opt into registry auto-poll:
+
+- **compose:** `docker compose -f deployment/docker-compose.yml pull && \
+  docker compose -f deployment/docker-compose.yml up -d`.
 - **Portainer:** pull the new image and recreate the stack (or bump
   `OPERATOR_IMAGE` to a `:<sha>` tag and redeploy). Roll back by redeploying a
   previous tag.
-- **compose:** `docker compose -f deployment/docker-compose.yml pull && \
-  docker compose -f deployment/docker-compose.yml up -d`.
-
-To pick up the nightly rebuild **without** a manual step, point a
-[Watchtower](https://containrrr.dev/watchtower/) instance at `operator-engine`
-(scope it to that one container) or run the `compose pull && up -d` pair from a
-host cron after the CI build window.
+- **Watchtower:** start the opt-in profile to auto-poll GHCR and recreate the
+  container when `:latest` changes —
+  `docker compose -f deployment/docker-compose.yml --profile watchtower up -d`
+  (scoped to `operator-engine` only).
 
 Either way the supervisor sends `SIGTERM` to the old container first, so the
 running cycle drains before the new image starts.

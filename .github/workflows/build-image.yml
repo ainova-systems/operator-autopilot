@@ -1,8 +1,12 @@
 name: Build Image
 
-# Builds and publishes the always-on engine image to GHCR.
-# Deployment (Portainer / docker compose) is owned outside CI and pulls the
-# published tag — see deployment/README.md. This workflow does NOT deploy.
+# Builds and publishes the always-on engine image to GHCR, then redeploys it to
+# the operator's own VM through a self-hosted runner (label `operator-deploy`).
+# The deploy job runs on master only (push + nightly schedule), so every merge
+# and every nightly CLI refresh lands on the running operator. Generic / manual
+# deployments (forks without a runner, Portainer) skip the deploy job and pull
+# the tag their own way — see deployment/README.md and
+# deployment/self-hosted-runner.md.
 
 on:
   push:
@@ -35,6 +39,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
 
     steps:
       - name: Checkout
@@ -72,3 +78,33 @@ jobs:
           # layers re-fetch the newest claude-code / cursor-agent; code-push and
           # manual builds keep the fast cached path.
           no-cache: ${{ github.event_name == 'schedule' }}
+
+  # Redeploy the freshly built image onto the operator's own VM. Runs on the
+  # self-hosted runner (label `operator-deploy`) and only on master (push +
+  # nightly schedule), so every merge and every nightly CLI refresh reaches the
+  # running daemon. Generic / manual deployments have no such runner and simply
+  # skip this job — see deployment/self-hosted-runner.md.
+  deploy:
+    needs: build
+    runs-on: [self-hosted, operator-deploy]
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Redeploy operator-engine
+        run: bash deployment/deploy.sh
+        env:
+          # Pin the exact image this run built — deterministic and rollbackable.
+          OPERATOR_IMAGE: ${{ needs.build.outputs.image }}:${{ github.sha }}

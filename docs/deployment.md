@@ -205,14 +205,15 @@ SQLite files are the full state. Back up `OPERATOR_DB_PATH` + `OPERATOR_APP_DB_P
 The container bakes the agent CLIs at **build time** — `npm install -g @anthropic-ai/claude-code` and the `cursor-agent` installer both resolve to *latest at that moment*, then freeze into the image. Two things keep a deployment from drifting behind upstream:
 
 1. **Rebuild on a schedule.** `.github/workflows/build-image.yml` rebuilds and pushes `:latest` nightly (`schedule:` cron) with `no-cache` on scheduled runs, so the CLI install layers actually re-fetch rather than restoring from the layer cache. A code push or manual `workflow_dispatch` still builds on the fast cached path.
-2. **Redeploy the new image.** CI only publishes; nothing pulls automatically. The running host must `docker compose pull && docker compose up -d` to pick up the fresh `:latest`. Automate this with one of:
-   - **Watchtower** (recommended for the single-container Portainer setup) — watches the registry and recreates the container when `:latest` changes. Scope it to `operator-engine` only.
+2. **Redeploy the new image.** CI publishes, and for the operator's own VM the deploy job in `build-image.yml` rolls it out immediately over a self-hosted runner (`deployment/self-hosted-runner.md`) — the nightly rebuild redeploys too, so the running daemon never drifts behind the bundled CLIs. Any other host must `docker compose pull && docker compose up -d` to pick up the fresh `:latest`; automate that with one of:
+   - A **self-hosted deploy runner** (recommended when the host is yours) — `deployment/deploy.sh` on a `master` build. See `deployment/self-hosted-runner.md`.
+   - **Watchtower**, the opt-in `watchtower` compose profile — watches the registry and recreates the container when `:latest` changes. Scope it to `operator-engine` only. Good for a Portainer stack with no runner: `docker compose -f deployment/docker-compose.yml --profile watchtower up -d`.
    - A nightly cron on the host: `docker compose -f deployment/docker-compose.yml pull && docker compose -f deployment/docker-compose.yml up -d` (run *after* the CI build window).
    - Pin a digest/tag and bump it through your normal deploy pipeline if you prefer deterministic, reviewed updates over auto-pull.
 
    The engine drains the in-flight cycle on `SIGTERM` (see `stop_grace_period`), so an image swap between cycles is safe — a recreate never interrupts an agent mid-PR-transition.
 
-> The same drift applies to any self-hosted CI runner image that bakes the agent CLIs in at build time. Give its build the same `schedule:` + `no-cache` treatment, and refresh the runners (ephemeral runners re-pull `:latest` per job; long-lived runner containers need Watchtower or a scheduled `pull && up -d`).
+> The same drift applies to any self-hosted CI runner image that bakes the agent CLIs in at build time. Give its build the same `schedule:` + `no-cache` treatment, and refresh the runners (ephemeral runners re-pull `:latest` per job; long-lived runner containers need the deploy runner, the Watchtower profile, or a scheduled `pull && up -d`).
 
 ## Troubleshooting
 
