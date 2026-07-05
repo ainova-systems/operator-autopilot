@@ -1,6 +1,6 @@
 ---
 path: "*"
-schedule: weekly:4
+schedule: daily
 ---
 
 # Boundary Resilience Rules

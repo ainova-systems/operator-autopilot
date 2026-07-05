@@ -1,6 +1,6 @@
 ---
 path: "*"
-schedule: weekly:3
+schedule: daily
 ---
 
 # Prompt and Agent-Contract Quality Rules

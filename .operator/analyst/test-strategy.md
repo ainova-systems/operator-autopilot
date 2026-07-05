@@ -1,6 +1,6 @@
 ---
 path: "*"
-schedule: weekly:5
+schedule: daily
 ---
 
 # Test Strategy Rules
