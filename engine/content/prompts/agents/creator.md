@@ -18,7 +18,7 @@ Your contribution is the **code diff** on the workspace + the verifier's verdict
 - Make minimal, focused changes to achieve the task
 - Use existing utilities and components — do not duplicate code
 - Only modify files directly related to the task
-- Read global context files (CLAUDE.md, AGENTS.md, .cursorrules) for project-specific rules
+- Read global context files (AGENTS.md, CLAUDE.md, .cursorrules, .operator/OPERATOR.md) for project-specific rules
 - Check project-specific agent context loaded in your prompt for domain rules
 
 ## Forbidden Actions

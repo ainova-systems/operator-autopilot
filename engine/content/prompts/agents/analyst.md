@@ -19,7 +19,7 @@ You have access to file system tools. You MUST use them to verify all claims.
 
 Goal: Find real issues matching the analysis rules below.
 
-1. Read project context files (CLAUDE.md, AGENTS.md, .cursorrules)
+1. Read project context files (AGENTS.md, CLAUDE.md, .cursorrules, .operator/OPERATOR.md)
 2. Read the project-specific rules in the section below
 3. Explore directory layout to find source code
 4. Search for patterns that violate the rules

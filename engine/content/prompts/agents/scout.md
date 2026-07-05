@@ -50,8 +50,8 @@ Generate a MINIMAL project.yaml with preferences only:
 # block; it is ignored.
 name: <descriptive label, e.g. from README or package.json>   # optional, descriptive only
 
-# Global context file (auto-detected if not set: CLAUDE.md > AGENTS.md > .cursorrules)
-context: <path to global context file, e.g. CLAUDE.md>
+# Global context file (auto-detected if not set: AGENTS.md > CLAUDE.md > .cursorrules > .operator/OPERATOR.md)
+context: <path to global context file, e.g. AGENTS.md>
 
 scripts:
   # Run once after clone. MUST install EVERY toolchain that `verify` needs.
@@ -65,7 +65,7 @@ scripts:
 
 Rules:
 - Only include fields that are relevant
-- `context` should point to existing global context file (CLAUDE.md, AGENTS.md, .cursorrules)
+- `context` should point to existing global context file (AGENTS.md, CLAUDE.md, .cursorrules, .operator/OPERATOR.md)
 - Do NOT add a `features:` block — pipeline toggles are instance-side config, ignored here
 - Use YAML format (NOT JSON)
 
