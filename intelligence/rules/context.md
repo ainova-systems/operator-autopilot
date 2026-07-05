@@ -32,7 +32,8 @@ git-operator-autopilot/
 │   ├── next.config.ts
 │   └── src/
 ├── packages/
-│   ├── core/                @operator/core — shared types + interfaces, zero runtime code
+│   ├── core/                @operator/core — shared types, interfaces, Zod schemas, error classes
+│   │                        (runtime: Zod schema values + error constructors; zod only)
 │   │   ├── package.json
 │   │   └── src/
 │   └── adapters/            @operator/adapters — KVStore / Guard / RateLimiter / VCS impls

@@ -39,7 +39,7 @@ npx tsx --env-file=.env.local engine/entry.ts --once --repo <repo-id>
 
 - `engine/` — the daemon (composition root `engine/entry.ts`, flat layout).
 - `engine/content/` — bundled prompts/templates/defaults, seeded into the KV store.
-- `packages/core` — shared types, interfaces, error classes (zero runtime).
+- `packages/core` — shared types, interfaces, Zod schemas, and error classes (runtime: Zod schema values + error constructors; `zod` only).
 - `packages/adapters` — concrete implementations (SQLite KV, GitHub VCS, …).
 - `app/` — Next.js observability UI.
 - `deployment/` — container image + compose for running the engine.

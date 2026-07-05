@@ -21,7 +21,7 @@ Always respond in Russian. Report findings as a structured list with exact file 
 
 ### Layer compliance
 
-- **Package boundary**: `@operator/core` has zero runtime dependencies beyond error class constructors. `@operator/adapters` never imported by `@operator/core`. `@operator/app` never imports `@operator/engine` runtime.
+- **Package boundary**: `@operator/core` runtime is limited to Zod schema values and error class constructors (`zod` is its single runtime dependency). `@operator/adapters` never imported by `@operator/core`. `@operator/app` never imports `@operator/engine` runtime.
 - **`engine/` layer graph**: see `typescript.md`. No upward or sideways imports. `platforms/` never imports `agents/`. `storage/` never imports `pipeline/`.
 - **Composition root**: only `engine/entry.ts` uses `new` on concrete cross-layer classes. Every other file receives dependencies through constructor injection.
 
