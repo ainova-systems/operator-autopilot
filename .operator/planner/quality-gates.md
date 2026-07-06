@@ -26,3 +26,8 @@ Rules for validating findings and generating tasks in this repository.
 - **Reject non-actionable findings** back with reason: no concrete file:line
   evidence, stylistic preference without a rule source, or duplicate of an
   open item.
+- **Work-item frontmatter quoting.** Generated task/finding bodies are
+  orchestrator-owned, but when a plan embeds a sample frontmatter block, match
+  the canonical writer (`buildFrontmatter` in `engine/work-items/work-items.ts`):
+  `title`, `created_at`, and `parent_id` are double-quoted strings. Unquoted
+  scalars create noisy diffs when the orchestrator later patches status fields.

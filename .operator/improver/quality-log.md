@@ -45,3 +45,24 @@ findings for this repository.
   proposals to change analyzer/creator/verifier rules are emitted as findings
   (kind: finding) so they go through the normal PR gate — the retrospective
   never edits rule files directly.
+
+## AOP lifecycle records (required syntax)
+
+Status reconciliation, task cancellation, and body clarifications MUST use
+fenced AOP blocks — the parser accepts ONLY `=== EMIT <type> ===` …
+`=== END EMIT ===` markers (`engine/pipeline/primitives/agent-output-protocol.ts`).
+Colon-prefixed lines like `EMIT: status-update` are free text and are silently
+dropped.
+
+Example:
+
+```
+=== EMIT status-update ===
+target: F20260416-0002
+status: rejected
+reason: "superseded by merged task"
+=== END EMIT ===
+```
+
+Use the same fenced form for `child-item` and `body-update`. Never edit work-item
+frontmatter directly — emit lifecycle changes through these blocks only.
