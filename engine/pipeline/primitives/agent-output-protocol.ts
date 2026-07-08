@@ -144,14 +144,33 @@ export function parseAgentOutput(text: string): AgentEventParseResult {
       payload = yamlLoad(buffer.join("\n"));
       if (payload === null || payload === undefined) payload = {};
     } catch (err) {
+      // Strict YAML rejected the block. The dominant cause is a free-text
+      // field carrying an unquoted colon-space — a `comment-reply` `note:`
+      // that quotes code ("named argument: …") or a method signature —
+      // which js-yaml reads as a nested mapping key and throws on. That
+      // discarded the whole record and forced the stage verdict to `failed`
+      // even when the underlying fix was fine (PRs #1240/#1241, 2026-07-08).
+      // Fall back to a lenient key/value re-parse before giving up so the
+      // record survives as a non-fatal warning instead of a hard error.
+      const recovered = lenientParseBlock(buffer);
+      if (!recovered) {
+        diagnostics.push({
+          severity: "error",
+          code: "yaml-parse-error",
+          line: startLine,
+          emitType,
+          message: `YAML parse error in EMIT ${emitType}: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        continue;
+      }
+      payload = recovered;
       diagnostics.push({
-        severity: "error",
-        code: "yaml-parse-error",
+        severity: "warning",
+        code: "lenient-recovery",
         line: startLine,
         emitType,
-        message: `YAML parse error in EMIT ${emitType}: ${err instanceof Error ? err.message : String(err)}`,
+        message: `EMIT ${emitType} was not valid YAML (${err instanceof Error ? err.message : String(err)}); recovered via lenient key/value parse — quote or block-scalar (\`note: |\`) free-text fields to avoid this`,
       });
-      continue;
     }
     if (typeof payload !== "object" || Array.isArray(payload)) {
       diagnostics.push({
@@ -183,6 +202,92 @@ export function parseAgentOutput(text: string): AgentEventParseResult {
   }
 
   return { events, diagnostics };
+}
+
+/** Matches a top-level `key:` line (key at column 0, value optional). */
+const LENIENT_KEY_LINE = /^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]+(.*))?$/;
+/** Matches a YAML block-scalar indicator (`|`, `|-`, `>`, `>+`, …). */
+const BLOCK_SCALAR_INDICATOR = /^[|>][+-]?$/;
+
+/**
+ * Lenient fallback for a block whose body strict YAML rejected. AOP block
+ * bodies are flat `key: value` mappings, so the one structural shape that
+ * trips a well-formed block is an unquoted scalar value that itself contains
+ * a colon-space. This re-parser keeps YAML as the primary path and only runs
+ * on a YAML throw: it reads each top-level `key:` line and takes the whole
+ * remainder of the line as the value (so an embedded colon is preserved),
+ * while still honouring `key: |` / `key: >` block scalars so multi-line
+ * bodies in a mixed block survive too. Values that look like a YAML integer
+ * or boolean are coerced so numeric fields (e.g. child-item `priority`)
+ * validate exactly as they would on the strict path.
+ *
+ * Returns `null` when no `key:` line was found — genuinely malformed output
+ * (unclosed flow collections, ASCII garbage) then falls through to the
+ * original `yaml-parse-error` rather than being masked.
+ */
+function lenientParseBlock(lines: ReadonlyArray<string>): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  let matched = false;
+  let i = 0;
+  while (i < lines.length) {
+    const keyMatch = lines[i].match(LENIENT_KEY_LINE);
+    if (!keyMatch) {
+      i++;
+      continue;
+    }
+    matched = true;
+    const key = keyMatch[1];
+    const inline = (keyMatch[2] ?? "").trim();
+    if (BLOCK_SCALAR_INDICATOR.test(inline)) {
+      i++;
+      const collected: string[] = [];
+      let indent: number | null = null;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim() === "") {
+          collected.push("");
+          i++;
+          continue;
+        }
+        const lead = line.length - line.trimStart().length;
+        if (lead === 0) break;
+        if (indent === null) indent = lead;
+        collected.push(line.slice(Math.min(indent, lead)));
+        i++;
+      }
+      // Clip trailing blank lines but keep one newline, matching js-yaml's
+      // `|` block-scalar semantics the strict path would have produced.
+      out[key] = `${collected.join("\n").replace(/\n+$/, "")}\n`;
+    } else {
+      out[key] = coerceScalar(stripSurroundingQuotes(inline));
+      i++;
+    }
+  }
+  return matched ? out : null;
+}
+
+/** Strip a single pair of matching surrounding quotes, if present. */
+function stripSurroundingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+/**
+ * Coerce a bare scalar to the type strict YAML would have inferred, so the
+ * lenient path feeds Zod the same shapes: integers → number, `true`/`false`
+ * → boolean, everything else stays a string.
+ */
+function coerceScalar(value: string): unknown {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^-?\d+$/.test(value)) return Number(value);
+  return value;
 }
 
 /**

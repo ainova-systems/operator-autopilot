@@ -18,7 +18,8 @@ export type AgentEventDiagnosticCode =
   | "payload-not-mapping"
   | "unknown-emit-type"
   | "validation-failed"
-  | "raw-frontmatter-leak";
+  | "raw-frontmatter-leak"
+  | "lenient-recovery";
 
 /**
  * Single diagnostic emitted while transforming an agent's raw output
