@@ -42,6 +42,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | git-create-release | Cut a release: version, changelog, tag, and release object — policy-driven across trunk/gitflow and tag-only/full |
 | git-finalize-pr | Drive the current branch's PR to merge-ready: CI green and every review comment handled, ending with an outcome label |
 | git-merge-pr | After owner accept: guard-checked squash-merge of the current branch's PR, base sync and branch cleanup |
+| git-open-pr | Open a pull request for the current branch against its target, using the repo template |
 | git-resolve-conflicts | Resolve merge or rebase conflicts semantically, then re-verify the full gates |
 | git-review-pr-comments | Triage PR review comments: fix, discuss, or decline with reason - every thread answered |
 | git-scan-secrets | Scan diff, tree, or branch history for committed credentials |
@@ -373,14 +374,4 @@ Branch model comes from `dev-project-profile.md`. Without it, detect (default br
 - Update long-running branches per profile `update_strategy` (default: merge from target). Delete branches after merge.
 
 Forbidden: committing directly to a protected branch (default and integration branches always are) - branch first; merging on red CI; rewriting history on shared branches.
-
-## Autonomous outcome labels
-
-A run with no human in the loop between task and PR ends by labeling its PR with exactly one outcome, so a human triages at a glance and merge gating can key off it:
-
-- `ai:ready-to-merge` - CI green, every review thread answered, mergeable; awaiting the owner's accept.
-- `ai:manual` - needs an owner decision; state precisely what.
-- `ai:failed` - could not reach green; state the blocking failure and what was tried.
-
-Autonomous runs never merge themselves. The labels must exist in the repository (create once, e.g. `gh label create ai:ready-to-merge`). A human-driven PR may skip them.
 
