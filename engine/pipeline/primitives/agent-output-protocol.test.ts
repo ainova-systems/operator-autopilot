@@ -389,6 +389,24 @@ describe("parseAgentOutput — lenient recovery (colon in free-text values)", ()
     ]);
   });
 
+  it("recovers a comment-reply whose colon-bearing note wraps onto a continuation line", () => {
+    // The notes long enough to quote a signature are the ones a model wraps.
+    // A truncated note still satisfies `note: z.string().min(1)`, so the
+    // supervisor would post half an answer and mark the thread handled.
+    const text = block(
+      "comment-reply",
+      "thread: 3539510600\ndisposition: fixed\nnote: Reordered arguments: fmi is now passed\n  positionally so the call compiles.",
+    );
+    const r = parseAgentOutput(text);
+    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
+    expect(r.events[0]).toEqual({
+      type: "comment-reply",
+      thread: "3539510600",
+      disposition: "fixed",
+      note: "Reordered arguments: fmi is now passed positionally so the call compiles.",
+    });
+  });
+
   it("recovers every colon-bearing comment-reply in a multi-thread cycle (7-thread PR shape)", () => {
     const text = Array.from({ length: 7 }, (_, n) =>
       block(
