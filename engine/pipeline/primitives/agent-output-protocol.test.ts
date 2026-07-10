@@ -362,6 +362,142 @@ describe("parseAgentOutput — edge cases", () => {
   });
 });
 
+// ── Lenient recovery for colon-bearing free-text fields ──────────────
+
+describe("parseAgentOutput — lenient recovery (colon in free-text values)", () => {
+  it("recovers a comment-reply whose note contains a colon-space (PR #1240/#1241 false-fail)", () => {
+    // Pre-fix: the unquoted `note:` value contains `: ` which js-yaml reads
+    // as a nested mapping key and throws on, yielding a `yaml-parse-error`
+    // that forced the whole supervisor verdict to `failed` even though the
+    // fix was fine. The block MUST now survive as a non-fatal recovery.
+    const text = block(
+      "comment-reply",
+      "thread: 3539510600\ndisposition: fixed\nnote: Reordered arguments: fmi is now passed positionally.",
+    );
+    const r = parseAgentOutput(text);
+    // No ERROR diagnostic — a colon in a note must not sink the record.
+    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0]).toMatchObject({ severity: "warning", code: "lenient-recovery", emitType: "comment-reply" });
+    expect(r.events).toEqual([
+      {
+        type: "comment-reply",
+        thread: "3539510600",
+        disposition: "fixed",
+        note: "Reordered arguments: fmi is now passed positionally.",
+      },
+    ]);
+  });
+
+  it("recovers a comment-reply whose colon-bearing note wraps onto a continuation line", () => {
+    // The notes long enough to quote a signature are the ones a model wraps.
+    // A truncated note still satisfies `note: z.string().min(1)`, so the
+    // supervisor would post half an answer and mark the thread handled.
+    const text = block(
+      "comment-reply",
+      "thread: 3539510600\ndisposition: fixed\nnote: Reordered arguments: fmi is now passed\n  positionally so the call compiles.",
+    );
+    const r = parseAgentOutput(text);
+    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
+    expect(r.events[0]).toEqual({
+      type: "comment-reply",
+      thread: "3539510600",
+      disposition: "fixed",
+      note: "Reordered arguments: fmi is now passed positionally so the call compiles.",
+    });
+  });
+
+  it("recovers every colon-bearing comment-reply in a multi-thread cycle (7-thread PR shape)", () => {
+    const text = Array.from({ length: 7 }, (_, n) =>
+      block(
+        "comment-reply",
+        `thread: 353951060${n}\ndisposition: not-applicable\nnote: Copilot warning is a false positive: the call compiles under C# 12.`,
+      ),
+    ).join("\n\n");
+    const r = parseAgentOutput(text);
+    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
+    expect(r.events).toHaveLength(7);
+    expect(r.events.every((e) => e.type === "comment-reply")).toBe(true);
+    expect(r.diagnostics.filter((d) => d.code === "lenient-recovery")).toHaveLength(7);
+  });
+
+  it("leaves a quoted note on the strict YAML path (no recovery warning)", () => {
+    const text = block(
+      "comment-reply",
+      'thread: 42\ndisposition: fixed\nnote: "Fixed: added the missing null guard in login()."',
+    );
+    const r = parseAgentOutput(text);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.events[0]).toMatchObject({
+      type: "comment-reply",
+      note: "Fixed: added the missing null guard in login().",
+    });
+  });
+
+  it("recovers a child-item with a colon in title, a quoted field, coerced priority, and a multi-paragraph block-scalar body", () => {
+    const text = block(
+      "child-item",
+      [
+        "kind: task",
+        "parent: self",
+        "title: Fix: reorder args in Generate()",
+        'source: "planner"',
+        "priority: 3",
+        "body: |",
+        "  Para one.",
+        "",
+        "  Para two.",
+      ].join("\n"),
+    );
+    const r = parseAgentOutput(text);
+    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
+    expect(r.events[0]).toEqual({
+      type: "child-item",
+      kind: "task",
+      parent: "self",
+      title: "Fix: reorder args in Generate()",
+      source: "planner",
+      priority: 3,
+      body: "Para one.\n\nPara two.\n",
+    });
+  });
+
+  it("recovers an error record with a colon in message, coercing recoverable=false", () => {
+    const text = block(
+      "error",
+      "code: ENV_BUILD\nmessage: build failed: missing dependency\nrecoverable: false",
+    );
+    const r = parseAgentOutput(text);
+    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
+    expect(r.events[0]).toEqual({
+      type: "error",
+      code: "ENV_BUILD",
+      message: "build failed: missing dependency",
+      recoverable: false,
+    });
+  });
+
+  it("still reports yaml-parse-error for genuinely malformed output (no key lines to recover)", () => {
+    const text = block("verdict", "{ unclosed flow collection");
+    const r = parseAgentOutput(text);
+    expect(r.events).toEqual([]);
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0]).toMatchObject({ severity: "error", code: "yaml-parse-error", emitType: "verdict" });
+  });
+
+  it("keeps a recovered-but-invalid block as a hard failure (recovery does not mask a schema violation)", () => {
+    // A colon breaks YAML AND the disposition is invalid — recovery parses
+    // the fields but Zod still rejects, so an error diagnostic must remain.
+    const text = block(
+      "comment-reply",
+      "thread: 1\ndisposition: maybe\nnote: reason: still wrong",
+    );
+    const r = parseAgentOutput(text);
+    expect(r.events).toEqual([]);
+    expect(r.diagnostics.some((d) => d.code === "validation-failed")).toBe(true);
+  });
+});
+
 // ── Frontmatter ownership boundary (F3.5) ────────────────────────────
 
 describe("parseAgentOutput — raw-frontmatter-leak guard", () => {

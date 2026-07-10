@@ -7,6 +7,7 @@ import {
   type AgentEventParseResult,
   type AgentEventType,
 } from "@operator/core";
+import { lenientParseBlock } from "./aop-lenient-parse.js";
 
 /**
  * Agent-Orchestrator Protocol (AOP) — text-block transport.
@@ -144,14 +145,33 @@ export function parseAgentOutput(text: string): AgentEventParseResult {
       payload = yamlLoad(buffer.join("\n"));
       if (payload === null || payload === undefined) payload = {};
     } catch (err) {
+      // Strict YAML rejected the block. The dominant cause is a free-text
+      // field carrying an unquoted colon-space — a `comment-reply` `note:`
+      // that quotes code ("named argument: …") or a method signature —
+      // which js-yaml reads as a nested mapping key and throws on. That
+      // discarded the whole record and forced the stage verdict to `failed`
+      // even when the underlying fix was fine (PRs #1240/#1241, 2026-07-08).
+      // Fall back to a lenient key/value re-parse before giving up so the
+      // record survives as a non-fatal warning instead of a hard error.
+      const recovered = lenientParseBlock(buffer);
+      if (!recovered) {
+        diagnostics.push({
+          severity: "error",
+          code: "yaml-parse-error",
+          line: startLine,
+          emitType,
+          message: `YAML parse error in EMIT ${emitType}: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        continue;
+      }
+      payload = recovered;
       diagnostics.push({
-        severity: "error",
-        code: "yaml-parse-error",
+        severity: "warning",
+        code: "lenient-recovery",
         line: startLine,
         emitType,
-        message: `YAML parse error in EMIT ${emitType}: ${err instanceof Error ? err.message : String(err)}`,
+        message: `EMIT ${emitType} was not valid YAML (${err instanceof Error ? err.message : String(err)}); recovered via lenient key/value parse — quote or block-scalar (\`note: |\`) free-text fields to avoid this`,
       });
-      continue;
     }
     if (typeof payload !== "object" || Array.isArray(payload)) {
       diagnostics.push({
