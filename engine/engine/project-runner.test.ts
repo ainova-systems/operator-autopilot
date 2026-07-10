@@ -515,6 +515,20 @@ describe("runProject — queue-fill backoff", () => {
     expect(state.markScheduleRun).toHaveBeenCalledWith(expect.anything(), "sample", "research");
     expect(state.setCounter).not.toHaveBeenCalled();
   });
+
+  it("a failed queue-fill run advances the throttle and backoff so it does not re-fire every cycle", async () => {
+    const state = makeState();
+    vi.mocked(state.listWorkItems).mockResolvedValue(makeItems(0) as never);
+    vi.mocked(state.getCounter).mockResolvedValue(0);
+    const vcs = vcsWithReviews([]);
+    const execute = vi.fn().mockResolvedValue({ action: "research", status: "failed" });
+    const deps = makeDeps({ state, vcs, executeAction: execute, dispatchRegistry: qfRegistry() });
+
+    await runProject(makeProject(), deps, makeCtx());
+
+    expect(state.markScheduleRun).toHaveBeenCalledWith(expect.anything(), "sample", "research");
+    expect(state.setCounter).toHaveBeenCalledWith(expect.anything(), "sample", "research-empty", 1);
+  });
 });
 
 // ── runProject — custom registry ─────────────────────────────────────
