@@ -10,7 +10,7 @@ Cross-stack consistency checks for the monorepo. Reference, do not restate:
 `intelligence/rules/context.md`, and `intelligence/rules/dev-context-engineering.md`.
 
 ## Package & layer boundaries
-- Import direction holds everywhere: `core` (nothing runtime) ← `adapters` ← `engine`; `app` uses `core` types + `adapters` read-only, never `engine` runtime.
+- Import direction holds everywhere: `core` (no I/O, no cross-workspace imports; zod only) ← `adapters` ← `engine`; `app` uses `core` types + `adapters` read-only, never `engine` runtime.
 - Inside `engine/`, imports flow strictly downward per the layer graph (`platforms/` ⇏ `agents/`, `storage/` ⇏ `pipeline/`, `infra/` → Node built-ins only).
 - Primitive-boundary calls (`git.*`, `PRManager.*`, `VCSPlatform.*`, `AgentRuntime.run`, KV writes) appear only in `engine/pipeline/primitives/**`.
 

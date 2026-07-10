@@ -99,8 +99,9 @@ git-operator-autopilot/
 │   └── tsconfig.json
 │
 ├── packages/
-│   ├── core/                        @operator/core — shared contracts (zero runtime
-│   │   └── src/                        except error classes)
+│   ├── core/                        @operator/core — shared contracts (types,
+│   │   └── src/                        interfaces, Zod schemas, error classes;
+│   │                                    runtime: no I/O, no cross-workspace imports; zod only)
 │   │       ├── types/                  WorkItem, CodeReview, OperationContext,
 │   │       │                             WorkItemKind (open string), domain types
 │   │       ├── interfaces/             KVStore, VCSPlatform, AgentProvider,
@@ -194,9 +195,9 @@ Layers are enforced by ESLint `no-restricted-imports` (CI-blocking from Step 17 
 ## 2. Package boundaries (non-negotiable)
 
 ```
-@operator/core        → imports: nothing external except type-only `node:` modules
-                        exports: types, interfaces, error classes
-                        zero runtime code beyond error class constructors
+@operator/core        → imports: type-only `node:` modules; runtime dep: zod only
+                        exports: types, interfaces, Zod schemas, error classes
+                        runtime: no I/O, no cross-workspace imports; zod only
 
 @operator/adapters    → imports: @operator/core, external packages (better-sqlite3,
                         @octokit/rest, fetch)
@@ -214,7 +215,7 @@ Layers are enforced by ESLint `no-restricted-imports` (CI-blocking from Step 17 
 ```
 
 Rules:
-- `core` has zero runtime dependencies. If something needs a constructor, it lives in `adapters`.
+- `@operator/core` runtime carries no I/O and no cross-workspace imports; `zod` is its single runtime dependency. Cross-workspace runtime imports belong in `adapters`, not `core`.
 - `adapters` implements interfaces from `core`. One adapter per file per concrete implementation.
 - `engine` composes adapters into a running daemon. `entry.ts` is the only place that instantiates cross-layer classes (composition root rule).
 - `app` is a consumer of the same adapters `engine` uses, but only for read. Writing to storage from the UI happens through HTTP mutations that land in `engine` (future — MVP has no UI-initiated writes).

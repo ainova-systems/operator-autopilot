@@ -93,7 +93,7 @@ export default [
     },
   },
 
-  // @operator/core — shared types and interfaces, zero runtime code
+  // @operator/core — shared contracts; runtime: no I/O, no cross-workspace imports; zod only
   {
     files: ["packages/core/src/**/*.ts"],
     rules: {
@@ -109,7 +109,7 @@ export default [
             {
               group: ["@operator/engine", "@operator/engine/*", "@operator/app", "@operator/app/*"],
               message:
-                "@operator/core cannot import from engine or app. Core is the lowest layer and has zero runtime dependencies.",
+                "@operator/core cannot import from engine or app. Core is the lowest layer; its only runtime dependency is zod.",
             },
           ],
         },

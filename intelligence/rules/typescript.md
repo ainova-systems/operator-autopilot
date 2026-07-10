@@ -67,8 +67,9 @@ Paired with:
 ## Architecture — Package Boundaries
 
 ```
-@operator/core        imports: type-only from Node built-ins, nothing runtime
-                      exports: types, interfaces, error classes (the only runtime)
+@operator/core        imports: type-only from Node built-ins; runtime dep: zod only
+                      exports: types, interfaces, Zod schemas, error classes
+                      @operator/core runtime carries no I/O and no cross-workspace imports; zod is its single runtime dependency
                       consumers: adapters, engine, app
                       NEVER imports: adapters, engine, app
 
