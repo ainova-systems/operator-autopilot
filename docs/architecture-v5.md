@@ -101,7 +101,7 @@ git-operator-autopilot/
 ├── packages/
 │   ├── core/                        @operator/core — shared contracts (types,
 │   │   └── src/                        interfaces, Zod schemas, error classes;
-│   │                                    runtime: Zod schema values + error class constructors)
+│   │                                    runtime: no I/O, no cross-workspace imports; zod only)
 │   │       ├── types/                  WorkItem, CodeReview, OperationContext,
 │   │       │                             WorkItemKind (open string), domain types
 │   │       ├── interfaces/             KVStore, VCSPlatform, AgentProvider,
@@ -197,7 +197,7 @@ Layers are enforced by ESLint `no-restricted-imports` (CI-blocking from Step 17 
 ```
 @operator/core        → imports: type-only `node:` modules; runtime dep: zod only
                         exports: types, interfaces, Zod schemas, error classes
-                        runtime: Zod schema values + error class constructors
+                        runtime: no I/O, no cross-workspace imports; zod only
 
 @operator/adapters    → imports: @operator/core, external packages (better-sqlite3,
                         @octokit/rest, fetch)
@@ -215,7 +215,7 @@ Layers are enforced by ESLint `no-restricted-imports` (CI-blocking from Step 17 
 ```
 
 Rules:
-- `core` runtime is limited to Zod schema values and error class constructors; `zod` is its single runtime dependency. Cross-workspace runtime imports belong in `adapters`, not `core`.
+- `@operator/core` runtime carries no I/O and no cross-workspace imports; `zod` is its single runtime dependency. Cross-workspace runtime imports belong in `adapters`, not `core`.
 - `adapters` implements interfaces from `core`. One adapter per file per concrete implementation.
 - `engine` composes adapters into a running daemon. `entry.ts` is the only place that instantiates cross-layer classes (composition root rule).
 - `app` is a consumer of the same adapters `engine` uses, but only for read. Writing to storage from the UI happens through HTTP mutations that land in `engine` (future — MVP has no UI-initiated writes).

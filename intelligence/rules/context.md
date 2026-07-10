@@ -33,7 +33,7 @@ git-operator-autopilot/
 │   └── src/
 ├── packages/
 │   ├── core/                @operator/core — shared types, interfaces, Zod schemas, error classes
-│   │                        (runtime: Zod schema values + error class constructors; zod only)
+│   │                        (runtime: no I/O, no cross-workspace imports; zod only)
 │   │   ├── package.json
 │   │   └── src/
 │   └── adapters/            @operator/adapters — KVStore / Guard / RateLimiter / VCS impls
