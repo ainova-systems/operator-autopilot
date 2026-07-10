@@ -35,15 +35,31 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+/** Auto-detect priority for global context files (single source of truth). */
+export const GLOBAL_CONTEXT_ORDER = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".cursorrules",
+  ".operator/OPERATOR.md",
+] as const;
+
+function resolveGlobalContextCandidate(
+  name: (typeof GLOBAL_CONTEXT_ORDER)[number],
+  workspaceRoot: string,
+  automationDir: string,
+): string {
+  if (name === ".operator/OPERATOR.md") {
+    return resolve(automationDir, "OPERATOR.md");
+  }
+  return resolve(workspaceRoot, name);
+}
+
 /**
  * Detect the global context file for a project workspace.
  *
  * Ports `detect_global_context()` from `load-config.sh`:
  * 1. Explicit context from project.yaml
- * 2. AGENTS.md
- * 3. CLAUDE.md
- * 4. .cursorrules
- * 5. .operator/OPERATOR.md
+ * 2. {@link GLOBAL_CONTEXT_ORDER} in order
  */
 async function detectGlobalContext(
   workspaceRoot: string,
@@ -56,13 +72,9 @@ async function detectGlobalContext(
     if (await fileExists(explicit)) return explicit;
   }
 
-  // Auto-detect in priority order (matches V1 exactly)
-  const candidates = [
-    resolve(workspaceRoot, "AGENTS.md"),
-    resolve(workspaceRoot, "CLAUDE.md"),
-    resolve(workspaceRoot, ".cursorrules"),
-    resolve(automationDir, "OPERATOR.md"),
-  ];
+  const candidates = GLOBAL_CONTEXT_ORDER.map((name) =>
+    resolveGlobalContextCandidate(name, workspaceRoot, automationDir),
+  );
 
   for (const candidate of candidates) {
     if (await fileExists(candidate)) return candidate;

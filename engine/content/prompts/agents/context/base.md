@@ -14,7 +14,7 @@ sections that follow this base context.
 
 Before acting on a task, understand the project you are working in:
 
-1. **Global Context** - CLAUDE.md, AGENTS.md, or .cursorrules (loaded automatically)
+1. **Global Context** - AGENTS.md, CLAUDE.md, .cursorrules, or .operator/OPERATOR.md (loaded automatically)
 2. **Project Structure** - Explore the directory layout to understand organization
 3. **Existing Patterns** - Study existing code to understand conventions
 4. **Project Context** - Check `.operator/context/` for project-specific guidance

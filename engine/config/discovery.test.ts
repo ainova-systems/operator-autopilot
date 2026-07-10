@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OperationContext } from "@operator/core";
-import { discoverProjectExtensions } from "./discovery.js";
+import { discoverProjectExtensions, GLOBAL_CONTEXT_ORDER } from "./discovery.js";
 import { ConfigError } from "@operator/core";
+import { resolveContentPath } from "../infra/content-path.js";
 
 function makeCtx(): OperationContext {
   return {
@@ -29,7 +30,31 @@ afterEach(async () => {
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
+const SCOUT_AUTO_DETECT_PREFIX = "auto-detected if not set: ";
+
+function parseScoutDocumentedGlobalContextOrder(scoutMd: string): string[] {
+  const line = scoutMd
+    .split("\n")
+    .find((l) => l.includes(SCOUT_AUTO_DETECT_PREFIX));
+  if (!line) {
+    throw new Error(`scout.md missing "${SCOUT_AUTO_DETECT_PREFIX}" comment`);
+  }
+  const suffix = line.split(SCOUT_AUTO_DETECT_PREFIX)[1]?.trim();
+  if (!suffix) {
+    throw new Error("scout.md auto-detect order comment has no suffix");
+  }
+  const orderText = suffix.replace(/\)+$/, "").trim();
+  return orderText.split(">").map((part) => part.trim());
+}
+
 describe("discoverProjectExtensions", () => {
+  it("scout.md documents the same global-context order that discovery.ts implements", async () => {
+    const scoutPath = resolveContentPath("prompts", "agents/scout.md");
+    const scoutMd = await readFile(scoutPath, "utf-8");
+    const documentedOrder = parseScoutDocumentedGlobalContextOrder(scoutMd);
+    expect(documentedOrder).toEqual([...GLOBAL_CONTEXT_ORDER]);
+  });
+
   it("returns null projectYaml when file does not exist", async () => {
     const result = await discoverProjectExtensions(makeCtx(), workspaceRoot);
     expect(result.projectYaml).toBeNull();
