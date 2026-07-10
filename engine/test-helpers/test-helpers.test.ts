@@ -3,6 +3,7 @@ import type { OperationContext } from "@operator/core";
 import { TestVCSPlatform } from "./test-vcs-platform.js";
 import { TestStateManager } from "./test-state-manager.js";
 import { NoOpTelemetry } from "./noop-telemetry.js";
+import { TestIdempotencyGuard } from "./test-idempotency-guard.js";
 
 function makeCtx(): OperationContext {
   return {
@@ -125,5 +126,40 @@ describe("NoOpTelemetry", () => {
     expect(tel.messages).toHaveLength(3);
     expect(tel.messages[0].level).toBe("info");
     expect(tel.messages[2].message).toBe("failed");
+  });
+});
+
+describe("TestIdempotencyGuard", () => {
+  it("blocks a second acquire on a held key until release", async () => {
+    const guard = new TestIdempotencyGuard();
+    const first = await guard.acquire("k", 1000, makeCtx());
+    expect(first).not.toBeNull();
+    expect(await guard.acquire("k", 1000, makeCtx())).toBeNull();
+
+    await guard.release(first!, makeCtx());
+    expect(await guard.acquire("k", 1000, makeCtx())).not.toBeNull();
+  });
+
+  it("keeps blocking acquire after complete (dedup window), unlike release", async () => {
+    const guard = new TestIdempotencyGuard();
+    const handle = await guard.acquire("k", 1000, makeCtx());
+    await guard.complete(handle!, makeCtx());
+
+    expect(guard.held.has("k")).toBe(false);
+    expect(guard.completed.has("k")).toBe(true);
+    expect(await guard.acquire("k", 1000, makeCtx())).toBeNull();
+  });
+
+  it("clearActiveLocks reaps active locks only, leaving completed dedup windows", async () => {
+    const guard = new TestIdempotencyGuard();
+    await guard.acquire("active", 1000, makeCtx());
+    const done = await guard.acquire("done", 1000, makeCtx());
+    await guard.complete(done!, makeCtx());
+
+    const cleared = await guard.clearActiveLocks(makeCtx());
+
+    expect(cleared).toBe(1);
+    expect(await guard.acquire("active", 1000, makeCtx())).not.toBeNull();
+    expect(await guard.acquire("done", 1000, makeCtx())).toBeNull();
   });
 });

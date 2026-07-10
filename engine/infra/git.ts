@@ -82,6 +82,16 @@ export class WorkspaceGit {
     return this.exec(["rev-parse", "HEAD"]);
   }
 
+  /**
+   * Name of the branch HEAD currently points at, or `"HEAD"` when detached.
+   *
+   * Callers use this to assert that the working tree is still on the branch
+   * they prepared before they stage and commit into it.
+   */
+  async currentBranch(): Promise<string> {
+    return this.exec(["rev-parse", "--abbrev-ref", "HEAD"]);
+  }
+
   /** Reset to HEAD and clean untracked files. */
   async resetHard(): Promise<void> {
     await this.exec(["reset", "--hard", "HEAD", "--quiet"]);

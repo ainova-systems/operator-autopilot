@@ -17,6 +17,9 @@ import { stampWorkItem } from "../../work-items/work-items.js";
  *
  * The adapter is strictly fast-forward:
  *
+ *   0. Assert HEAD is still on `workspace.branch` — `commitIfChanged` writes to
+ *      HEAD but `push` sends the named branch, so a drifted HEAD would commit
+ *      onto a foreign branch. Drift throws `WS_BRANCH_DRIFT`.
  *   1. `git.addAll()`
  *   2. `git.commitIfChanged(commitMessage)` — returns `null` when the
  *      workspace has no staged changes, in which case the adapter
@@ -43,7 +46,7 @@ import { stampWorkItem } from "../../work-items/work-items.js";
 /** Minimal shape of {@link WorkspaceGit} consumed by the persist primitive. */
 type WorkspaceGitPersistLike = Pick<
   WorkspaceGit,
-  "addAll" | "commitIfChanged" | "push" | "headSha" | "commitCount"
+  "addAll" | "commitIfChanged" | "push" | "headSha" | "commitCount" | "currentBranch"
 >;
 
 /** Minimal shape of {@link PRManager} consumed by the persist primitive. */
@@ -177,6 +180,26 @@ export class FileOutputAdapter implements OutputAdapter {
       throw new WorkspaceError(
         "WS_ABORTED",
         `persist aborted before start (branch: ${workspace.branch})`,
+      );
+    }
+
+    // `commitIfChanged` commits into whatever HEAD points at, while `push`
+    // sends the branch named in the handle. When those two disagree the commit
+    // lands on a foreign branch and the push ships an unrelated ref — silently,
+    // because both git commands succeed. On 2026-07-09 a second cycle's
+    // `research` stage checked out its branch in the shared clone while this
+    // stage's agent was still running, and the task's commit landed on the
+    // research branch (managed-repo PR #1251).
+    //
+    // The per-repo workspace lock in `Engine.processProject` is what prevents
+    // that overlap; this assertion is the tripwire that refuses to commit if it
+    // ever happens again. Fail loudly rather than push to the wrong ref.
+    const headBranch = (await deps.git.currentBranch()).trim();
+    if (headBranch !== workspace.branch) {
+      throw new WorkspaceError(
+        "WS_BRANCH_DRIFT",
+        `workspace HEAD drifted: expected branch ${workspace.branch}, found ${headBranch} ` +
+        `(stage: ${stageDef.name}) — refusing to commit onto a branch this stage does not own`,
       );
     }
 

@@ -4,6 +4,10 @@ All notable changes to this project. 0.5.0 is the first public release of the v5
 
 ## [Unreleased]
 
+### Fixed
+
+- **Overlapping engine cycles corrupted the shared workspace.** `Daemon.start` registered the interval before awaiting the bootstrap cycle, and `IntervalScheduler`'s re-entrancy flag only saw cycles it launched itself — so the first tick started a second cycle alongside a bootstrap cycle that was still running an agent. Both cycles shared one git clone per repo, and `runStage`'s lock is keyed on the stage *name*, so a second cycle's `research` stage could check out its branch under a first cycle's running `creator`. The creator's commit then landed on the research branch, its own branch was pushed empty, and GitHub's `422 No commits between` was swallowed as an empty diff — the stage reported success with no PR. Three changes close it: `Daemon.runCycle` now owns the re-entrancy decision, `Engine.processProject` takes a `workspace:{repoId}` lock for the whole repo pass, and `persist` refuses to commit when HEAD has drifted off the branch the stage prepared (`WS_BRANCH_DRIFT`).
+
 ## 0.5.0 — 2026-06-23
 
 First public release of the v5 architecture rebuild. The v4 line was abandoned mid-migration after accumulated dead code and duplicated stage plumbing made further iteration unsafe. v5 restarts with a single composition root, a generic stage loop, and an observability UI that ships from day one.

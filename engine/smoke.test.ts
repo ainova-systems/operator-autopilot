@@ -10,6 +10,7 @@ import { Engine } from "./engine/engine.js";
 import type { EngineDeps } from "./engine/engine.js";
 import type { ActionResult } from "./engine/project-runner.js";
 import { buildTestDispatchRegistry } from "./test-helpers/test-dispatch-registry.js";
+import { TestIdempotencyGuard } from "./test-helpers/test-idempotency-guard.js";
 import { createLogger } from "./logging/logger.js";
 import { TestVCSPlatform } from "./test-helpers/test-vcs-platform.js";
 import { TestStateManager } from "./test-helpers/test-state-manager.js";
@@ -148,6 +149,7 @@ describe("smoke: engine boot + one cycle", () => {
       config,
       state,
       bus: { emit: async () => {}, on: () => {} },
+      guard: new TestIdempotencyGuard(),
       createVCS: () => vcs,
       resolveWorkspace: () => join(tmpRoot, "workspace"),
       prepareWorkspace: async () => {},

@@ -178,6 +178,39 @@ describe("Daemon", () => {
     expect(runOnce).toHaveBeenCalledTimes(1);
   });
 
+  it("drops interval ticks that fire while the bootstrap cycle is still running", async () => {
+    // 2026-07-09: `start()` registers the interval and then awaits the
+    // bootstrap cycle directly, so IntervalScheduler's own `running` flag
+    // never saw it. The 5-minute tick launched a second cycle alongside a
+    // bootstrap cycle that was still running an agent, both cycles shared one
+    // git clone per repo, and a task's commit landed on a research branch.
+    const logMessages: string[] = [];
+    const log = { info: (m: string) => logMessages.push(m) };
+    let finishBootstrapCycle!: () => void;
+    const bootstrapBlocked = new Promise<void>((resolve) => { finishBootstrapCycle = resolve; });
+
+    const runOnce = vi.fn()
+      .mockImplementationOnce(async () => {
+        await bootstrapBlocked;
+        return { projects: [], durationMs: 1 };
+      })
+      .mockResolvedValue({ projects: [], durationMs: 1 });
+    const daemon = new Daemon(makeEngine(runOnce), makeConfig({ once: false, cycleIntervalMs: 10 }), makeCtx, log);
+
+    const startPromise = daemon.start();
+    await vi.waitFor(() => expect(runOnce).toHaveBeenCalledTimes(1));
+
+    // Let several interval ticks fire while the bootstrap cycle is in flight.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(runOnce).toHaveBeenCalledTimes(1);
+    expect(logMessages.some((m) => m.includes("still in flight"))).toBe(true);
+
+    finishBootstrapCycle();
+    await daemon.shutdown();
+    await startPromise;
+  });
+
   // ── ESC / soft shutdown (2026-04-20 UX request) ─────────────────────
 
   it("requestShutdown while idle exits immediately and invokes onSoftShutdown", async () => {
