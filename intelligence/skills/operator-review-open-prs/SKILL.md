@@ -191,6 +191,17 @@ For each merge-eligible PR, in oldest-first order:
 1. **Re-probe the whole blocking set immediately before merging** — gates 4–6 and Step 4's threads. An
    earlier merge in this sweep, or elapsed time, can flip mergeability to `BEHIND`, turn a check red, or
    land a fresh thread. If anything no longer passes, apply that gate's action and move on. Do not merge.
+
+   **The re-probe must *gate* the merge, not merely print it.** A command that echoes the state and then
+   merges unconditionally in the same script is a log line, not a gate — GitHub returns `UNKNOWN` for
+   several seconds after the previous merge advanced `master`, which is exactly when this fires. Branch on
+   the value:
+   ```bash
+   read -r m s <<<"$(gh pr view <pr> --json mergeable,mergeStateStatus --jq '"\(.mergeable) \(.mergeStateStatus)"')"
+   if [ "$m" != "MERGEABLE" ] || [ "$s" != "CLEAN" ]; then echo "DEFER #<pr> ($m/$s)"; else gh pr merge <pr> --squash --delete-branch; fi
+   ```
+   `UNKNOWN` after a preceding merge is **transient**: defer it, and the next sweep (or a re-probe a few
+   seconds later) will merge it. Never let a passing outcome excuse an unchecked gate.
 2. **Resolve the threads you are entitled to close.** For every unresolved **gate-raised** or
    **bot-raised** thread the operator answered, resolve it — you raised it (or the bot did), the operator
    dispositioned it, and the architect just re-verified the result at this head SHA:
