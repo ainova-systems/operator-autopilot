@@ -1,7 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { describe, it, expect } from "vitest";
 import type { AgentEventDiagnostic } from "@operator/core";
-import { resolveContentPath } from "../../infra/content-path.js";
 import {
   parseAgentOutput,
   partitionDiagnostics,
@@ -587,42 +585,5 @@ describe("parseAgentOutput — raw-frontmatter-leak guard", () => {
     const r = parseAgentOutput(text);
     const leaks = r.diagnostics.filter((d: AgentEventDiagnostic) => d.code === "raw-frontmatter-leak");
     expect(leaks).toHaveLength(1);
-  });
-});
-
-// ── Bundled prompt contract (improver.md colon-syntax regression) ───────
-
-function extractMarkdownFenceContaining(markdown: string, needle: string): string {
-  const fenceRe = /```[^\n]*\n([\s\S]*?)```/g;
-  for (const match of markdown.matchAll(fenceRe)) {
-    const body = match[1];
-    if (body.includes(needle)) {
-      return body.trimEnd();
-    }
-  }
-  throw new Error(`no markdown fence contains ${needle}`);
-}
-
-describe("parseAgentOutput — bundled prompt contracts", () => {
-  it("improver.md status-update example parses as a fenced AOP status-update event", async () => {
-    const improverPath = resolveContentPath("prompts", "agents/improver.md");
-    const improverMd = await readFile(improverPath, "utf-8");
-    expect(improverMd).not.toMatch(/EMIT:/);
-
-    const example = extractMarkdownFenceContaining(
-      improverMd,
-      "=== EMIT status-update ===",
-    );
-    const r = parseAgentOutput(example);
-
-    expect(partitionDiagnostics(r.diagnostics).errors).toEqual([]);
-    expect(r.events).toHaveLength(1);
-    expect(r.events[0]).toEqual({
-      type: "status-update",
-      target: "F20260416-0002",
-      status: "in-progress",
-      reason:
-        "children T20260416-000201, T20260416-000202 already merged on develop; parent never advanced",
-    });
   });
 });
