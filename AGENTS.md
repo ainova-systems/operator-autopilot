@@ -13,6 +13,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 |-------|------|--------|-------------|
 | [operator-code-reviewer](intelligence/agents/operator-code-reviewer.md) | standard | readonly | Code review specialist for Operator v5 rebuild. Validates TypeScript patterns, migration correctness, layer dependencies, primitives boundary, dead code. Read-only. |
 | [operator-migration](intelligence/agents/operator-migration.md) | heavy | full | Strict migration agent for v5 rebuild. Executes the internal migration plan one step at a time, implementing one PR at a time with no dead code and full verification. |
+| [operator-pr-architect](intelligence/agents/operator-pr-architect.md) | heavy | readonly | Product chief-software-architect review of a single operator PR (ainova-systems/operator-autopilot). Read-only long-term reviewer that fact-checks the change against the code, judges its value and its long-term damage against the project's hard rules, and returns a PASS / CHANGES_REQUESTED verdict — plus a confidence level and an owner_decision flag — with precise, line-anchored [AI-REVIEWER] comments the caller posts as review threads. A PASS authorises the caller to squash-merge, so clear a change only when you would stake the codebase on it. Never merges, relabels, resolves a thread, or edits source — it only judges. Use per-PR from /operator-review-open-prs. |
 | [operator-ts-developer](intelligence/agents/operator-ts-developer.md) | heavy | full | TypeScript developer for Operator v5 engine. Use for implementing engine/, packages/core/src/, packages/adapters/src/, app/src/ modules following architecture-v5.md. |
 | dev-code-reviewer | standard | readonly | Reviews pending changes and pull requests for correctness, conventions, boundaries, tests, and security. Read-only. |
 | dev-test-engineer | standard | full | Test strategy and coverage across unit, integration, contract, and end-to-end levels. Builds the net that makes AI-paced change safe. |
@@ -23,6 +24,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 |-------|-------------|
 | [operator-commit-push](intelligence/skills/operator-commit-push/SKILL.md) | Verify build, review changes, commit and push with a clean single-line message |
 | [operator-migrate-next](intelligence/skills/operator-migrate-next/SKILL.md) | Identify and execute the next uncompleted step from the internal migration plan |
+| [operator-review-open-prs](intelligence/skills/operator-review-open-prs/SKILL.md) | Long-term architect merge gate over the operator's own PRs on ainova-systems/operator-autopilot. Sweeps every open ai:ready-to-merge PR (or one by number/URL), fact-checks each change against the code, judges value and long-term damage, then squash-merges the ones that are clearly correct and safe — holding the rest by relabelling ai:in-review (operator can fix) or ai:manual (needs an owner decision). Never merges a protected surface, a change it cannot verify, or one carrying an unanswered review thread. Designed to run unattended under /loop or a schedule. |
 | [operator-review-pending-changes](intelligence/skills/operator-review-pending-changes/SKILL.md) | Read-only review of pending git changes against Operator v5 rules (layer deps, primitives boundary, dead code, commit hygiene) |
 | [operator-run-tests](intelligence/skills/operator-run-tests/SKILL.md) | Run the correct test suites (vitest across workspaces) based on the scope of pending changes |
 | [intelligence-add-agent](intelligence/sync/skills/intelligence-add-agent/SKILL.md) | Create new specialized agent |
@@ -42,6 +44,7 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | git-create-release | Cut a release: version, changelog, tag, and release object — policy-driven across trunk/gitflow and tag-only/full |
 | git-finalize-pr | Drive the current branch's PR to merge-ready: CI green and every review comment handled, ending with an outcome label |
 | git-merge-pr | After owner accept: guard-checked squash-merge of the current branch's PR, base sync and branch cleanup |
+| git-open-pr | Open a pull request for the current branch against its target, using the repo template |
 | git-resolve-conflicts | Resolve merge or rebase conflicts semantically, then re-verify the full gates |
 | git-review-pr-comments | Triage PR review comments: fix, discuss, or decline with reason - every thread answered |
 | git-scan-secrets | Scan diff, tree, or branch history for committed credentials |
@@ -155,6 +158,33 @@ npm run exec                                  # alias for above
 - **Max 200 lines** per file in `engine/pipeline/**`. Max 300 elsewhere. `entry.ts` must stay under 200.
 - **Git commits**: exactly one line, capital letter, past tense, no prefixes (no `feat:`, `fix:`, `chore:`). No `Co-authored-by`, no `Signed-off-by`.
 
+## Merge Authority (who may land a PR on `master`)
+
+The engine daemon never merges and never pushes a protected branch — the first Global Rule above is
+unchanged and applies to every stage the operator runs.
+
+Landing a PR on `master` is a separate authority, held by exactly two actors:
+
+- **The owner**, at any time.
+- **The `operator-review-open-prs` merge gate**, run under the owner's account, and only for a PR that
+  clears every deterministic gate *and* that `operator-pr-architect` returned `verdict: PASS` for at the
+  PR's current head SHA. It squash-merges and deletes the branch.
+
+The gate **never** auto-merges, and instead relabels `ai:manual` for the owner, when the change touches a
+**protected surface** — `.github/**`, Docker/compose/deploy manifests, `package.json` /
+`package-lock.json`, `engine/entry.ts`, or `config/repos.yaml` — or when the architect reports
+`owner_decision: yes` or `confidence: low`, or when a **human** raised a review thread on it.
+
+This is a deliberate, owner-granted exception to the dev-pack rule *"autonomous runs never merge
+themselves"* (`git-workflow`). It is scoped to this repository's own PR queue and to that one skill.
+Nothing else — no engine stage, no other skill, no agent — may merge.
+
+### Outcome labels
+
+- `ai:ready-to-merge` — cleared the operator's own verifier; awaiting the merge gate.
+- `ai:in-review` — blocking findings the **operator's supervisor** fixes, then re-promotes.
+- `ai:manual` — needs an **owner** decision. Only the owner clears it.
+
 ## Deployment
 
 Primary runtimes: VM/systemd, plain Docker/Compose, Kubernetes. Docker AI Sandbox is optional quick-start only, never the sole path. Local-first: SQLite + filesystem + one agent API key is enough.
@@ -193,7 +223,7 @@ Rules, agents, skills for this project live in `intelligence/`:
 - `intelligence/agents/` — specialized AI personas for development tasks
 - `intelligence/skills/` — reusable command sequences
 
-Sync with `bash intelligence/scripts/sync.sh`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.
+Sync with `bash intelligence/sync/scripts/sync.sh`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.
 
 
 # Project Profile
@@ -233,7 +263,9 @@ Sync with `bash intelligence/scripts/sync.sh`. Generated outputs (`.claude/`, `.
 - platform: github                  <!-- detected: origin is github.com/ainova-systems/operator-autopilot -->
 - cli: gh
 - pr_target: auto                   <!-- auto = integration branch when set, else default branch (master) -->
-- merge_method: TODO(owner)         <!-- not detected; squash | merge | rebase -->
+- merge_method: squash              <!-- owner-set: one PR = one logical change; operator branches carry noisy per-attempt commits -->
+- delete_remote_branch: true        <!-- owner-set: git-merge-pr passes --delete-branch; short-lived branches are not kept after merge -->
+- delete_local_branch: true         <!-- pack default, stated explicitly so it reads next to its remote counterpart -->
 
 ## Releases
 
@@ -372,4 +404,14 @@ Branch model comes from `dev-project-profile.md`. Without it, detect (default br
 - Update long-running branches per profile `update_strategy` (default: merge from target). Delete branches after merge.
 
 Forbidden: committing directly to a protected branch (default and integration branches always are) - branch first; merging on red CI; rewriting history on shared branches.
+
+## Autonomous outcome labels
+
+A run with no human in the loop between task and PR ends by labeling its PR with exactly one outcome, so a human triages at a glance and merge gating can key off it:
+
+- `ai:ready-to-merge` - CI green, every review thread answered, mergeable; awaiting the owner's accept.
+- `ai:manual` - needs an owner decision; state precisely what.
+- `ai:failed` - could not reach green; state the blocking failure and what was tried.
+
+Autonomous runs never merge themselves. The labels must exist in the repository (create once, e.g. `gh label create`). A human-driven PR may skip them.
 

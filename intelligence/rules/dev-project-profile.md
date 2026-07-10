@@ -39,7 +39,9 @@ description: Project-specific configuration consumed by the intelligence-dev-pac
 - platform: github                  <!-- detected: origin is github.com/ainova-systems/operator-autopilot -->
 - cli: gh
 - pr_target: auto                   <!-- auto = integration branch when set, else default branch (master) -->
-- merge_method: TODO(owner)         <!-- not detected; squash | merge | rebase -->
+- merge_method: squash              <!-- owner-set: one PR = one logical change; operator branches carry noisy per-attempt commits -->
+- delete_remote_branch: true        <!-- owner-set: git-merge-pr passes --delete-branch; short-lived branches are not kept after merge -->
+- delete_local_branch: true         <!-- pack default, stated explicitly so it reads next to its remote counterpart -->
 
 ## Releases
 

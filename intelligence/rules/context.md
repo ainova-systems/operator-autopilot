@@ -86,6 +86,33 @@ npm run exec                                  # alias for above
 - **Max 200 lines** per file in `engine/pipeline/**`. Max 300 elsewhere. `entry.ts` must stay under 200.
 - **Git commits**: exactly one line, capital letter, past tense, no prefixes (no `feat:`, `fix:`, `chore:`). No `Co-authored-by`, no `Signed-off-by`.
 
+## Merge Authority (who may land a PR on `master`)
+
+The engine daemon never merges and never pushes a protected branch — the first Global Rule above is
+unchanged and applies to every stage the operator runs.
+
+Landing a PR on `master` is a separate authority, held by exactly two actors:
+
+- **The owner**, at any time.
+- **The `operator-review-open-prs` merge gate**, run under the owner's account, and only for a PR that
+  clears every deterministic gate *and* that `operator-pr-architect` returned `verdict: PASS` for at the
+  PR's current head SHA. It squash-merges and deletes the branch.
+
+The gate **never** auto-merges, and instead relabels `ai:manual` for the owner, when the change touches a
+**protected surface** — `.github/**`, Docker/compose/deploy manifests, `package.json` /
+`package-lock.json`, `engine/entry.ts`, or `config/repos.yaml` — or when the architect reports
+`owner_decision: yes` or `confidence: low`, or when a **human** raised a review thread on it.
+
+This is a deliberate, owner-granted exception to the dev-pack rule *"autonomous runs never merge
+themselves"* (`git-workflow`). It is scoped to this repository's own PR queue and to that one skill.
+Nothing else — no engine stage, no other skill, no agent — may merge.
+
+### Outcome labels
+
+- `ai:ready-to-merge` — cleared the operator's own verifier; awaiting the merge gate.
+- `ai:in-review` — blocking findings the **operator's supervisor** fixes, then re-promotes.
+- `ai:manual` — needs an **owner** decision. Only the owner clears it.
+
 ## Deployment
 
 Primary runtimes: VM/systemd, plain Docker/Compose, Kubernetes. Docker AI Sandbox is optional quick-start only, never the sole path. Local-first: SQLite + filesystem + one agent API key is enough.
@@ -124,4 +151,4 @@ Rules, agents, skills for this project live in `intelligence/`:
 - `intelligence/agents/` — specialized AI personas for development tasks
 - `intelligence/skills/` — reusable command sequences
 
-Sync with `bash intelligence/scripts/sync.sh`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.
+Sync with `bash intelligence/sync/scripts/sync.sh`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.
