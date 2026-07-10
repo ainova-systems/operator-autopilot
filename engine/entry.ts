@@ -312,6 +312,7 @@ async function main(): Promise<void> {
     state,
     bus,
     log,
+    guard,
     kv: storageBundle,
     dispatchRegistry,
     enumerateRepos: async (): Promise<readonly ProjectConfig[]> => {

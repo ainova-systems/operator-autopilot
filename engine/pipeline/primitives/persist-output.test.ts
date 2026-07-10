@@ -41,11 +41,26 @@ function makeAgentResult(verdict: Verdict = "approved"): AgentResult {
   return { verdict, output: "", attempts: 1, summary: "ok" };
 }
 
+/**
+ * Branch the fake git's HEAD sits on. `makeWorkspace` keeps it in sync with the
+ * handle it hands out, so a stage that prepared branch X finds HEAD on X — the
+ * normal case. Tests that exercise persist's HEAD-drift guard override it via
+ * `makeGit({ currentBranch })`.
+ */
+let fakeHeadBranch = "ai/research/20260416";
+
 function makeWorkspace(branch = "ai/research/20260416"): WorkspaceHandle {
+  fakeHeadBranch = branch;
   return { branch, baseBranch: "develop", existedRemote: false };
 }
 
-function makeGit(options?: { commitSha?: string | null; headSha?: string; commitCount?: number }) {
+function makeGit(options?: {
+  commitSha?: string | null;
+  headSha?: string;
+  commitCount?: number;
+  /** Branch HEAD points at. Defaults to the branch `makeWorkspace` handed out. */
+  currentBranch?: string;
+}) {
   const sha = options && "commitSha" in options ? options.commitSha : "abc123";
   return {
     addAll: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
@@ -55,6 +70,9 @@ function makeGit(options?: { commitSha?: string | null; headSha?: string; commit
     push: vi.fn<(branch: string) => Promise<void>>().mockResolvedValue(undefined),
     headSha: vi.fn<() => Promise<string>>().mockResolvedValue(options?.headSha ?? "head-sha"),
     commitCount: vi.fn<(base: string) => Promise<number>>().mockResolvedValue(options?.commitCount ?? 1),
+    currentBranch: vi.fn<() => Promise<string>>().mockImplementation(
+      async () => options?.currentBranch ?? fakeHeadBranch,
+    ),
   };
 }
 
@@ -648,5 +666,57 @@ describe("FileOutputAdapter.persist — frozen signature (Step 8c)", () => {
     );
 
     expect(kv.put).not.toHaveBeenCalled();
+  });
+
+  // ── HEAD-drift tripwire (2026-07-09 cross-branch commit) ────────────
+  //
+  // `commitIfChanged` writes to HEAD; `push` sends the branch named in the
+  // handle. A concurrent cycle that checked out its own branch in the shared
+  // clone made those two disagree, and the task's commit landed on a research
+  // branch while both git commands reported success.
+
+  it("refuses to commit when HEAD drifted off the branch the stage prepared", async () => {
+    const git = makeGit({ currentBranch: "ai/research/20260709" });
+    const prManager = makePRManager();
+    const vcs = makeVCS();
+
+    await expect(adapter.persist(
+      makeStageDef(), makeStageInput(), makeAgentResult("approved"),
+      makeWorkspace("ai/tasks/T20260707-27317862"),
+      makeStagePersistInput(),
+      { git, prManager, vcs }, makeCtx(),
+    )).rejects.toThrow(WorkspaceError);
+
+    // Nothing may be staged, committed or pushed once drift is detected.
+    expect(git.addAll).not.toHaveBeenCalled();
+    expect(git.commitIfChanged).not.toHaveBeenCalled();
+    expect(git.push).not.toHaveBeenCalled();
+  });
+
+  it("reports the expected and actual branch in the drift error", async () => {
+    const git = makeGit({ currentBranch: "ai/research/20260709" });
+
+    await expect(adapter.persist(
+      makeStageDef(), makeStageInput(), makeAgentResult("approved"),
+      makeWorkspace("ai/tasks/T20260707-27317862"),
+      makeStagePersistInput(),
+      { git, prManager: makePRManager(), vcs: makeVCS() }, makeCtx(),
+    )).rejects.toMatchObject({
+      code: "WS_BRANCH_DRIFT",
+      message: expect.stringContaining("ai/tasks/T20260707-27317862"),
+    });
+  });
+
+  it("tolerates trailing whitespace from git rev-parse when comparing HEAD", async () => {
+    const git = makeGit({ currentBranch: "ai/research/20260416\n" });
+
+    const result = await adapter.persist(
+      makeStageDef(), makeStageInput(), makeAgentResult("approved"),
+      makeWorkspace("ai/research/20260416"),
+      makeStagePersistInput(),
+      { git, prManager: makePRManager({ createdId: 77 }), vcs: makeVCS() }, makeCtx(),
+    );
+
+    expect(result.committed).toBe(true);
   });
 });

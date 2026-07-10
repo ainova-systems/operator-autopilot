@@ -71,7 +71,10 @@ export class Daemon {
       return;
     }
 
-    // Schedule recurring engine cycle
+    // Schedule recurring engine cycle. `IntervalScheduler` skips a tick whose
+    // predecessor is still running, but that guard only sees cycles the
+    // scheduler itself launched — the bootstrap cycle below is invisible to it.
+    // `runCycle` therefore owns the re-entrancy decision (see `cycleInFlight`).
     this.scheduler.schedule({
       id: "engine-cycle",
       intervalMs: this.config.cycleIntervalMs,
@@ -145,7 +148,26 @@ export class Daemon {
     return this.running;
   }
 
+  /**
+   * Run one engine cycle. Never re-enters: a tick that fires while a cycle is
+   * still in flight is dropped, not queued.
+   *
+   * The guard lives here rather than in {@link IntervalScheduler} because the
+   * bootstrap cycle in {@link start} is awaited directly and never touches the
+   * scheduler's own `running` flag. On 2026-07-09 that gap let the 5-minute
+   * tick launch a second cycle alongside a bootstrap cycle that was still
+   * running an agent; the two cycles shared one git clone per repo, the second
+   * cycle's `research` stage checked out its branch under the first cycle's
+   * running `creator`, and the task's commit landed on the research branch
+   * (managed-repo PR #1251). Agent stages routinely outlast the interval, so
+   * this is reachable on every daemon start.
+   */
   private async runCycle(): Promise<void> {
+    if (this.cycleInFlight) {
+      // v5 logging audit §14 — a dropped tick is a DECISION, never silent.
+      this.log?.info("Cycle tick skipped — previous cycle still in flight.");
+      return;
+    }
     this.cycleInFlight = true;
     this.cycleCount += 1;
     this.statusLine?.set({

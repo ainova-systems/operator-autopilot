@@ -63,6 +63,18 @@ describe("WorkspaceGit", () => {
     expect(sha).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it("currentBranch returns the branch HEAD points at", async () => {
+    execGit(["checkout", "-b", "ai/tasks/T-1", "--quiet"]);
+    expect(await git.currentBranch()).toBe("ai/tasks/T-1");
+  });
+
+  it("currentBranch follows a checkout onto another branch", async () => {
+    const initial = await git.currentBranch();
+    execGit(["checkout", "-b", "ai/research/20260709", "--quiet"]);
+    expect(await git.currentBranch()).toBe("ai/research/20260709");
+    expect(await git.currentBranch()).not.toBe(initial);
+  });
+
   it("hasChangedSince detects new commits", async () => {
     const before = await git.headSha();
     await writeFile(join(tempDir, "change.txt"), "x");

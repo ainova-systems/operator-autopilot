@@ -1,5 +1,5 @@
 import type { OperationContext } from "@operator/core";
-import type { StateManager } from "@operator/core";
+import type { StateManager, IdempotencyGuard } from "@operator/core";
 import type { ProjectConfig, OperatorConfig, KVStore } from "@operator/core";
 import type { VCSPlatform } from "@operator/core";
 import type { EventBus } from "@operator/core";
@@ -15,10 +15,36 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────
 
+/**
+ * TTL on the per-repo workspace lock. A repo pass runs every stage end to end
+ * and a single agent stage can take tens of minutes, so this is deliberately
+ * far longer than the stage lock's 10 minutes — the TTL is a backstop against
+ * a holder that died, not a timeout on honest work. Boot calls
+ * `IdempotencyGuard.clearActiveLocks`, so a killed daemon never blocks the next
+ * one until natural expiry.
+ */
+const WORKSPACE_LOCK_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** Synthetic action reported when a repo is skipped because its workspace is busy. */
+const WORKSPACE_LOCK_ACTION = "workspace-lock";
+
 export interface EngineDeps {
   readonly config: OperatorConfig;
   readonly state: StateManager;
   readonly bus: EventBus;
+  /**
+   * Serialises every pass over a repo. Each repo owns exactly one git clone
+   * (see {@link EngineDeps.resolveWorkspace}), so two concurrent passes would
+   * fight over one working tree and one HEAD.
+   *
+   * `runStage` already locks `stage:{name}:{repoId}`, which is keyed on the
+   * stage NAME — it stops a stage from running twice, but happily lets a
+   * different stage of another cycle check out a branch in the same clone
+   * mid-agent. That is exactly what corrupted managed-repo PR #1251 on
+   * 2026-07-09. This lock is the missing mutex, and it is required rather than
+   * optional: a caller that forgets it must not silently lose the invariant.
+   */
+  readonly guard: IdempotencyGuard;
   /** Create VCSPlatform for a project. */
   readonly createVCS: (project: ProjectConfig) => VCSPlatform;
   /** Resolve workspace path for a project. */
@@ -170,6 +196,11 @@ export class Engine {
     return { projects: results, durationMs };
   }
 
+  /**
+   * Take the repo's workspace lock, then run the full pass. A repo whose
+   * workspace is already held by another cycle is skipped for this cycle
+   * rather than queued — the next cycle picks it up.
+   */
   private async processProject(
     project: ProjectConfig,
     ctx: OperationContext,
@@ -185,6 +216,42 @@ export class Engine {
       // runStage without changing the ProjectRunnerDeps signature.
       parentExecutionId,
     };
+
+    const lockKey = `workspace:${project.id}`;
+    const lock = await this.deps.guard.acquire(lockKey, WORKSPACE_LOCK_TTL_MS, projectCtx);
+    if (!lock) {
+      // WARN, not INFO: reaching here means two cycles overlapped. The skip
+      // itself is safe, but the overlap is the condition that produced the
+      // 2026-07-09 cross-branch commit and should be visible without grepping.
+      this.deps.log?.warn(`Project ${project.id} ← skipped: workspace locked by a concurrent cycle`, {
+        traceId: ctx.traceId, repoId: project.id, lockKey, reason: "workspace-locked",
+      });
+      return {
+        projectId: project.id,
+        actions: [{
+          action: WORKSPACE_LOCK_ACTION,
+          status: "skipped",
+          message: "Workspace locked by a concurrent cycle",
+        }],
+      };
+    }
+
+    try {
+      return await this.runProjectPass(project, projectCtx, ctx, forceAction, dryRun, parentExecutionId);
+    } finally {
+      await this.deps.guard.release(lock, projectCtx);
+    }
+  }
+
+  /** The repo pass proper. Runs under the workspace lock taken by {@link processProject}. */
+  private async runProjectPass(
+    project: ProjectConfig,
+    projectCtx: OperationContext,
+    ctx: OperationContext,
+    forceAction?: string,
+    dryRun?: boolean,
+    parentExecutionId?: string,
+  ): Promise<ProjectRunResult> {
     const projectStart = Date.now();
     this.deps.log?.info(`Project ${project.id} ▸ started`, {
       traceId: ctx.traceId, repoId: project.id, forceAction, dryRun,
