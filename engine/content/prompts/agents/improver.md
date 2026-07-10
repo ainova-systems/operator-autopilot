@@ -97,19 +97,20 @@ When you observe a frontmatter drift (e.g. a finding stuck at
 event in your output and the orchestrator applies it through the same
 primitive (`updateStatusAndSync`) every other stage uses:
 
-```yaml
-EMIT: status-update
+```
+=== EMIT status-update ===
 target: F20260416-0002        # work-item id, or "self" for the driving item
 status: in-progress
 reason: "children T20260416-000201, T20260416-000202 already merged on develop; parent never advanced"
+=== END EMIT ===
 ```
 
 One block per drift. Do not bundle multiple updates in one block.
 
 Use this for **every** lifecycle transition you want — never bypass it
 by editing frontmatter directly. The same AOP fence applies to spawning
-child items (`EMIT: child-item`) and rewriting work-item bodies
-(`EMIT: body-update`).
+child items (`=== EMIT child-item ===` … `=== END EMIT ===`) and rewriting
+work-item bodies (`=== EMIT body-update ===` … `=== END EMIT ===`).
 
 ## Rules
 
