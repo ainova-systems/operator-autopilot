@@ -37,6 +37,10 @@ import { partitionDiagnostics } from "./agent-output-protocol.js";
  *   - Decide on label transitions (those flow from the verdict and
  *     `StagePersistInput.onSuccess`, set by `buildPR`).
  *
+ * Parse diagnostics from the stream adapter are logged per-record here
+ * (WARN/ERROR by severity) before the application loop — callers do not
+ * need to re-log them.
+ *
  * Keeping side-effects out of the applier means tests can drive it with
  * a fake `WorkItemSource` and assert on the structured result without
  * mocking PR or KV layers.
@@ -148,6 +152,22 @@ export async function applyAgentEvents(
 ): Promise<AopApplyResult> {
   const parseResult = deps.stream.parse(rawOutput);
   const { errors: parseErrors } = partitionDiagnostics(parseResult.diagnostics);
+
+  for (const diagnostic of parseResult.diagnostics) {
+    const emitSuffix = diagnostic.emitType ? `, emitType=${diagnostic.emitType}` : "";
+    const msg = `aop-applier: parse diagnostic ${diagnostic.code} at line ${diagnostic.line}${emitSuffix} — ${diagnostic.message}`;
+    const payload = {
+      scope: "aop-applier",
+      diagnosticCode: diagnostic.code,
+      emitType: diagnostic.emitType,
+      line: diagnostic.line,
+    };
+    if (diagnostic.severity === "error") {
+      deps.log?.error(msg, payload);
+    } else {
+      deps.log?.warn(msg, payload);
+    }
+  }
 
   const childItems: WorkItemRecord[] = [];
   const statusUpdates: WorkItemRef[] = [];
