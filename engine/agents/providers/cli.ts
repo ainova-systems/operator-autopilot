@@ -37,6 +37,11 @@ export interface CLIProviderConfig {
  * them makes `gh pr edit` fail auth so the agent cannot rewrite the
  * orchestrator-authored PR body. Defense in depth alongside the boundary rule
  * in `engine/content/prompts/agents/context/base.md`.
+ *
+ * Deployment-configured token var names (`project.vcs.tokenEnvVar` and
+ * `project.tracker.tokenEnvVar`, unioned in the composition root) are stripped
+ * in addition to these four standard names so the operator's write-scoped
+ * VCS credential cannot leak into agent subprocesses.
  */
 const AGENT_FORBIDDEN_ENV: readonly string[] = [
   "GH_TOKEN",
@@ -54,12 +59,14 @@ const AGENT_FORBIDDEN_ENV: readonly string[] = [
  * seconds. Filtering empty strings lets the CLI fall back to other creds
  * (e.g. `CLAUDE_CODE_OAUTH_TOKEN`).
  *
- * GitHub credential vars ({@link AGENT_FORBIDDEN_ENV}) are stripped so the
- * agent cannot authenticate `gh` against the orchestrator-owned pull request.
+ * GitHub credential vars ({@link AGENT_FORBIDDEN_ENV}) and any
+ * deployment-configured token var names in `forbiddenExtra` are stripped so
+ * the agent cannot authenticate `gh` against the orchestrator-owned pull request.
  */
 export function buildChildEnv(
   parentEnv: NodeJS.ProcessEnv,
   overrides?: Record<string, string>,
+  forbiddenExtra: readonly string[] = [],
 ): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries(parentEnv)) {
@@ -67,6 +74,9 @@ export function buildChildEnv(
     merged[key] = value;
   }
   for (const key of AGENT_FORBIDDEN_ENV) delete merged[key];
+  for (const key of forbiddenExtra) {
+    if (key) delete merged[key];
+  }
   if (overrides) {
     for (const [key, value] of Object.entries(overrides)) {
       if (value === undefined || value === "") {
@@ -107,6 +117,7 @@ export class CLIAgentProvider implements AgentProvider {
     readonly id: string,
     private readonly config: CLIProviderConfig,
     private readonly log?: Logger,
+    private readonly forbiddenEnvVars: readonly string[] = [],
   ) {}
 
   async execute(
@@ -147,7 +158,7 @@ export class CLIAgentProvider implements AgentProvider {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd: options.cwd,
-        env: buildChildEnv(process.env, options.env),
+        env: buildChildEnv(process.env, options.env, this.forbiddenEnvVars),
         detached: process.platform !== "win32",
         stdio: [this.config.promptFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
       });
