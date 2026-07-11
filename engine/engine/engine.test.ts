@@ -23,7 +23,7 @@ function makeCtx() {
 function makeConfig(repos?: ProjectConfig[]): OperatorConfig {
   return {
     defaults: {
-      schedules: { prReviewMinutes: 5, taskSelectMinutes: 15, findingSelectMinutes: 30, dailyResearchHour: 8, improverDayOfWeek: 1 },
+      schedules: { prReviewMinutes: 5, taskSelectMinutes: 15, findingSelectMinutes: 30, improverDayOfWeek: 1 },
       limits: { maxReviewAttempts: 5 },
       review: { ignoredBotLogins: [] },
     },
@@ -43,11 +43,14 @@ function makeConfig(repos?: ProjectConfig[]): OperatorConfig {
 
 function makeState(): StateManager {
   return {
-    upsertWorkItem: vi.fn(), getWorkItem: vi.fn(), listWorkItems: vi.fn().mockResolvedValue([]),
+    upsertWorkItem: vi.fn(), deleteWorkItem: vi.fn(), getWorkItem: vi.fn(),
+    listWorkItems: vi.fn().mockResolvedValue([]),
     updateWorkItemStatus: vi.fn(), appendExecution: vi.fn(), listExecutions: vi.fn(),
     saveOutcome: vi.fn(), listOutcomes: vi.fn(),
     isScheduleDue: vi.fn().mockResolvedValue(true),
     markScheduleRun: vi.fn().mockResolvedValue(undefined),
+    getCounter: vi.fn().mockResolvedValue(0),
+    setCounter: vi.fn().mockResolvedValue(undefined),
     isKnownItem: vi.fn(), markKnownItem: vi.fn(), close: vi.fn(),
   };
 }
@@ -82,7 +85,9 @@ function makeDeps(overrides?: Partial<EngineDeps>): EngineDeps {
     bus: { emit: vi.fn().mockResolvedValue(undefined), on: vi.fn() },
     guard: new TestIdempotencyGuard(),
     log: noopLog,
-    createVCS: vi.fn().mockReturnValue({} as VCSPlatform),
+    createVCS: vi.fn().mockReturnValue({
+      getCodeReviews: vi.fn().mockResolvedValue([]),
+    } as VCSPlatform),
     resolveWorkspace: vi.fn().mockReturnValue("/tmp/ws"),
     prepareWorkspace: vi.fn().mockResolvedValue(undefined),
     syncWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -198,7 +203,9 @@ describe("Engine", () => {
   });
 
   it("creates VCS per project", async () => {
-    const createVCS = vi.fn().mockReturnValue({} as VCSPlatform);
+    const createVCS = vi.fn().mockReturnValue({
+      getCodeReviews: vi.fn().mockResolvedValue([]),
+    } as VCSPlatform);
     const deps = makeDeps({ createVCS });
     const engine = new Engine(deps);
 

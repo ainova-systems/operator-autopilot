@@ -3,7 +3,6 @@ schedules:
   prReviewMinutes: 5
   taskSelectMinutes: 15
   findingSelectMinutes: 30
-  dailyResearchHour: 8       # UTC hour for daily research run
   improverDayOfWeek: 1       # 1=Monday
   prLifecycleMinutes: 15     # how often pr-lifecycle sweeps open AI PRs
 

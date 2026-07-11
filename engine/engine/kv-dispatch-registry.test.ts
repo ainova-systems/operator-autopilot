@@ -6,7 +6,7 @@ function makeDefaults(): DefaultsConfig {
   return {
     schedules: {
       prReviewMinutes: 5, taskSelectMinutes: 15, findingSelectMinutes: 30,
-      dailyResearchHour: 8, improverDayOfWeek: 1, prLifecycleMinutes: 30,
+      improverDayOfWeek: 1, prLifecycleMinutes: 30,
     },
     limits: { maxReviewAttempts: 5 },
     review: { ignoredBotLogins: [] },
@@ -41,24 +41,24 @@ const INIT_ROW = {
   },
 };
 
-const RESEARCH_ROW = {
-  key: "research",
+const DAILY_SCHEDULED_ROW = {
+  key: "daily-report",
   value: {
-    name: "research",
+    name: "daily-report",
     dispatch: {
       order: 70,
-      featureFlags: ["dailyResearch"],
-      schedule: { kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "research" },
+      featureFlags: ["prReview"],
+      schedule: { kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "prReview" },
     },
   },
 };
 
 describe("buildStageDispatchRegistryFromKV", () => {
   it("returns one StageDispatchEntry per KV stage row carrying a dispatch block", async () => {
-    const kv = makeKv([INIT_ROW, FINDING_PLAN_ROW, RESEARCH_ROW]);
+    const kv = makeKv([INIT_ROW, FINDING_PLAN_ROW, DAILY_SCHEDULED_ROW]);
     const registry = await buildStageDispatchRegistryFromKV(kv, makeDefaults());
     const actions = registry.normalOrder.map((e) => e.action);
-    expect(actions).toEqual(["init", "finding-plan", "research"]); // sorted by order 10, 50, 70
+    expect(actions).toEqual(["init", "finding-plan", "daily-report"]); // sorted by order 10, 50, 70
   });
 
   it("skips KV rows that don't carry a `dispatch` block (workflow-stage row present but not dispatched)", async () => {
@@ -79,9 +79,9 @@ describe("buildStageDispatchRegistryFromKV", () => {
       schedule: { kind: "interval", intervalMinutes: 5, stateKey: "cleanup" },
       isEnabled: () => true,
     };
-    const kv = makeKv([INIT_ROW, RESEARCH_ROW]); // orders 10, 70
+    const kv = makeKv([INIT_ROW, DAILY_SCHEDULED_ROW]); // orders 10, 70
     const registry = await buildStageDispatchRegistryFromKV(kv, makeDefaults(), [branchCleanup]);
-    expect(registry.normalOrder.map((e) => e.action)).toEqual(["init", "branch-cleanup", "research"]);
+    expect(registry.normalOrder.map((e) => e.action)).toEqual(["init", "branch-cleanup", "daily-report"]);
   });
 
   it("compound featureFlags AND every named flag — any `false` disables the stage", async () => {
@@ -96,11 +96,11 @@ describe("buildStageDispatchRegistryFromKV", () => {
   });
 
   it("single featureFlag entry — only that key is checked", async () => {
-    const kv = makeKv([RESEARCH_ROW]);
+    const kv = makeKv([DAILY_SCHEDULED_ROW]);
     const registry = await buildStageDispatchRegistryFromKV(kv, makeDefaults());
-    const entry = registry.get("research")!;
-    expect(entry.isEnabled({ dailyResearch: false })).toBe(false);
-    expect(entry.isEnabled({ dailyResearch: true })).toBe(true);
+    const entry = registry.get("daily-report")!;
+    expect(entry.isEnabled({ prReview: false })).toBe(false);
+    expect(entry.isEnabled({ prReview: true })).toBe(true);
     expect(entry.isEnabled({ taskExecute: false } as never)).toBe(true); // unrelated flag
   });
 
@@ -141,10 +141,10 @@ describe("buildStageDispatchRegistryFromKV", () => {
   });
 
   it("preserves the schedule shape from the KV row verbatim (no transformation)", async () => {
-    const kv = makeKv([RESEARCH_ROW]);
+    const kv = makeKv([DAILY_SCHEDULED_ROW]);
     const registry = await buildStageDispatchRegistryFromKV(kv, makeDefaults());
-    expect(registry.get("research")!.schedule).toEqual({
-      kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "research",
+    expect(registry.get("daily-report")!.schedule).toEqual({
+      kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "prReview",
     });
   });
 });

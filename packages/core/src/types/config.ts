@@ -79,7 +79,6 @@ export interface DefaultsConfig {
     readonly prReviewMinutes: number;
     readonly taskSelectMinutes: number;
     readonly findingSelectMinutes: number;
-    readonly dailyResearchHour: number;
     readonly improverDayOfWeek: number;
     readonly prLifecycleMinutes: number;
   };

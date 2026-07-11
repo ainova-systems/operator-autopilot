@@ -44,7 +44,6 @@ export const engineDefaultsSchema = z.object({
     prReviewMinutes: z.number(),
     taskSelectMinutes: z.number(),
     findingSelectMinutes: z.number(),
-    dailyResearchHour: z.number().min(0).max(23),
     improverDayOfWeek: z.number().min(1).max(7),
     /** How often the `pr-lifecycle` sweep runs (minutes). */
     prLifecycleMinutes: z.number().positive(),

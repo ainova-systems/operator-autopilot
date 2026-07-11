@@ -16,9 +16,10 @@ import type {
  *
  * The shape here mirrors what `buildStageDispatchRegistryFromKV`
  * produces from the seeded `engine/content/prompts/stages.yaml`
- * dispatch blocks plus the composition-root extras. Keep both in sync
- * — if you change a feature-flag mapping or a schedule key here, the
- * production YAML / extras must move with it.
+ * dispatch blocks plus the composition-root extras. Research uses the
+ * production `queue-fill` schedule (not a clock-driven `daily` default).
+ * Keep both in sync — if you change a feature-flag mapping or a schedule
+ * key here, the production YAML / extras must move with it.
  */
 export function buildTestDispatchRegistry(defaults: DefaultsConfig): StageDispatchRegistry {
   const schedules = defaults.schedules;
@@ -66,8 +67,15 @@ export function buildTestDispatchRegistry(defaults: DefaultsConfig): StageDispat
       action: "research",
       order: 70,
       schedule: {
-        kind: "daily", hourUtc: schedules.dailyResearchHour,
-        guardMinutes: 60 * 20, stateKey: "research",
+        kind: "queue-fill",
+        targetKind: "finding",
+        countStatuses: ["pending", "reopened"],
+        target: 5,
+        inFlightBranchPrefix: "ai/research",
+        baseIntervalMinutes: 120,
+        maxBackoffMinutes: 10080,
+        stateKey: "research",
+        backoffStateKey: "research-empty",
       },
       isEnabled: (features) => features?.dailyResearch !== false,
     },

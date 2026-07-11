@@ -271,7 +271,6 @@ describe("engineDefaultsSchema", () => {
         prReviewMinutes: 5,
         taskSelectMinutes: 15,
         findingSelectMinutes: 30,
-        dailyResearchHour: 8,
         improverDayOfWeek: 1,
         prLifecycleMinutes: 15,
       },
@@ -305,25 +304,43 @@ describe("engineDefaultsSchema", () => {
     expect(parsed.schedules.prReviewMinutes).toBe(5);
   });
 
-  it("rejects out-of-range dailyResearchHour", () => {
-    expect(() =>
-      engineDefaultsSchema.parse({
-        schedules: {
-          prReviewMinutes: 5, taskSelectMinutes: 15, findingSelectMinutes: 30,
-          dailyResearchHour: 25, improverDayOfWeek: 1, prLifecycleMinutes: 15,
+  it("engineDefaultsSchema no longer carries the research-specific dailyResearchHour default", () => {
+    const parsed = engineDefaultsSchema.parse({
+      schedules: {
+        prReviewMinutes: 5,
+        taskSelectMinutes: 15,
+        findingSelectMinutes: 30,
+        improverDayOfWeek: 1,
+        prLifecycleMinutes: 15,
+      },
+      limits: { maxReviewAttempts: 25 },
+      review: { ignoredBotLogins: ["github-actions[bot]"] },
+      lifecycle: {
+        promoteToReadyAfterIdleHours: 1,
+        autoMergeReadyAfterHours: null,
+        autoCloseStuckAfterHours: null,
+      },
+      labels: {
+        pending: "ai:pending",
+        processing: "ai:processing",
+        inReview: "ai:in-review",
+        readyToMerge: "ai:ready-to-merge",
+        failed: "ai:failed",
+      },
+      conventions: {
+        branches: {
+          aiPrefix: "ai", init: "ai/init", tasks: "ai/tasks",
+          findings: "ai/findings", research: "ai/research", improver: "ai/improver",
         },
-        limits: { maxReviewAttempts: 25 },
-        review: { ignoredBotLogins: [] },
-        lifecycle: { promoteToReadyAfterIdleHours: 1 },
-        labels: { pending: "p", processing: "p", inReview: "ir", readyToMerge: "rtm", failed: "f" },
-        conventions: {
-          branches: { aiPrefix: "ai", init: "ai/init", tasks: "ai/tasks", findings: "ai/findings", research: "ai/research", improver: "ai/improver" },
-          prPrefixes: { task: "t", finding: "f", research: "r", improver: "i", init: "n" },
-          patterns: { taskId: "x", findingPrefix: "F" },
-          commentMarker: "m",
+        prPrefixes: {
+          task: "[AI:Task]", finding: "[AI:Finding]", research: "[AI:Research]",
+          improver: "[AI:Improver]", init: "[AI:Init]",
         },
-      }),
-    ).toThrow();
+        patterns: { taskId: "T[0-9]{8}-[0-9]{6}", findingPrefix: "F" },
+        commentMarker: "<!-- bot:operator -->",
+      },
+    });
+    expect(parsed.schedules).not.toHaveProperty("dailyResearchHour");
   });
 });
 
