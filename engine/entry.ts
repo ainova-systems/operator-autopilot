@@ -237,11 +237,23 @@ async function main(): Promise<void> {
   // Notification router — dispatches pipeline events to channels (GitHub comments, etc.)
   const notificationRouter = new NotificationRouter(bus);
 
-  // Agent runtime
+  // Agent runtime — strip deployment token var names so write-scoped VCS creds
+  // never reach agent subprocesses (see buildChildEnv / AGENT_FORBIDDEN_ENV).
+  const forbiddenAgentEnvVars = [
+    ...new Set(
+      config.repos.flatMap((project) => [
+        project.vcs.tokenEnvVar,
+        ...(project.tracker?.tokenEnvVar ? [project.tracker.tokenEnvVar] : []),
+      ]),
+    ),
+  ];
   const providers = new Map<string, CLIAgentProvider>();
   for (const [providerId] of Object.entries(agentsConfig.providers)) {
     const providerConfig = resolveProviderConfig(agentsConfig, providerId);
-    providers.set(providerId, new CLIAgentProvider(providerId, providerConfig, logger));
+    providers.set(
+      providerId,
+      new CLIAgentProvider(providerId, providerConfig, logger, forbiddenAgentEnvVars),
+    );
   }
   const agentRuntime = new AgentRuntime(providers, guard, logger);
 

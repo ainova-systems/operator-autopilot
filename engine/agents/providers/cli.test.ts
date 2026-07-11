@@ -219,12 +219,32 @@ describe("CLIAgentProvider", () => {
 
       await provider.execute("Task", {
         ...DEFAULT_OPTIONS,
-        env: { GH_TOKEN: "ghp_test" },
+        env: { CUSTOM_VAR: "custom_value" },
       });
 
       const opts = mockSpawn.mock.calls[0][2] as Record<string, unknown>;
       expect(opts.cwd).toBe("/workspace");
-      expect((opts.env as Record<string, string>).GH_TOKEN).toBe("ghp_test");
+      expect((opts.env as Record<string, string>).CUSTOM_VAR).toBe("custom_value");
+    });
+
+    it("strips vcs.tokenEnvVar from child env when wired like entry.ts composition root", async () => {
+      // Regression: entry passes the union of project.vcs.tokenEnvVar values as
+      // forbiddenEnvVars; the deployment credential must not reach the agent CLI.
+      const tokenVar = "MANAGED_REPO_GH_TOKEN";
+      const previous = process.env[tokenVar];
+      process.env[tokenVar] = "ghp_write_scoped_secret";
+      try {
+        mockSpawn.mockReturnValue(fakeChild("ok", 0) as never);
+        const provider = new CLIAgentProvider("claude", CLAUDE_CONFIG, undefined, [tokenVar]);
+
+        await provider.execute("Task", DEFAULT_OPTIONS);
+
+        const opts = mockSpawn.mock.calls[0][2] as Record<string, unknown>;
+        expect((opts.env as Record<string, string>)[tokenVar]).toBeUndefined();
+      } finally {
+        if (previous === undefined) delete process.env[tokenVar];
+        else process.env[tokenVar] = previous;
+      }
     });
 
     it("uses detached process group on non-win32", async () => {
@@ -525,5 +545,34 @@ describe("buildChildEnv", () => {
     expect(result.GITHUB_TOKEN).toBeUndefined();
     expect(result.GH_ENTERPRISE_TOKEN).toBeUndefined();
     expect(result.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
+  });
+
+  it("strips forbidden token vars re-introduced via overrides", () => {
+    const result = buildChildEnv(
+      { FOO: "bar" },
+      { MANAGED_REPO_GH_TOKEN: "ghp_write_scoped_secret" },
+      ["MANAGED_REPO_GH_TOKEN"],
+    );
+    expect(result.FOO).toBe("bar");
+    expect(result.MANAGED_REPO_GH_TOKEN).toBeUndefined();
+  });
+
+  it("strips GitHub credential vars re-introduced via overrides", () => {
+    const result = buildChildEnv({ FOO: "bar" }, { GH_TOKEN: "ghp_secret" });
+    expect(result.FOO).toBe("bar");
+    expect(result.GH_TOKEN).toBeUndefined();
+  });
+
+  it("strips deployment-configured token env var so agent cannot inherit write-scoped VCS credential", () => {
+    // Regression: operator reads VCS token from project.vcs.tokenEnvVar
+    // (e.g. MANAGED_REPO_GH_TOKEN) in the parent process; without stripping
+    // it, a prompt-injected agent can GH_TOKEN="$MANAGED_REPO_GH_TOKEN" gh pr edit.
+    const result = buildChildEnv(
+      { FOO: "bar", MANAGED_REPO_GH_TOKEN: "ghp_write_scoped_secret" },
+      undefined,
+      ["MANAGED_REPO_GH_TOKEN"],
+    );
+    expect(result.FOO).toBe("bar");
+    expect(result.MANAGED_REPO_GH_TOKEN).toBeUndefined();
   });
 });
