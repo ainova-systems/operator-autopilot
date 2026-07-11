@@ -47,8 +47,8 @@ const DAILY_SCHEDULED_ROW = {
     name: "daily-report",
     dispatch: {
       order: 70,
-      featureFlags: ["dailyReport"],
-      schedule: { kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "dailyReport" },
+      featureFlags: ["prReview"],
+      schedule: { kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "prReview" },
     },
   },
 };
@@ -99,8 +99,8 @@ describe("buildStageDispatchRegistryFromKV", () => {
     const kv = makeKv([DAILY_SCHEDULED_ROW]);
     const registry = await buildStageDispatchRegistryFromKV(kv, makeDefaults());
     const entry = registry.get("daily-report")!;
-    expect(entry.isEnabled({ dailyReport: false })).toBe(false);
-    expect(entry.isEnabled({ dailyReport: true })).toBe(true);
+    expect(entry.isEnabled({ prReview: false })).toBe(false);
+    expect(entry.isEnabled({ prReview: true })).toBe(true);
     expect(entry.isEnabled({ taskExecute: false } as never)).toBe(true); // unrelated flag
   });
 
@@ -144,7 +144,7 @@ describe("buildStageDispatchRegistryFromKV", () => {
     const kv = makeKv([DAILY_SCHEDULED_ROW]);
     const registry = await buildStageDispatchRegistryFromKV(kv, makeDefaults());
     expect(registry.get("daily-report")!.schedule).toEqual({
-      kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "dailyReport",
+      kind: "daily", hourUtc: 8, guardMinutes: 1200, stateKey: "prReview",
     });
   });
 });
