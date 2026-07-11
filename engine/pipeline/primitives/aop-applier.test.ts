@@ -368,8 +368,8 @@ describe("applyAgentEvents — F4 generic AOP applier", () => {
       diagnosticCode: "validation-failed",
       emitType: "child-item",
       line: 42,
-      message: validationMessage,
     });
+    expect(payload).not.toHaveProperty("message");
   });
 
   it("routes warning-severity parse diagnostics to log.warn, not log.error", async () => {
@@ -407,8 +407,8 @@ describe("applyAgentEvents — F4 generic AOP applier", () => {
       diagnosticCode: "unknown-emit-type",
       emitType: "future",
       line: 7,
-      message: "skipped unknown EMIT type",
     });
+    expect(payload).not.toHaveProperty("message");
   });
 
   it("returns verdict=failed when parse diagnostics include errors", async () => {

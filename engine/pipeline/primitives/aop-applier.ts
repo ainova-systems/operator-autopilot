@@ -161,7 +161,6 @@ export async function applyAgentEvents(
       diagnosticCode: diagnostic.code,
       emitType: diagnostic.emitType,
       line: diagnostic.line,
-      message: diagnostic.message,
     };
     if (diagnostic.severity === "error") {
       deps.log?.error(msg, payload);
