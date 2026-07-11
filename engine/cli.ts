@@ -1,5 +1,5 @@
 /**
- * CLI argument parser for Operator V3.
+ * CLI argument parser for the Operator engine.
  *
  * Usage:
  *   npx tsx engine/entry.ts [options]
@@ -12,6 +12,8 @@
  *   --status            Print health status and exit
  *   --help              Show help
  */
+
+import { operatorEngineVersion } from "./index.js";
 
 export interface CLIArgs {
   readonly once: boolean;
@@ -93,7 +95,7 @@ export function parseArgs(argv: string[]): CLIArgs {
  */
 export function printHelp(): string {
   return [
-    "Operator V3 — AI-powered SDLC engine",
+    `Operator ${operatorEngineVersion} — AI-powered SDLC engine`,
     "",
     "Usage: npx tsx engine/entry.ts [options]",
     "",
