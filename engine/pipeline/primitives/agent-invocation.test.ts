@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import type { OperationContext } from "@operator/core";
 import { AgentError } from "@operator/core";
 import type { AgentRunInput, AgentRunResult } from "../../agents/runtime.js";
+import type { Logger } from "../../logging/logger.js";
 import { FileAgentInvocation, extractSummary } from "./agent-invocation.js";
 import type { StageDef, StageInput } from "../types.js";
 
@@ -76,7 +77,10 @@ describe("FileAgentInvocation.invoke", () => {
         durationMs: 100,
       }),
     };
-    const log = { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const log = {
+      info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      child: vi.fn().mockReturnThis(),
+    } as unknown as Logger;
     const invocation = new FileAgentInvocation();
 
     const result = await invocation.invoke(

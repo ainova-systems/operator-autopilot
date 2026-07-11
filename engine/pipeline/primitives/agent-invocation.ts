@@ -31,7 +31,8 @@ export interface AgentInvocationDeps {
   readonly agentRuntime: Pick<AgentRuntime, "run">;
   /**
    * Optional logger. When provided, invocation emits verdict extraction
-   * outcomes at INFO/DEBUG levels (v5 observability mandate).
+   * outcomes at INFO/DEBUG, terminal verdicts at WARN, and infrastructure
+   * failures at ERROR (v5 observability mandate).
    */
   readonly log?: Logger;
 }

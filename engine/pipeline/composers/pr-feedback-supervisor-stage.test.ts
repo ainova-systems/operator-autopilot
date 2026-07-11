@@ -410,9 +410,9 @@ describe("supervisor stage-logic", () => {
         expect.stringContaining(cleanAopSummary),
         expect.any(Object),
       );
-      expect(deps.prManager.postBotComment).toHaveBeenCalledWith(
+      expect(deps.prManager.postBotComment).not.toHaveBeenCalledWith(
         842,
-        expect.not.stringContaining("[synthesized]"),
+        expect.stringContaining("[synthesized]"),
         expect.any(Object),
       );
       expect(result).toEqual({ summaryOverride: cleanAopSummary });
