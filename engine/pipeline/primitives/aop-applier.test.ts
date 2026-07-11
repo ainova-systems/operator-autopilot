@@ -13,6 +13,7 @@ import type {
   BodyMergeStrategy,
   WorkItemListFilter,
 } from "@operator/core";
+import type { Logger } from "../../logging/logger.js";
 import { applyAgentEvents } from "./aop-applier.js";
 
 const KINDS: KindDefinition[] = [
@@ -113,6 +114,16 @@ function makeCtx(): OperationContext {
     traceId: "t", repoId: "r", action: "test",
     budget: { spentUsd: 0, add: () => {}, isExceeded: () => false },
     signal: AbortSignal.timeout(30_000),
+  };
+}
+
+function fakeLogger(): Logger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
   };
 }
 
@@ -319,6 +330,85 @@ describe("applyAgentEvents — F4 generic AOP applier", () => {
     );
     expect(result.verdict).toBe("rejected");
     expect(result.summary).toBe("finding invalid");
+  });
+
+  it("logs a per-record ERROR for a dropped validation-failed child-item — parse diagnostics are no longer an invisible aggregate count", async () => {
+    const log = fakeLogger();
+    const validationMessage = "EMIT child-item validation failed — missing required field: title";
+    const stream = fakeStream({
+      events: [],
+      diagnostics: [
+        {
+          severity: "error",
+          code: "validation-failed",
+          line: 42,
+          emitType: "child-item",
+          message: validationMessage,
+        },
+      ],
+    });
+
+    const result = await applyAgentEvents(
+      "raw",
+      { stream, source, registry, log },
+      { workItem: { id: "F20260508-0001", kind: "finding" } },
+      makeCtx(),
+    );
+
+    expect(result.verdict).toBe("failed");
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.warn).not.toHaveBeenCalled();
+    const [msg, payload] = (log.error as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg).toContain("validation-failed");
+    expect(msg).toContain("child-item");
+    expect(msg).toContain("42");
+    expect(msg).toContain(validationMessage);
+    expect(payload).toMatchObject({
+      scope: "aop-applier",
+      diagnosticCode: "validation-failed",
+      emitType: "child-item",
+      line: 42,
+      message: validationMessage,
+    });
+  });
+
+  it("routes warning-severity parse diagnostics to log.warn, not log.error", async () => {
+    const log = fakeLogger();
+    const stream = fakeStream({
+      events: [],
+      diagnostics: [
+        {
+          severity: "warning",
+          code: "unknown-emit-type",
+          line: 7,
+          emitType: "future",
+          message: "skipped unknown EMIT type",
+        },
+      ],
+    });
+
+    const result = await applyAgentEvents(
+      "raw",
+      { stream, source, registry, log },
+      { workItem: { id: "F20260508-0001", kind: "finding" } },
+      makeCtx(),
+    );
+
+    expect(result.verdict).toBe("approved");
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.error).not.toHaveBeenCalled();
+    const [msg, payload] = (log.warn as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg).toContain("unknown-emit-type");
+    expect(msg).toContain("future");
+    expect(msg).toContain("7");
+    expect(msg).toContain("skipped unknown EMIT type");
+    expect(payload).toMatchObject({
+      scope: "aop-applier",
+      diagnosticCode: "unknown-emit-type",
+      emitType: "future",
+      line: 7,
+      message: "skipped unknown EMIT type",
+    });
   });
 
   it("returns verdict=failed when parse diagnostics include errors", async () => {
