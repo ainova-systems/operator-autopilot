@@ -31,7 +31,8 @@ export interface AgentInvocationDeps {
   readonly agentRuntime: Pick<AgentRuntime, "run">;
   /**
    * Optional logger. When provided, invocation emits verdict extraction
-   * outcomes at INFO/WARN levels (v5 observability mandate).
+   * outcomes at INFO/DEBUG, terminal verdicts at WARN, and infrastructure
+   * failures at ERROR (v5 observability mandate).
    */
   readonly log?: Logger;
 }
@@ -163,11 +164,13 @@ export function extractVerdictMarker(output: string): string | null {
 }
 
 /**
- * Return the verifier's explicit `## Execution Summary`, or — when missing —
- * synthesize a deterministic one-liner from the known verdict and a trimmed
- * first 500 chars of the agent output. Emits one WARN per stage-class when
- * synthesis happens so operators can spot prompts that still use the old
- * template.
+ * Return the agent's explicit `## Execution Summary` when present, or — when
+ * missing — synthesize a deterministic one-liner from the known verdict and a
+ * trimmed first 500 chars of stdout. The block is optional: AOP-transport agents
+ * (e.g. supervisor) carry their summary in `EMIT verdict summary:` instead.
+ * Synthesis is a designed safety net so KV execution history always has a
+ * narrative; the `[synthesized]` marker on the returned string is the visible
+ * diagnostic. Emits DEBUG (not WARN) when synthesis runs.
  */
 export function extractOrSynthesizeSummary(
   output: string,
@@ -182,10 +185,9 @@ export function extractOrSynthesizeSummary(
   const synth = verdictMarker
     ? `[synthesized] verdict=${verdictMarker}. ${snippet}`
     : `[synthesized] verdict=${verdict}. ${snippet}`;
-  // v5 logging audit §14 — fallback path taken. Single WARN, not ERROR: the
-  // stage is not broken, the prompt is. Caller can grep for this to find
-  // verifier prompts that still lack the `## Execution Summary` block.
-  log?.warn(
+  // v5 logging audit §14 — designed fallback path. DEBUG only: omitting the
+  // block is legitimate for AOP agents whose summary lives in EMIT verdict.
+  log?.debug(
     `agent output missing ## Execution Summary block — using synthesized fallback`,
     { stage: stageName, verdict, synthesizedLen: synth.length },
   );

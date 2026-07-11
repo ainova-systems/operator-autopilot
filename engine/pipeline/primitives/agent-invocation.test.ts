@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import type { OperationContext } from "@operator/core";
 import { AgentError } from "@operator/core";
 import type { AgentRunInput, AgentRunResult } from "../../agents/runtime.js";
+import type { Logger } from "../../logging/logger.js";
 import { FileAgentInvocation, extractSummary } from "./agent-invocation.js";
 import type { StageDef, StageInput } from "../types.js";
 
@@ -76,10 +77,14 @@ describe("FileAgentInvocation.invoke", () => {
         durationMs: 100,
       }),
     };
+    const log = {
+      info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      child: vi.fn().mockReturnThis(),
+    } as unknown as Logger;
     const invocation = new FileAgentInvocation();
 
     const result = await invocation.invoke(
-      makeStageDef(), makeInput(), makeRunInput(), { agentRuntime }, makeCtx(),
+      makeStageDef(), makeInput(), makeRunInput(), { agentRuntime, log }, makeCtx(),
     );
 
     expect(result.verdict).toBe("approved");
@@ -87,6 +92,12 @@ describe("FileAgentInvocation.invoke", () => {
     // KV execution history always has a non-empty narrative to display.
     expect(result.summary).toContain("[synthesized]");
     expect(result.summary).toContain("plain text no sections");
+    // Missing block is optional (AOP agents use EMIT verdict summary) — DEBUG only, no WARN.
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.debug).toHaveBeenCalledWith(
+      "agent output missing ## Execution Summary block — using synthesized fallback",
+      expect.objectContaining({ stage: "init", verdict: "approved" }),
+    );
   });
 
   it("maps terminal-failed verifier error to verdict = failed", async () => {

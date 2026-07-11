@@ -309,7 +309,7 @@ describe("supervisor stage-logic", () => {
         expect.stringContaining("Applied review feedback"),
         expect.any(Object),
       );
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ summaryOverride: "Renamed foo to bar" });
     });
 
     it("replies to and resolves inline review threads from comment-reply dispositions", async () => {
@@ -383,6 +383,41 @@ describe("supervisor stage-logic", () => {
     // comment must state only the observable fact and let the agent's
     // reasoning carry the WHY — never assert an interpretation the engine
     // cannot verify.
+    it("successful supervisor run posts the AOP verdict summary, not the [synthesized] fallback (Execution-Summary contract drift)", async () => {
+      const cleanAopSummary = "Escalating to owner: merge conflict is a work-item ID collision.";
+      const synthesizedFallback = "[synthesized] verdict=approved. plain stdout with no Execution Summary block";
+      const stream = makeFakeStream([
+        { type: "verdict", value: "approved", summary: cleanAopSummary } as never,
+      ]);
+      const deps = makeDeps({
+        git: {
+          commitCount: vi.fn().mockResolvedValue(2),
+          isClean: vi.fn().mockResolvedValue(true),
+          headSha: vi.fn().mockResolvedValue("sha-pre"),
+        } as unknown as PrFeedbackSupervisorHookDeps["git"],
+        agentEventStream: stream,
+      });
+      const ctx = makeCtx();
+      const input = makeStageInput(makePayload());
+      await buildPrFeedbackSupervisorBeforeAgent(deps)(makeStageDef(), input, makeWorkspace("ai/tasks/T20260511-0001"), ctx);
+      const result = await buildPrFeedbackSupervisorAfterAgent(deps)(
+        makeStageDef(), input,
+        makeAgentResult("approved", "plain stdout", synthesizedFallback),
+        makeWorkspace("ai/tasks/T20260511-0001"), ctx,
+      );
+      expect(deps.prManager.postBotComment).toHaveBeenCalledWith(
+        842,
+        expect.stringContaining(cleanAopSummary),
+        expect.any(Object),
+      );
+      expect(deps.prManager.postBotComment).not.toHaveBeenCalledWith(
+        842,
+        expect.stringContaining("[synthesized]"),
+        expect.any(Object),
+      );
+      expect(result).toEqual({ summaryOverride: cleanAopSummary });
+    });
+
     it("does not claim feedback was 'already addressed' on an escalate cycle (PR-892 regression)", async () => {
       const escalateReasoning = "## Decision: escalate\n\nMerge conflict is a work-item ID collision, not a code conflict — handing back to a human.";
       const stream = makeFakeStream([
