@@ -104,6 +104,8 @@ export async function runProject(
     //   - completed → advance throttle AND update backoff (the real signal:
     //     a run that opened an output PR resets the empty counter, one that
     //     produced nothing bumps it — see `updateQueueFillBackoff`).
+    //   - failed → advance throttle AND bump backoff unconditionally (a stage
+    //     error is never evidence of output; throttle like an empty run).
     //   - skipped "locked" → FULL no-op: a concurrent run already owns the
     //     work and will record the signal. Touching state here would pollute
     //     the backoff with lock contention rather than real emptiness.
@@ -114,6 +116,9 @@ export async function runProject(
       if (result.status === "completed") {
         await markScheduleRun(entry, project.id, deps, ctx);
         await updateQueueFillBackoff(entry.schedule, project.id, deps, ctx);
+      } else if (result.status === "failed") {
+        await markScheduleRun(entry, project.id, deps, ctx);
+        await bumpQueueFillBackoffCounter(entry.schedule, project.id, deps, ctx);
       } else if (result.status === "skipped" && result.message !== "locked") {
         await markScheduleRun(entry, project.id, deps, ctx);
       }
@@ -143,6 +148,16 @@ async function updateQueueFillBackoff(
     await deps.state.setCounter(ctx, repoId, schedule.backoffStateKey, 0);
     return;
   }
+  await bumpQueueFillBackoffCounter(schedule, repoId, deps, ctx);
+}
+
+/** Unconditionally increment the consecutive-empty-run backoff counter. */
+async function bumpQueueFillBackoffCounter(
+  schedule: Extract<ScheduleSpec, { kind: "queue-fill" }>,
+  repoId: string,
+  deps: ProjectRunnerDeps,
+  ctx: OperationContext,
+): Promise<void> {
   const empty = await deps.state.getCounter(ctx, repoId, schedule.backoffStateKey);
   await deps.state.setCounter(
     ctx, repoId, schedule.backoffStateKey, Math.min(empty + 1, MAX_BACKOFF_EXPONENT),
