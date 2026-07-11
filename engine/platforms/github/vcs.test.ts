@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Octokit } from "@octokit/rest";
+import type { Logger } from "../../logging/logger.js";
+import { aggregateChecks } from "../../pipeline/primitives/observe-status.js";
 import { GitHubVCS } from "./vcs.js";
 
 function createMockOctokit() {
@@ -41,6 +43,16 @@ function createMockOctokit() {
         downloadJobLogsForWorkflowRun: vi.fn(),
       },
     },
+  };
+}
+
+function createFakeLogger(): Logger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
   };
 }
 
@@ -527,35 +539,86 @@ describe("GitHubVCS", () => {
   describe("getCheckRuns", () => {
     it("parses workflowRunId and jobId from the details URL", async () => {
       mock.rest.pulls.get.mockResolvedValueOnce({ data: { head: { sha: "deadbeef" } } });
-      mock.rest.checks.listForRef.mockResolvedValueOnce({
-        data: {
-          check_runs: [{
-            id: 1, name: "Deploy PR Environment", conclusion: "success",
-            details_url: "https://github.com/owner/repo/actions/runs/28230397428/job/83632478650",
-            app: { name: "PR Preview" },
-          }],
+      mock.paginate.mockResolvedValueOnce([
+        {
+          id: 1, name: "Deploy PR Environment", conclusion: "success",
+          details_url: "https://github.com/owner/repo/actions/runs/28230397428/job/83632478650",
+          app: { name: "PR Preview" },
         },
-      });
+      ]);
       const runs = await vcs.getCheckRuns(42);
       expect(runs[0].workflowRunId).toBe(28230397428);
       expect(runs[0].jobId).toBe(83632478650);
+      expect(mock.paginate).toHaveBeenCalledWith(
+        mock.rest.checks.listForRef,
+        { owner: "owner", repo: "repo", ref: "deadbeef", per_page: 100 },
+        expect.any(Function),
+      );
+      const mapFn = mock.paginate.mock.calls[0][2] as (
+        response: { data: { check_runs: Array<{ id: number; name: string }> } },
+      ) => Array<{ id: number; name: string }>;
+      expect(mapFn({ data: { check_runs: [{ id: 99, name: "lint" }] } })).toEqual([
+        { id: 99, name: "lint" },
+      ]);
+    });
+
+    it("paginates check runs so a page-2 failure is not truncated (regression: >100 checks)", async () => {
+      mock.rest.pulls.get.mockResolvedValueOnce({ data: { head: { sha: "abc123" } } });
+      const pageOneRuns = Array.from({ length: 100 }, (_, i) => ({
+        id: i + 1,
+        name: `check-${i + 1}`,
+        conclusion: "success",
+        details_url: null,
+      }));
+      const pageTwoFailure = {
+        id: 101,
+        name: "integration",
+        conclusion: "failure",
+        details_url: null,
+      };
+      mock.paginate.mockResolvedValueOnce([...pageOneRuns, pageTwoFailure]);
+      mock.paginate.mockResolvedValue([]); // annotations fetch for the failed check
+
+      const runs = await vcs.getCheckRuns(42);
+
+      expect(runs).toHaveLength(101);
+      expect(aggregateChecks(runs)).toBe("failing");
+      expect(mock.rest.checks.listForRef).not.toHaveBeenCalled();
+    });
+
+    it("warns and returns [] when the Octokit call rejects (regression: silent swallow)", async () => {
+      const log = createFakeLogger();
+      const vcsWithLog = new GitHubVCS(mock as unknown as Octokit, "owner", "repo", log);
+      const cause = new Error("upstream timeout");
+      const apiError = new Error("GitHub API 503", { cause });
+      mock.rest.pulls.get.mockRejectedValueOnce(apiError);
+
+      const runs = await vcsWithLog.getCheckRuns(99);
+
+      expect(runs).toEqual([]);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining("getCheckRuns failed for PR #99"),
+        expect.objectContaining({
+          codeReviewId: 99,
+          error: "GitHub API 503",
+          cause: "upstream timeout",
+        }),
+      );
     });
   });
 
   describe("reRunFailedChecks", () => {
     it("re-runs the failed run's failed jobs and returns true", async () => {
       mock.rest.pulls.get.mockResolvedValue({ data: { head: { sha: "sha1" } } });
-      mock.rest.checks.listForRef.mockResolvedValueOnce({
-        data: {
-          check_runs: [
-            { id: 1, name: "Deploy", conclusion: "failure",
-              details_url: "https://github.com/owner/repo/actions/runs/555/job/111" },
-            { id: 2, name: "E2E", conclusion: "skipped",
-              details_url: "https://github.com/owner/repo/actions/runs/555/job/222" },
-          ],
-        },
-      });
-      mock.paginate.mockResolvedValue([]); // annotations fetch for the failed check
+      mock.paginate
+        .mockResolvedValueOnce([
+          { id: 1, name: "Deploy", conclusion: "failure",
+            details_url: "https://github.com/owner/repo/actions/runs/555/job/111" },
+          { id: 2, name: "E2E", conclusion: "skipped",
+            details_url: "https://github.com/owner/repo/actions/runs/555/job/222" },
+        ])
+        .mockResolvedValue([]); // annotations fetch for the failed check
       const ok = await vcs.reRunFailedChecks(42);
       expect(ok).toBe(true);
       expect(mock.rest.actions.reRunWorkflowFailedJobs).toHaveBeenCalledTimes(1);
@@ -566,9 +629,9 @@ describe("GitHubVCS", () => {
 
     it("returns false when there are no failing Actions runs", async () => {
       mock.rest.pulls.get.mockResolvedValue({ data: { head: { sha: "sha1" } } });
-      mock.rest.checks.listForRef.mockResolvedValueOnce({
-        data: { check_runs: [{ id: 1, name: "Deploy", conclusion: "success", details_url: null }] },
-      });
+      mock.paginate.mockResolvedValueOnce([
+        { id: 1, name: "Deploy", conclusion: "success", details_url: null },
+      ]);
       const ok = await vcs.reRunFailedChecks(42);
       expect(ok).toBe(false);
       expect(mock.rest.actions.reRunWorkflowFailedJobs).not.toHaveBeenCalled();

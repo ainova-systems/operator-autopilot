@@ -218,7 +218,7 @@ async function main(): Promise<void> {
     const token = process.env[project.vcs.tokenEnvVar] || "";
     const octokit = createOctokit(token, logger);
     const { owner, repo } = parseRepoSlug(project.vcs.repo);
-    const repoVcs = new GitHubVCS(octokit, owner, repo);
+    const repoVcs = new GitHubVCS(octokit, owner, repo, logger);
     const repoCtx: OperationContext = { ...ctx, repoId: project.id, action: "boot-reconcile" };
     try {
       const r = await revertOrphanProcessingLabels(
@@ -323,7 +323,7 @@ async function main(): Promise<void> {
       const token = process.env[project.vcs.tokenEnvVar] || "";
       const octokit = createOctokit(token, logger);
       const { owner, repo } = parseRepoSlug(project.vcs.repo);
-      return new GitHubVCS(octokit, owner, repo);
+      return new GitHubVCS(octokit, owner, repo, logger);
     },
     resolveWorkspace: (project: ProjectConfig): string => {
       if (workspaceOverride) return workspaceOverride;
@@ -367,7 +367,7 @@ async function main(): Promise<void> {
       const token = process.env[project.vcs.tokenEnvVar] || "";
       const octokit = createOctokit(token, logger);
       const { owner, repo } = parseRepoSlug(project.vcs.repo);
-      const vcs = new GitHubVCS(octokit, owner, repo);
+      const vcs = new GitHubVCS(octokit, owner, repo, logger);
       const prManager = new PRManager(vcs, config.conventions);
       // syncFilesToState resolves per-kind directories via
       // `join(workspacePath, kindDef.dataDir)`. `dataDir` carries the
