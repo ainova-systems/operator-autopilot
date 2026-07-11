@@ -484,6 +484,8 @@ export function buildPrFeedbackSupervisorAfterAgent(deps: PrFeedbackSupervisorHo
         };
       }
 
+      const effectiveSummary = applied.summary || agentResult.summary;
+
       if (changesApplied) {
         await deps.prManager.postBotComment(
           payload.prId,
@@ -506,7 +508,7 @@ export function buildPrFeedbackSupervisorAfterAgent(deps: PrFeedbackSupervisorHo
         // contradicted the agent's own reasoning on escalate cycles
         // (PR #892, 2026-05-21). The WHY lives in the agent's
         // reasoning block below — never in a fixed engine sentence.
-        const reasoning = (agentResult.summary ?? "").trim().slice(0, 1500);
+        const reasoning = (effectiveSummary ?? "").trim().slice(0, 1500);
         const reasoningBlock = reasoning ? `\n\n${reasoning}` : "";
         await deps.prManager.postBotComment(
           payload.prId,
@@ -517,7 +519,7 @@ export function buildPrFeedbackSupervisorAfterAgent(deps: PrFeedbackSupervisorHo
           stage: stage.name, prNumber: payload.prId, changesApplied: false,
         });
       }
-      return;
+      return { summaryOverride: effectiveSummary };
     } catch (err) {
       deps.log?.error(`${stage.name}: afterAgent failed for PR #${payload.prId}`, {
         stage: stage.name, prNumber: payload.prId, error: errorMessage(err),
