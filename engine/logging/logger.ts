@@ -1,7 +1,7 @@
 import pino from "pino";
 import { Writable } from "node:stream";
 import type { OperationContext } from "@operator/core";
-import { redactString } from "./redact.js";
+import { redactString, redactValue } from "./redact.js";
 import { createStatusLine, noopStatusLine } from "./status-line.js";
 import type { StatusLine, TtyStream } from "./status-line.js";
 
@@ -16,7 +16,7 @@ type PrettyFactory = (
  * Levels: debug, info, warn, error.
  * Debug only emitted when LOG_LEVEL=debug.
  * Repo context via OperationContext bindings.
- * Structured JSON output with secret redaction on messages.
+ * Structured JSON output with secret redaction on messages, data fields, and child bindings.
  */
 export interface Logger {
   debug(msg: string, data?: Record<string, unknown>): void;
@@ -28,40 +28,40 @@ export interface Logger {
 
 /**
  * Wrap a pino instance to conform to our Logger interface,
- * applying string redaction to messages.
+ * applying redaction to messages, structured data fields, and child bindings.
  */
 function wrapPino(pinoLogger: pino.Logger): Logger {
   return {
     debug(msg: string, data?: Record<string, unknown>) {
       if (data) {
-        pinoLogger.debug(data, redactString(msg));
+        pinoLogger.debug(redactValue(data) as Record<string, unknown>, redactString(msg));
       } else {
         pinoLogger.debug(redactString(msg));
       }
     },
     info(msg: string, data?: Record<string, unknown>) {
       if (data) {
-        pinoLogger.info(data, redactString(msg));
+        pinoLogger.info(redactValue(data) as Record<string, unknown>, redactString(msg));
       } else {
         pinoLogger.info(redactString(msg));
       }
     },
     warn(msg: string, data?: Record<string, unknown>) {
       if (data) {
-        pinoLogger.warn(data, redactString(msg));
+        pinoLogger.warn(redactValue(data) as Record<string, unknown>, redactString(msg));
       } else {
         pinoLogger.warn(redactString(msg));
       }
     },
     error(msg: string, data?: Record<string, unknown>) {
       if (data) {
-        pinoLogger.error(data, redactString(msg));
+        pinoLogger.error(redactValue(data) as Record<string, unknown>, redactString(msg));
       } else {
         pinoLogger.error(redactString(msg));
       }
     },
     child(bindings: Record<string, unknown>): Logger {
-      return wrapPino(pinoLogger.child(bindings));
+      return wrapPino(pinoLogger.child(redactValue(bindings) as Record<string, unknown>));
     },
   };
 }

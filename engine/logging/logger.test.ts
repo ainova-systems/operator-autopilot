@@ -81,6 +81,48 @@ describe("createLogger", () => {
     logger.info("Token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 
+  it("redacts a ghp_ token in structured data fields (CLI-exit stderr/stdout leak)", async () => {
+    const out = fakeOut();
+    const ghpToken = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const bearerToken = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9payload";
+    const { logger, statusLine } = await createConsole({
+      level: "warn",
+      tty: true,
+      once: false,
+      out,
+      loadPretty: () => Promise.reject(new Error("module not found")),
+    });
+    logger.warn("Agent CLI exited non-zero", {
+      stderr: `Authorization: ${bearerToken}`,
+      stdout: ghpToken,
+    });
+    await flush();
+    statusLine.stop();
+    const serialized = out.all();
+    expect(serialized).toContain("[REDACTED]");
+    expect(serialized).not.toContain(ghpToken);
+    expect(serialized).not.toContain(bearerToken);
+  });
+
+  it("redacts sk-ant- tokens in child logger bindings", async () => {
+    const out = fakeOut();
+    const anthropicKey = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456";
+    const { logger, statusLine } = await createConsole({
+      level: "info",
+      tty: true,
+      once: false,
+      out,
+      loadPretty: () => Promise.reject(new Error("module not found")),
+    });
+    const child = logger.child({ apiKey: anthropicKey });
+    child.info("child log with bound secret");
+    await flush();
+    statusLine.stop();
+    const serialized = out.all();
+    expect(serialized).toContain("[REDACTED]");
+    expect(serialized).not.toContain(anthropicKey);
+  });
+
   it("creates child loggers", () => {
     const logger = createLogger("silent");
     const child = logger.child({ component: "test" });
