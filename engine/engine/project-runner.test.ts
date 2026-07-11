@@ -58,7 +58,7 @@ function makeDefaults() {
   return {
     schedules: {
       prReviewMinutes: 5, taskSelectMinutes: 15, findingSelectMinutes: 30,
-      dailyResearchHour: 8, improverDayOfWeek: 1, prLifecycleMinutes: 30,
+      improverDayOfWeek: 1, prLifecycleMinutes: 30,
     },
     limits: { maxReviewAttempts: 5 },
     review: { ignoredBotLogins: [] },
@@ -70,7 +70,7 @@ function makeDeps(overrides?: Partial<ProjectRunnerDeps>): ProjectRunnerDeps {
   const defaults = makeDefaults();
   return {
     state: makeState(),
-    vcs: {} as VCSPlatform,
+    vcs: { getCodeReviews: vi.fn().mockResolvedValue([]) } as VCSPlatform,
     defaults,
     conventions: {
       labels: { pending: "ai:pending", processing: "ai:processing", inReview: "ai:in-review", readyToMerge: "ai:ready-to-merge", failed: "ai:failed" },

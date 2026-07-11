@@ -130,7 +130,7 @@ describe("smoke: engine boot + one cycle", () => {
       defaults: {
         schedules: {
           prReviewMinutes: 5, taskSelectMinutes: 15, findingSelectMinutes: 30,
-          dailyResearchHour: 8, improverDayOfWeek: 1,
+          improverDayOfWeek: 1,
         },
         limits: { maxReviewAttempts: 5 },
         review: { ignoredBotLogins: [] },

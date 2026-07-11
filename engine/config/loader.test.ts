@@ -35,7 +35,6 @@ const VALID_DEFAULTS = {
     prReviewMinutes: 5,
     taskSelectMinutes: 15,
     findingSelectMinutes: 30,
-    dailyResearchHour: 8,
     improverDayOfWeek: 1,
     prLifecycleMinutes: 15,
   },

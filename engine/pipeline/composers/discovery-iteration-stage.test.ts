@@ -38,7 +38,7 @@ const CONVENTIONS: ConventionsConfig = {
 };
 
 const DEFAULTS: DefaultsConfig = {
-  schedules: { prReviewMinutes: 5, taskSelectMinutes: 10, findingSelectMinutes: 10, dailyResearchHour: 8, improverDayOfWeek: 1 },
+  schedules: { prReviewMinutes: 5, taskSelectMinutes: 10, findingSelectMinutes: 10, improverDayOfWeek: 1 },
   limits: { maxReviewAttempts: 5 },
   review: { ignoredBotLogins: [] },
 };

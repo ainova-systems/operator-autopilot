@@ -27,7 +27,6 @@ function buildDefaults(parsed: EngineDefaultsEntry): { defaults: DefaultsConfig;
         prReviewMinutes: parsed.schedules.prReviewMinutes,
         taskSelectMinutes: parsed.schedules.taskSelectMinutes,
         findingSelectMinutes: parsed.schedules.findingSelectMinutes,
-        dailyResearchHour: parsed.schedules.dailyResearchHour,
         improverDayOfWeek: parsed.schedules.improverDayOfWeek,
         prLifecycleMinutes: parsed.schedules.prLifecycleMinutes,
       },
