@@ -77,10 +77,10 @@ export function analyzerCadence(schedule: string): "every" | "never" | "throttle
   return "every";
 }
 
-/** Parse flat `key: value` frontmatter. Keeps semantics of v4 `parseFrontmatterFields`. */
+/** Parse flat `key: value` frontmatter. Splits on CRLF or LF (Windows/autocrlf checkouts). */
 function parseAnalyzerFrontmatter(block: string): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const line of block.split("\n")) {
+  for (const line of block.split(/\r?\n/)) {
     const match = line.match(/^(\w[\w_]*):\s*(.*)$/);
     if (match) {
       result[match[1]] = match[2].replace(/^["']|["']$/g, "").trim();
