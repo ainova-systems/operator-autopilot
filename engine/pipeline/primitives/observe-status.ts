@@ -331,7 +331,15 @@ export async function observeChecks(
         )
       : undefined;
     return { value, observedAt, headSha, checks, failureMode };
-  } catch {
+  } catch (err) {
+    deps.log?.warn(
+      `observe-checks: getCheckRuns failed for PR #${prNumber} — degrading to none (non-fatal)`,
+      {
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+        cause: err instanceof Error && err.cause ? String(err.cause) : undefined,
+      },
+    );
     return { value: "none", observedAt, checks: [] };
   }
 }

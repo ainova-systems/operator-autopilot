@@ -333,10 +333,27 @@ describe("observeChecks", () => {
   });
 
   it("treats getCheckRuns rejection as a non-fatal 'none' observation", async () => {
-    const getCheckRuns = vi.fn().mockRejectedValue(new Error("api down"));
-    const obs = await observeChecks(789, { vcs: { getCheckRuns } });
+    const rootCause = new Error("ECONNRESET");
+    const getCheckRuns = vi.fn().mockRejectedValue(new Error("api down", { cause: rootCause }));
+    const warn = vi.fn();
+    const log = {
+      info: vi.fn(),
+      debug: vi.fn(),
+      warn,
+      error: vi.fn(),
+      child: vi.fn(),
+    } as unknown as import("../../logging/logger.js").Logger;
+    const obs = await observeChecks(789, { vcs: { getCheckRuns }, log });
     expect(obs.value).toBe("none");
     expect(obs.checks).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("getCheckRuns failed for PR #789"),
+      {
+        prNumber: 789,
+        error: "api down",
+        cause: "Error: ECONNRESET",
+      },
+    );
   });
 
   it("classifies a failing observation as transient via the job log", async () => {
