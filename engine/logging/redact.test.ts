@@ -133,4 +133,63 @@ describe("redactValue", () => {
     expect(result[2]).toBeNull();
     expect(result[3]).toEqual({ key: "safe" });
   });
+
+  it("preserves Error fields in structured data instead of empty object", () => {
+    const err = new Error("request failed with ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    const result = redactValue({ err }) as { err: Record<string, unknown> };
+
+    expect(result["err"]).toEqual({
+      name: "Error",
+      message: `request failed with ${REDACTED}`,
+      stack: expect.stringContaining("Error: request failed with"),
+    });
+    expect(result["err"]["stack"]).toContain(REDACTED);
+  });
+
+  it("redacts nested Error cause chains", () => {
+    const cause = new Error("token sk-ant-abc123def456ghi789jkl leaked");
+    const err = new Error("outer failure", { cause });
+    const result = redactValue({ err }) as { err: Record<string, unknown> };
+
+    expect(result["err"]["cause"]).toEqual({
+      name: "Error",
+      message: `token ${REDACTED} leaked`,
+      stack: expect.stringContaining("Error: token"),
+    });
+  });
+
+  it("serializes Date values to ISO strings with redaction applied", () => {
+    const date = new Date("2026-07-11T09:00:00.000Z");
+    expect(redactValue({ at: date })).toEqual({ at: "2026-07-11T09:00:00.000Z" });
+  });
+
+  it("serializes URL values to strings with redaction applied", () => {
+    const url = new URL("https://example.com/api?token=abc123def456ghi789jkl012mno");
+    const result = redactValue({ url }) as { url: string };
+    expect(result["url"]).toBe(`https://example.com/api?${REDACTED}`);
+  });
+
+  it("serializes Map and Set values for structured logging", () => {
+    const map = new Map<string, unknown>([
+      ["token", "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      ["count", 3],
+    ]);
+    const set = new Set(["safe", "sk-ant-abc123def456ghi789jkl"]);
+
+    expect(redactValue({ map })).toEqual({ map: { token: REDACTED, count: 3 } });
+    expect(redactValue({ set })).toEqual({ set: ["safe", REDACTED] });
+  });
+
+  it("uses toJSON output before plain-object enumeration", () => {
+    const value = {
+      token: "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      toJSON() {
+        return { secret: this.token, label: "payload" };
+      },
+    };
+
+    expect(redactValue({ value })).toEqual({
+      value: { secret: REDACTED, label: "payload" },
+    });
+  });
 });

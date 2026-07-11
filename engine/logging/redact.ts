@@ -41,12 +41,59 @@ export function redactString(input: string): string {
   return result;
 }
 
+function redactError(error: Error): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    name: error.name,
+    message: redactString(error.message),
+  };
+  if (error.stack) {
+    result["stack"] = redactString(error.stack);
+  }
+  if (error.cause !== undefined) {
+    result["cause"] = redactValue(error.cause);
+  }
+  for (const [k, v] of Object.entries(error)) {
+    if (!(k in result)) {
+      result[k] = redactValue(v);
+    }
+  }
+  return result;
+}
+
+function redactSpecialObject(value: object): unknown | undefined {
+  if (value instanceof Error) {
+    return redactError(value);
+  }
+  if (value instanceof Date) {
+    return redactString(value.toISOString());
+  }
+  if (value instanceof URL) {
+    return redactString(value.toString());
+  }
+  if (value instanceof Map) {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of value) {
+      result[String(redactValue(k))] = redactValue(v);
+    }
+    return result;
+  }
+  if (value instanceof Set) {
+    return [...value].map(redactValue);
+  }
+  const toJSON = (value as { toJSON?: () => unknown }).toJSON;
+  if (typeof toJSON === "function") {
+    return redactValue(toJSON.call(value));
+  }
+  return undefined;
+}
+
 /**
  * Recursively redact secrets from an object/value for safe logging.
  *
  * - Strings: redact token patterns inline.
  * - Objects/arrays: recurse into values.
  * - Primitives: return as-is.
+ * - Error/Date/URL/Map/Set/toJSON: preserve diagnostic shape before redacting fields.
  */
 export function redactValue(value: unknown): unknown {
   if (typeof value === "string") {
@@ -56,6 +103,10 @@ export function redactValue(value: unknown): unknown {
     return value.map(redactValue);
   }
   if (value !== null && typeof value === "object") {
+    const special = redactSpecialObject(value);
+    if (special !== undefined) {
+      return special;
+    }
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       result[k] = redactValue(v);
