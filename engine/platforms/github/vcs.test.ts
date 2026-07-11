@@ -552,7 +552,14 @@ describe("GitHubVCS", () => {
       expect(mock.paginate).toHaveBeenCalledWith(
         mock.rest.checks.listForRef,
         { owner: "owner", repo: "repo", ref: "deadbeef", per_page: 100 },
+        expect.any(Function),
       );
+      const mapFn = mock.paginate.mock.calls[0][2] as (
+        response: { data: { check_runs: Array<{ id: number; name: string }> } },
+      ) => Array<{ id: number; name: string }>;
+      expect(mapFn({ data: { check_runs: [{ id: 99, name: "lint" }] } })).toEqual([
+        { id: 99, name: "lint" },
+      ]);
     });
 
     it("paginates check runs so a page-2 failure is not truncated (regression: >100 checks)", async () => {

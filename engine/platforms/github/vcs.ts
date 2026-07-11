@@ -393,13 +393,14 @@ export class GitHubVCS implements VCSPlatform {
       const checkRuns = await this.octokit.paginate(
         this.octokit.rest.checks.listForRef,
         { owner: this.owner, repo: this.repo, ref: pr.head.sha, per_page: 100 },
+        (response) => (response.data as unknown as { check_runs: GhCheckRunPayload[] }).check_runs,
       );
       // For failed checks we additionally fetch annotations so the agent
       // can see file:line:message pairs without scraping logs. Skip
       // annotation fetch on success to keep the API budget tight — most
       // CI configurations annotate failures only anyway.
       return await Promise.all(
-        (checkRuns as GhCheckRunPayload[]).map((cr) => this.mapCheckRun(cr, pr.head.sha)),
+        checkRuns.map((cr) => this.mapCheckRun(cr, pr.head.sha)),
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
