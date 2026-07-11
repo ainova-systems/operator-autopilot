@@ -128,15 +128,16 @@ describe("loadAnalyzerDefs", () => {
     expect(defs[0].enabled).toBe(false);
   });
 
-  it("parses CRLF (\\r\\n) analyzer frontmatter — enabled:false stays disabled and weekly:3 stays throttled (regression)", async () => {
+  it("parses CRLF (\\r\\n) analyzer frontmatter — quoted enabled:false stays disabled and weekly:3 stays throttled (regression)", async () => {
     await writeFile(
       join(analystDir, "crlf.md"),
-      "---\r\nschedule: weekly:3\r\nenabled: false\r\npath: Source/**\r\n---\r\n\r\nBody",
+      '---\r\nschedule: "weekly:3"\r\nenabled: "false"\r\npath: "Source/**"\r\n---\r\n\r\nBody',
     );
     const defs = await loadAnalyzerDefs(analystDir);
     expect(defs).toHaveLength(1);
     expect(defs[0].enabled).toBe(false);
     expect(defs[0].schedule).toBe("weekly:3");
+    expect(analyzerCadence(defs[0].schedule)).toBe("throttled");
     expect(defs[0].path).toBe("Source/**");
   });
 
