@@ -1,5 +1,14 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { parseArgs, printHelp } from "./cli.js";
+
+const packageVersion = (
+  JSON.parse(
+    readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+  ) as { version: string }
+).version;
 
 describe("parseArgs", () => {
   it("parses --once flag", () => {
@@ -99,9 +108,16 @@ describe("parseArgs", () => {
 });
 
 describe("printHelp", () => {
+  it("help banner shows the package.json version, not a retired generation label", () => {
+    const help = printHelp();
+    expect(help).toContain(`Operator ${packageVersion}`);
+    expect(help).not.toMatch(/\bV[34]\b/);
+    expect(help).not.toContain("Operator V3");
+    expect(help).not.toContain("Operator V4");
+  });
+
   it("returns help text with usage examples", () => {
     const help = printHelp();
-    expect(help).toContain("Operator V3");
     expect(help).toContain("--once");
     expect(help).toContain("--repo");
     expect(help).toContain("--force");

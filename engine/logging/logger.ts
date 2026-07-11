@@ -153,8 +153,8 @@ export async function createConsole(opts: ConsoleOptions): Promise<Console> {
 /**
  * Create a child logger bound to an OperationContext.
  *
- * Adds traceId, repoId, and action to every log line — the V3 equivalent
- * of V1's `log_repo()` which prefixed messages with `[$repo_id]`.
+ * Adds traceId, repoId, and action to every log line — the structured
+ * equivalent of V1's `log_repo()` which prefixed messages with `[$repo_id]`.
  */
 export function contextLogger(logger: Logger, ctx: OperationContext): Logger {
   return logger.child({

@@ -44,11 +44,11 @@ export const FEEDBACK_RECEIVED = "feedback.received";
 export const REVIEW_STARTED = "review.started";
 export const REVIEW_COMPLETED = "review.completed";
 
-// ── Observation (OBSERVE — V3 new) ──────────────────────────────────────
+// ── Observation (OBSERVE) ───────────────────────────────────────────────
 export const OBSERVATION_STARTED = "observation.started";
 export const OBSERVATION_COMPLETED = "observation.completed";
 
-// ── Assessment (ASSESS — V3 new) ────────────────────────────────────────
+// ── Assessment (ASSESS) ─────────────────────────────────────────────────
 export const ASSESSMENT_COMPLETED = "assessment.completed";
 
 // ── Notification ────────────────────────────────────────────────────────
