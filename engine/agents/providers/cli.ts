@@ -73,10 +73,6 @@ export function buildChildEnv(
     if (value === undefined || value === "") continue;
     merged[key] = value;
   }
-  for (const key of AGENT_FORBIDDEN_ENV) delete merged[key];
-  for (const key of forbiddenExtra) {
-    if (key) delete merged[key];
-  }
   if (overrides) {
     for (const [key, value] of Object.entries(overrides)) {
       if (value === undefined || value === "") {
@@ -85,6 +81,10 @@ export function buildChildEnv(
       }
       merged[key] = value;
     }
+  }
+  for (const key of AGENT_FORBIDDEN_ENV) delete merged[key];
+  for (const key of forbiddenExtra) {
+    if (key) delete merged[key];
   }
   return merged;
 }
