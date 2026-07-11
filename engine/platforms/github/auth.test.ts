@@ -37,6 +37,40 @@ describe("createOctokit", () => {
     // info routes to debug (HTTP noise reduction)
     expect(calls).toEqual(["debug:d", "debug:i", "warn:w", "error:e"]);
   });
+
+  it("routes an expected 404 request-log line to debug instead of error", () => {
+    const calls: string[] = [];
+    const logger: Logger = {
+      debug: (msg) => calls.push(`debug:${msg}`),
+      info: (msg) => calls.push(`info:${msg}`),
+      warn: (msg) => calls.push(`warn:${msg}`),
+      error: (msg) => calls.push(`error:${msg}`),
+      child: () => logger,
+    };
+    const client = createOctokit("ghp_test_token", logger);
+    client.log.error(
+      "GET /repos/o/r/labels/ai%3Aprocessing - 404 with id ABC in 12ms",
+    );
+    expect(calls).toEqual([
+      "debug:GET /repos/o/r/labels/ai%3Aprocessing - 404 with id ABC in 12ms",
+    ]);
+  });
+
+  it("routes a non-404 request-log failure to error", () => {
+    const calls: string[] = [];
+    const logger: Logger = {
+      debug: (msg) => calls.push(`debug:${msg}`),
+      info: (msg) => calls.push(`info:${msg}`),
+      warn: (msg) => calls.push(`warn:${msg}`),
+      error: (msg) => calls.push(`error:${msg}`),
+      child: () => logger,
+    };
+    const client = createOctokit("ghp_test_token", logger);
+    client.log.error("GET /repos/o/r/labels/missing - 500 with id XYZ in 8ms");
+    expect(calls).toEqual([
+      "error:GET /repos/o/r/labels/missing - 500 with id XYZ in 8ms",
+    ]);
+  });
 });
 
 describe("parseRepoSlug", () => {

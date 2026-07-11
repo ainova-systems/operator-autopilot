@@ -1,6 +1,22 @@
 import { Octokit } from "@octokit/rest";
 import type { Logger } from "../../logging/logger.js";
 
+/** Matches @octokit/plugin-request-log: `"${method} ${path} - ${status}..."`. */
+const REQUEST_LOG_STATUS_RE = / - (\d{3})(?: |$)/;
+
+/**
+ * Routes Octokit request-log errors: expected 404 existence probes are DEBUG
+ * (callers treat absent resources as control flow); real failures stay ERROR.
+ */
+function routeOctokitErrorLog(logger: Logger, msg: string): void {
+  const match = REQUEST_LOG_STATUS_RE.exec(msg);
+  if (match?.[1] === "404") {
+    logger.debug(msg);
+    return;
+  }
+  logger.error(msg);
+}
+
 /**
  * Creates an authenticated Octokit instance.
  *
@@ -16,7 +32,7 @@ export function createOctokit(token: string, logger?: Logger): Octokit {
         debug: (msg: string) => logger.debug(msg),
         info: (msg: string) => logger.debug(msg),
         warn: (msg: string) => logger.warn(msg),
-        error: (msg: string) => logger.error(msg),
+        error: (msg: string) => routeOctokitErrorLog(logger, msg),
       },
     } : {}),
   });
