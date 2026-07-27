@@ -50,7 +50,7 @@ describe("buildRejectionPlannerPr", () => {
       "",
       "---",
       "",
-      "**Reviewer action**: merge this PR to propagate the rejection to develop, or close-without-merge if you disagree — the supervisor will handle override on the next cycle.",
+      "**Reviewer action**: merge this PR to propagate the rejection to the base branch, or close-without-merge if you disagree — the supervisor will handle override on the next cycle.",
     ].join("\n"));
     expect(result.commitMessage).toBe(
       "Finding F-PR: rejected — Finding invalid — base class already maps name (case-insensitive)",

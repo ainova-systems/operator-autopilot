@@ -105,27 +105,17 @@ export function buildAopPlannerAfterAgent(deps: AopPlannerHookDeps) {
       );
 
       if (applied.verdict === "rejected") {
-        // Rejection is a SUCCESS for the agent — it correctly identified
-        // a false-positive / obsolete / invalid item. Mark the item
-        // terminal (rejected) in state; persist will then commit the
-        // status flip + create the PR which acts as a normal data-sync
-        // vehicle awaiting human review. PR body explains the rejection
-        // reasoning (rendered by `buildPR` reading `scratch.rejection`).
-        // NO auto-close per MVP rules (user explicit guidance: never
-        // auto-close PRs unless stage config declares it). The human
-        // reviewer either merges the PR (propagating rejection to
-        // develop) or closes-without-merge to override the rejection;
-        // supervisor handles human override decisions on the next cycle.
+        // Agent rejected the item as invalid. Mark terminal, stash reason
+        // for buildPR, post bot comment. Human merges to propagate or
+        // closes-without-merge; supervisor handles override next cycle.
         await updateStatusAndSync(scratch.filePath, "rejected", deps.state, ctx);
         const reason = applied.summary || `${deps.displayName} ${itemId} marked invalid by ${deps.agentRole}`;
-        // Stash rejection context so buildPR can produce a rejection-specific
-        // PR title + body instead of the standard in-progress template.
         scratch.rejection = { agentRole: deps.agentRole, reason };
         if (scratch.codeReviewId) {
           const suffix = formatDebugRunLinkSuffix(deps.debug, deps.debugRunUrl);
           await deps.prManager.postBotComment(
             scratch.codeReviewId,
-            `${deps.displayName} **${itemId}** determined invalid by ${deps.agentRole}: ${reason}${suffix}\n\nThe PR carries the \`status: rejected\` flip ready for review. Merge to propagate the rejection to develop, or close-without-merge if you disagree (the supervisor handles override on the next cycle).`,
+            `${deps.displayName} **${itemId}** determined invalid by ${deps.agentRole}: ${reason}${suffix}\n\nThe PR carries the \`status: rejected\` flip ready for review. Merge to propagate the rejection to the base branch, or close-without-merge if you disagree (the supervisor handles override on the next cycle).`,
           );
         }
         return {
@@ -197,12 +187,6 @@ export function buildAopPlannerAfterAgent(deps: AopPlannerHookDeps) {
       });
       throw err;
     }
-    // Scratch cleared in buildPR's finally — buildPR is the last hook
-    // that reads scratch (it consumes scratch.rejection set above on the
-    // rejected path to render REJECTED title + reason in the PR body).
-    // Matches the pattern used by discovery-iteration-stage + weekly-
-    // metrics-stage. If buildPR is somehow skipped, the entry sticks
-    // around for the current cycle's traceId and is GC'd when ctx goes
-    // out of scope (next cycle uses a fresh traceId, no leak).
+    // Scratch cleared in buildPR.finally (last hook reading scratch.rejection).
   };
 }
