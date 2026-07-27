@@ -21,8 +21,8 @@ pipeline/primitives/  → agents/, platforms/, storage/, infra/, @operator/core
 agents/     → platforms/, events/, infra/, @operator/core
 platforms/  → infra/, logging/, @operator/core
 storage/    → @operator/core, @operator/adapters
-infra/      → @operator/core, Node built-ins (+ better-sqlite3 under infra/local/)
-logging/    → @operator/core (types), pino, Node built-ins
+infra/      → @operator/core (runtime), logging/ (types), Node built-ins (+ better-sqlite3 under infra/local/)
+logging/    → @operator/core (types), pino, optional pino-pretty, Node built-ins
 ```
 `platforms/` must NOT import `agents/`; `storage/` must NOT import `pipeline/`; etc.
 
