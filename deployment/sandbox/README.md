@@ -112,15 +112,19 @@ WAL over a 9p/virtio-fs mount is a corruption class. State stays on the VM disk.
    engine instead. Build with `docker build` (below) and the recipe consumes the
    resulting tag through `image:`.
 
-3. **Build and load the image** (from this repository's root):
+3. **Build and load the image.** The base image must be in **host docker** —
+   `docker build` cannot read the sbx template store, and the two stores are
+   separate, so a project whose image was `template load`ed months ago may have
+   the tag in sbx and not in docker. `build` checks this and says exactly how to
+   repopulate it rather than letting docker fail with "pull access denied":
 
    ```bash
-   docker build --pull -f deployment/sandbox/operator.Dockerfile \
-     --build-arg OPERATOR_BASE_IMAGE=myrepo:claude \
-     --build-arg OPERATOR_REF=master \
-     -t myrepo:operator deployment/sandbox
-   docker save myrepo:operator -o /tmp/operator.tar
-   sbx template load /tmp/operator.tar     # the sbx image store is separate from host docker
+   ctl() { bash /path/to/operator-autopilot/deployment/sandbox/operatorctl.sh "$@"; }
+
+   # If the base is missing from host docker, rebuild it from the project first:
+   #   cd /path/to/project && bash .sandbox/scripts/sbx.sh rebuild <its-key>
+
+   OPERATOR_BASE_IMAGE=myrepo:claude OPERATOR_IMAGE=myrepo:operator ctl build
    ```
 
 4. **Create the sandbox** from the project's own generated CLI, so naming and
@@ -132,34 +136,19 @@ WAL over a 9p/virtio-fs mount is a corruption class. State stays on the VM disk.
    export OPERATOR_SANDBOX="$(bash .sandbox/scripts/sbx.sh name operator)"
    ```
 
-5. **Provision instance config and the token** inside the VM:
+5. **Provision instance config and the token** — one command, no hand-editing
+   inside the VM. The PAT is read interactively (or from
+   `MANAGED_REPO_GH_TOKEN` in your shell) and piped over stdin: it never
+   reaches argv, the repo, or any image.
 
    ```bash
-   ctl() { bash /path/to/operator-autopilot/deployment/sandbox/operatorctl.sh "$@"; }
-   ctl shell
-   # inside:
-   mkdir -p ~/operator-state/config
-   cat > ~/operator-state/config/repos.yaml <<'YAML'
-   repos:
-     - id: myrepo
-       vcs:
-         platform: github
-         repo: owner/myrepo
-         branch: main
-         tokenEnvVar: MANAGED_REPO_GH_TOKEN
-       features: { prReview: true, taskSelect: true, taskExecute: true,
-                   dailyResearch: true, improver: true,
-                   findingSelect: true, findingExecute: true }
-       limits: { maxActiveTasks: 2, maxActiveFindings: 2 }
-   YAML
-   printf 'export MANAGED_REPO_GH_TOKEN=%s\n' '<fine-grained PAT>' >> ~/.bashrc
-   exit
+   ctl init-config owner/myrepo myrepo main
    ```
 
    Single-vendor option: the shipped `agents.yaml` routes the code-writing roles
    to `cursor-agent` and so requires `CURSOR_API_KEY`. To run on Claude alone,
-   edit `engine/content/defaults/agents.yaml` inside the VM so `creator`,
-   `improver`, and `supervisor` use `provider: claude`, then reseed
+   edit `engine/content/defaults/agents.yaml` inside the VM (`ctl shell`) so
+   `creator`, `improver`, and `supervisor` use `provider: claude`, then reseed
    (`npx tsx engine/entry.ts --reseed agent-roles`).
 
 6. **Preflight, then run:**
@@ -174,6 +163,7 @@ WAL over a 9p/virtio-fs mount is a corruption class. State stays on the VM disk.
 ## Daily operation
 
 ```bash
+ctl build                  # rebuild the image after an engine bump (OPERATOR_REF)
 ctl status                 # VM state + daemon liveness + last log lines
 ctl logs -f                # follow the engine log
 ctl down                   # SIGTERM + full drain, VM stays up
