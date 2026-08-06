@@ -19,7 +19,8 @@ export type AgentEventDiagnosticCode =
   | "unknown-emit-type"
   | "validation-failed"
   | "raw-frontmatter-leak"
-  | "lenient-recovery";
+  | "lenient-recovery"
+  | "unknown-key-stripped";
 
 /**
  * Single diagnostic emitted while transforming an agent's raw output

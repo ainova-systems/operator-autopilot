@@ -2,6 +2,7 @@ import { load as yamlLoad } from "js-yaml";
 import {
   agentEventSchema,
   AGENT_EVENT_TYPES,
+  AGENT_EVENT_SCHEMA_KEYS,
   type AgentEvent,
   type AgentEventDiagnostic,
   type AgentEventParseResult,
@@ -199,10 +200,49 @@ export function parseAgentOutput(text: string): AgentEventParseResult {
       });
       continue;
     }
+    // A non-strict schema silently strips keys it does not declare —
+    // exactly how an emitted `parent_id:` (instead of `parent:`) was
+    // dropped without a trace and created an orphaned child item no
+    // selector could roll up (2026W31 retrospective, PR #41). Stripping
+    // stays fine (forward-compat with newer agents), but it MUST surface:
+    // a WARNING diagnostic reaches the per-record log stream while the
+    // record itself still applies.
+    const declaredKeys = AGENT_EVENT_SCHEMA_KEYS[emitType as AgentEventType];
+    const strippedKeys = Object.keys(payload as Record<string, unknown>).filter(
+      (key) => !declaredKeys.includes(key),
+    );
+    if (strippedKeys.length > 0) {
+      diagnostics.push({
+        severity: "warning",
+        code: "unknown-key-stripped",
+        line: startLine,
+        emitType,
+        message: `EMIT ${emitType} carried unknown key(s) the schema ignores: ${strippedKeys
+          .map((key) => describeUnknownKey(key, declaredKeys))
+          .join(", ")} — the record was applied WITHOUT them`,
+      });
+    }
     events.push(validation.data);
   }
 
   return { events, diagnostics };
+}
+
+/**
+ * Render an unknown key with a did-you-mean hint when a declared key is
+ * a normalized (case/separator-insensitive) sub- or superstring — e.g.
+ * `parent_id` normalizes to `parentid`, which contains declared
+ * `parent`, so the hint reads `"parent_id" (did you mean "parent"?)`.
+ */
+function describeUnknownKey(key: string, declaredKeys: ReadonlyArray<string>): string {
+  const normalize = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normalizedKey = normalize(key);
+  const hint = declaredKeys.find((candidate) => {
+    const normalizedCandidate = normalize(candidate);
+    if (normalizedCandidate.length < 3 || normalizedKey.length < 3) return false;
+    return normalizedKey.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedKey);
+  });
+  return hint ? `"${key}" (did you mean "${hint}"?)` : `"${key}"`;
 }
 
 /**

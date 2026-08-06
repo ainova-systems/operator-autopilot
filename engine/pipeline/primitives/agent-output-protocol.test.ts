@@ -295,6 +295,41 @@ describe("parseAgentOutput — diagnostics", () => {
     const r = parseAgentOutput(text);
     expect(r.diagnostics[0].line).toBe(3);
   });
+
+  it("warns when child-item carries parent_id instead of parent — the non-strict schema used to strip it silently and orphan the task (2026W31 / PR #41)", () => {
+    const r = parseAgentOutput(
+      block("child-item", "kind: task\nparent_id: F20260705-0556B309\ntitle: T"),
+    );
+    // The record still applies (stripping stays non-fatal) …
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]).toMatchObject({ type: "child-item", kind: "task", title: "T" });
+    // … but the stripped key surfaces as a warning with a did-you-mean hint.
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0]).toMatchObject({
+      severity: "warning",
+      code: "unknown-key-stripped",
+      emitType: "child-item",
+    });
+    expect(r.diagnostics[0].message).toContain('"parent_id" (did you mean "parent"?)');
+    expect(r.diagnostics[0].message).toContain("applied WITHOUT");
+  });
+
+  it("emits no unknown-key-stripped warning when every payload key is declared", () => {
+    const r = parseAgentOutput(
+      block("child-item", "kind: task\nparent: F20260705-0556B309\ntitle: T"),
+    );
+    expect(r.events).toHaveLength(1);
+    expect(r.diagnostics).toEqual([]);
+  });
+
+  it("lists an unknown key without a hint when nothing declared resembles it", () => {
+    const r = parseAgentOutput(block("status-update", "target: self\nstatus: done\nfoobar: 1"));
+    expect(r.events).toHaveLength(1);
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0].code).toBe("unknown-key-stripped");
+    expect(r.diagnostics[0].message).toContain('"foobar"');
+    expect(r.diagnostics[0].message).not.toContain("did you mean");
+  });
 });
 
 // ── partitionDiagnostics ─────────────────────────────────────────────

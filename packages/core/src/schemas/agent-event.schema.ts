@@ -178,3 +178,22 @@ export const AGENT_EVENT_TYPES = [
 ] as const;
 
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
+
+/**
+ * Declared payload keys per EMIT type, derived from the schemas above so
+ * the list can never drift from the union. Consumers (the text-block
+ * parser) use it to detect keys a non-strict schema would silently strip
+ * on parse — the way an emitted `parent_id:` (instead of `parent:`) was
+ * dropped without a trace and created an orphaned child item that no
+ * selector could roll up (2026W31 retrospective, PR #41). The schemas
+ * stay deliberately non-strict (forward-compat with newer agents);
+ * stripping is fine, stripping *silently* is not.
+ */
+export const AGENT_EVENT_SCHEMA_KEYS: Readonly<Record<AgentEventType, ReadonlyArray<string>>> =
+  ((): Record<AgentEventType, ReadonlyArray<string>> => {
+    const byType = {} as Record<AgentEventType, ReadonlyArray<string>>;
+    for (const option of agentEventSchema.options) {
+      byType[option.shape.type.value] = Object.keys(option.shape);
+    }
+    return byType;
+  })();

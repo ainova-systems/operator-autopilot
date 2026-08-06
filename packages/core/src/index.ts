@@ -86,6 +86,7 @@ export {
   emitRecoverySchema,
   emitVerdictSchema,
   AGENT_EVENT_TYPES,
+  AGENT_EVENT_SCHEMA_KEYS,
 } from "./schemas/index.js";
 export type {
   KVCategory,
