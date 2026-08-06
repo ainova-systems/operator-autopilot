@@ -37,7 +37,7 @@ choices in `operator.Dockerfile` and `operatorctl.sh`.
 |---|---|---|
 | Base toolchain (`claude-code-docker` + a project layer) | Node **22**, git 2.53, gh 2.46, ripgrep 15.1, dotnet 10.0.302 | The engine needs `engines: >=24` → the profile installs Node 24 with PATH precedence. gh/rg usually already present. |
 | Key-less Claude | `claude -p` works with **no** `ANTHROPIC_API_KEY` in the VM | The host credential proxy authenticates the agent CLI; no Anthropic key inside. (`envVarsAnyOf` in the config schema is not enforced at runtime.) |
-| Direct mount, Windows | **The whole host drive** is mounted read-write at `/<letter>` (`/d/Repositories/...`) | A direct-mount operator sandbox is *not* meaningfully isolated from the host disk. **Use `mount: clone`.** |
+| Workspace mount scope | Only the **project directory** is exposed. The host path shape is preserved (`/d/Repositories/<org>/<project>`), but the parents are a synthesized skeleton — sibling repositories on the same drive do not exist inside the VM. `mount` lists exactly one host-backed entry: `/run/sandbox/source` (virtiofs, `ro`). | Sibling repos are unreachable either way, so the mount mode is not a host-disk-exposure question. It decides whether the VM can **write back** to the developer's working tree — see below. |
 | GitHub credential scoping | Sandbox **with** `secrets: [github]` → API core limit **5000** (authenticated). Sandbox **without** → **60** (anonymous), `gh auth status` not logged in | The proxy signs per sandbox, not machine-wide. **Declare no `secrets:` on the operator entry** so the engine's agent-env stripping stays the real boundary. |
 | Egress | npm registry ~330 ms; `git ls-remote` github instant | Comfortably inside the engine's 5-minute git subprocess timeout. |
 | `sbx exec -d` across stop/resume | Process **does not survive**; the filesystem does. There is no `sbx start`. | No detached daemon can be assumed alive after a VM stop. `operatorctl up` is idempotent and *is* the restart path; `status` reports a dead daemon instead of guessing. |
@@ -65,6 +65,16 @@ The real boundaries are therefore:
    layer and void boundary 2. `doctor` fails loudly on this.
 4. **Branch protection on the managed repo.** The engine never pushes or merges
    a protected branch; keep that enforced server-side too.
+
+**Why `mount: clone` for this sandbox.** Not because a direct mount would expose
+the host disk — measured, it does not: only the project directory is exposed,
+under a synthesized copy of its host path. The reason is narrower and still
+worth having. A direct mount is writable from inside the VM, so an agent could
+edit the developer's live working tree; `clone` keeps that tree read-only and
+gives the VM a private copy. The engine does not need the mount at all — it
+clones every managed repo itself into `WORKSPACE_BASE_DIR` on the VM disk (and
+`workspaceEnsure` does `reset --hard` + `clean -fd` on its own clones, which is
+another reason it must never be pointed at a developer's checkout).
 
 `--dangerously-skip-permissions` on the agent CLIs is sanctioned **only**
 because execution is inside the microVM: the blast radius is the VM and the
@@ -101,7 +111,7 @@ WAL over a 9p/virtio-fs mount is a corruption class. State stays on the VM disk.
      agent: claude              # first-class claude sandbox: proxy-authenticated agent CLI
      title: Operator
      image: myrepo:operator     # built from operator.Dockerfile, below
-     mount: clone               # NEVER direct — see the measured table above
+     mount: clone               # keeps the developer's working tree read-only; see below
      # NO secrets: — the GitHub token is an env var, so env-stripping stays meaningful
      # NO ports:   — the observability app has a guarded write path; publish it
      #               deliberately, not by default
