@@ -16,8 +16,10 @@
 #     here with a lock directory inside the VM.
 #
 # Usage: bash deployment/sandbox/operatorctl.sh <command> [args]
-#   build               build the operator image from the project's base image
-#                       and load it into the sbx template store
+#   provision           install the engine into the sandbox (idempotent; the
+#                       default path — no image build, no template load)
+#   build               OPTIONAL: bake a dedicated operator image instead of
+#                       provisioning into the project's image
 #   init-config <slug>  write the instance repos.yaml + token into the VM
 #   doctor              preflight the sandbox: toolchain, egress, credential
 #                       scoping, and the agent-env leak assertion
@@ -44,7 +46,7 @@
 set -euo pipefail
 
 CONTRACT_VERSION="1.0.0"
-HOME_DIR="${OPERATOR_HOME:-/opt/operator}"
+HOME_DIR="${OPERATOR_HOME:-/home/agent/operator}"
 STATE_DIR="/home/agent/operator-state"
 LOG_FILE="$STATE_DIR/engine.log"
 PID_FILE="$STATE_DIR/engine.pid"
@@ -53,6 +55,14 @@ DRAIN_SECS="${OPERATOR_DRAIN_SECS:-300}"
 
 die() { printf 'operatorctl: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
+
+# Git Bash (MSYS) rewrites anything that looks like a POSIX path in an argument
+# into a Windows path before the child process sees it, so `-w /home/agent/...`
+# arrives as `C:/Program Files/Git/home/agent/...` and the exec fails with
+# "chdir ... No such file or directory". Every path this script passes is an
+# IN-VM path, never a host path, so conversion is always wrong here.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
 
 SBX="sbx"
 if ! command -v sbx >/dev/null 2>&1; then
@@ -76,6 +86,49 @@ daemon_alive() {
   local pid; pid=$(daemon_pid)
   [ -n "$pid" ] || return 1
   vm "kill -0 '$pid' 2>/dev/null" >/dev/null 2>&1
+}
+
+cmd_provision() {
+  local ref="${OPERATOR_REF:-master}"
+  local repo="${OPERATOR_REPO:-https://github.com/ainova-systems/operator-autopilot}"
+
+  # Why install into the running sandbox instead of baking an image:
+  #   - The project's sandbox image is ALREADY built and already in the sbx
+  #     template store (its own recipe entry keeps it current). Reusing it means
+  #     `connect` works with no prerequisite step and no second image to
+  #     maintain, and the project's toolchain stays the single source of truth.
+  #   - A derived image cannot be auto-built by the recipe anyway: sbx builds
+  #     with `docker build --pull`, which fails on a local-only `FROM` (verified
+  #     2026-08-07: "pull access denied" for a locally-tagged base). Auto-build
+  #     only works for a Dockerfile whose base is pullable from a registry.
+  #   - sbx persists installed packages across stop/start, so this runs once.
+  # `sbx rm` / a project image rebuild discards it — re-run this one command.
+  note "== node =="
+  vm 'major=$(node -p "process.versions.node.split(\".\")[0]" 2>/dev/null || echo 0); \
+      if [ "$major" -ge 24 ]; then echo "node $(node --version) — OK"; else \
+        echo "node ${major:-none} is below the engine floor (>=24); installing Node 24"; \
+        curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - >/dev/null && \
+        sudo apt-get install -y -q nodejs >/dev/null && echo "installed $(node --version)"; fi'
+
+  note "== supporting tools =="
+  vm 'for t in git gh rg; do command -v $t >/dev/null && echo "$t: present" || echo "$t: MISSING"; done'
+  vm 'command -v rg >/dev/null || sudo apt-get install -y -q ripgrep >/dev/null 2>&1 || true; \
+      command -v gh >/dev/null || sudo apt-get install -y -q gh >/dev/null 2>&1 || true'
+
+  note "== engine source ($ref) =="
+  vm "if [ -d '$HOME_DIR/.git' ]; then \
+        cd '$HOME_DIR' && git fetch --depth 1 origin '$ref' -q && git checkout -q FETCH_HEAD && echo \"updated to \$(git rev-parse --short HEAD)\"; \
+      else \
+        git clone --depth 1 --branch '$ref' '$repo' '$HOME_DIR' -q && cd '$HOME_DIR' && echo \"cloned \$(git rev-parse --short HEAD)\"; \
+      fi"
+
+  note "== dependencies (npm ci — includes dev deps; tsx runs the engine directly) =="
+  vm "cd '$HOME_DIR' && npm ci --no-audit --no-fund 2>&1 | tail -3"
+  vm "cd '$HOME_DIR' && node -e 'require(\"better-sqlite3\"); console.log(\"better-sqlite3: loads OK\")'" \
+    || note "better-sqlite3 failed to load — install build tooling and retry: sudo apt-get install -y build-essential python3 && (cd '$HOME_DIR' && npm rebuild better-sqlite3)"
+
+  note ""
+  note "provisioned at $HOME_DIR — next: operatorctl.sh init-config <owner/repo>"
 }
 
 cmd_build() {
@@ -339,6 +392,7 @@ case "$cmd" in
 esac
 
 case "$cmd" in
+  provision)   cmd_provision ;;
   build)       cmd_build ;;
   init-config) cmd_init_config "$@" ;;
   doctor)  cmd_doctor ;;
