@@ -4,9 +4,21 @@ All notable changes to this project. 0.5.0 is the first public release of the v5
 
 ## [Unreleased]
 
+### Added
+
+- **`SECURITY.md`** — supported version line, GitHub private vulnerability reporting as the only channel, expected response times, and a scope note naming the engine's blast radius (repo-scoped token, external agent CLI, pushes confined to `config/repos.yaml`). No e-mail channel.
+- **Issue and pull-request templates** under `.github/` — bug report, feature request, and a PR checklist carrying the three CI-blocking commands and the non-negotiable rules.
+- **README safety section** — what Operator can reach before the first cycle, that every MVP stage ships `merge: gated`, and the advice to start against a non-critical repository. Plus License and Security sections.
+
+### Changed
+
+- **`LICENSE` copyright holder** is now the legal entity, `MB Ainova Systems`. The MIT body is unchanged and GitHub still detects the license as MIT.
+
 ### Fixed
 
 - **Overlapping engine cycles corrupted the shared workspace.** `Daemon.start` registered the interval before awaiting the bootstrap cycle, and `IntervalScheduler`'s re-entrancy flag only saw cycles it launched itself — so the first tick started a second cycle alongside a bootstrap cycle that was still running an agent. Both cycles shared one git clone per repo, and `runStage`'s lock is keyed on the stage *name*, so a second cycle's `research` stage could check out its branch under a first cycle's running `creator`. The creator's commit then landed on the research branch, its own branch was pushed empty, and GitHub's `422 No commits between` was swallowed as an empty diff — the stage reported success with no PR. Three changes close it: `Daemon.runCycle` now owns the re-entrancy decision, `Engine.processProject` takes a `workspace:{repoId}` lock for the whole repo pass, and `persist` refuses to commit when HEAD has drifted off the branch the stage prepared (`WS_BRANCH_DRIFT`).
+- **README pointed at a `sync.sh` that does not exist.** The Contributing section told readers to run `bash intelligence/scripts/sync.sh`; the script lives at `intelligence/sync/scripts/sync.sh`. The same stale path sat in a `.gitignore` comment. Every relative link in `README.md`, `CONTRIBUTING.md`, and `SECURITY.md` now resolves to a file in the tree.
+- **README described a GitHub Actions workflow that was never committed.** The "Automation status" section documented an `orchestrator` workflow on a 5-minute cron, together with a `gh workflow run orchestrator.yml` command. No such workflow exists in `.github/workflows/`, in the git history, or on the remote. The section now describes what actually runs: Operator as an always-on daemon, with `Tests` and `Build Image` as the two CI workflows.
 
 ## 0.5.0 — 2026-06-23
 
