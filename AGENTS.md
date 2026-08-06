@@ -41,9 +41,9 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | dev-review-changes | Read-only review of pending changes against project rules, with a severity verdict |
 | dev-run-tests | Run typecheck, lint, and tests with the right scope; analyze failures |
 | git-commit-push | Verify, review, and push pending work as one milestone commit |
-| git-create-release | Cut a release: version, changelog, tag, and release object — policy-driven across trunk/gitflow and tag-only/full |
+| git-create-release | Cut a release: version, changelog, tag, and release object - policy-driven across trunk/gitflow and tag-only/full. Owner-invoked only - releasing is timing the model does not decide. |
 | git-finalize-pr | Drive the current branch's PR to merge-ready: CI green and every review comment handled, ending with an outcome label |
-| git-merge-pr | After owner accept: guard-checked squash-merge of the current branch's PR, base sync and branch cleanup |
+| git-merge-pr | After owner accept: guard-checked squash-merge of the current branch's PR, base sync and branch cleanup. Owner-invoked only - merging is timing the model does not decide. |
 | git-open-pr | Open a pull request for the current branch against its target, using the repo template |
 | git-resolve-conflicts | Resolve merge or rebase conflicts semantically, then re-verify the full gates |
 | git-review-pr-comments | Triage PR review comments: fix, discuss, or decline with reason - every thread answered |
@@ -373,6 +373,8 @@ At AI pace, mean time to restore beats mean time between failures.
 - Before starting a task, check the skill catalog and invoke the match instead of improvising. Output stops depending on who prompted it.
 - A workflow improvised two or three times gets extracted into a project skill.
 - When a skill's steps drift from reality, update the skill in the same change that changed the reality.
+- An artifact a procedure tells a human to hand-edit is a skill that was never written: a hand-edit has no gate, no test, and no record of why, and it is the one step never repeated the same way twice.
+- A procedure inside a rule has no name a plan can call, so a generated plan quietly drops the requirement it was meant to deliver - extract the procedure into a skill and let the rule keep the law.
 
 
 # Verification Gates
@@ -380,6 +382,8 @@ At AI pace, mean time to restore beats mean time between failures.
 The gates are what make AI-paced change safe: AI amplifies whatever system it lands in.
 
 - Typecheck, lint, and tests pass locally before every commit. Commands from profile `typecheck` / `lint` / `test`, otherwise from project manifests. Cheapest gate first; full suite before push.
+- **When the profile sets `verify`, that single command is the definition of done**: it reads the diff, decides which gates apply, runs them cheapest-first, and prints what it skipped - nobody picks gates by hand, and CI runs exactly the same command, so local and CI cannot drift. Adding a gate means editing that runner, never the CI file.
+- A gate runner treats a failure to answer as a refusal: version control failing to report changed files means STOP, never "nothing changed, all green" - a run that verified nothing must not print success.
 - New logic ships with tests in the same change; a bug fix adds a regression test that fails without the fix.
 - CI green is a merge precondition, no exceptions.
 

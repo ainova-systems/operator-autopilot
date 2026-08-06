@@ -8,5 +8,6 @@
 *.json text eol=lf
 *.ts text eol=lf
 Dockerfile text eol=lf
+*.Dockerfile text eol=lf
 .gitattributes text eol=lf
 .gitmodules text eol=lf
