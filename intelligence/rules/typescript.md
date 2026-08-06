@@ -103,8 +103,8 @@ platforms/            → infra/, logging/, @operator/core
 storage/              → @operator/core, @operator/adapters
 communication/        → events/, logging/, @operator/core
 events/               → logging/, @operator/core
-infra/                → Node built-ins only
-logging/              → nothing
+infra/                → @operator/core, logging/ (type Logger), Node built-ins (+ better-sqlite3 under infra/local/)
+logging/              → @operator/core (types), pino, Node built-ins
 ```
 
 ## Architecture — Primitives boundary
