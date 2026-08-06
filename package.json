@@ -25,7 +25,6 @@
     "app:dev": "npm run dev --workspace @operator/app"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.82.0",
     "@octokit/rest": "^22.0.0",
     "better-sqlite3": "^12.0.0",
     "js-yaml": "^4.1.0",
@@ -47,5 +46,12 @@
     "typescript": "^6.0.0",
     "typescript-eslint": "^8.20.0",
     "vitest": "^4.0.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1",
+    "next": {
+      "postcss": "^8.5.26",
+      "sharp": "^0.35.3"
+    }
   }
 }

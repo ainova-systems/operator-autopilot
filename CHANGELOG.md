@@ -14,11 +14,19 @@ All notable changes to this project. 0.5.0 is the first public release of the v5
 
 - **`LICENSE` copyright holder** is now the legal entity, `MB Ainova Systems`. The MIT body is unchanged and GitHub still detects the license as MIT.
 
+### Removed
+
+- **`@anthropic-ai/sdk` dependency.** It was declared but imported nowhere — the engine is an orchestrator and reaches Claude through the `@anthropic-ai/claude-code` CLI it spawns, not through the SDK. Its entry in `knip.json`'s `ignoreDependencies` had been masking it from the dead-code gate; that entry is gone too, so the gate now watches the package if it ever returns.
+
 ### Fixed
 
 - **Overlapping engine cycles corrupted the shared workspace.** `Daemon.start` registered the interval before awaiting the bootstrap cycle, and `IntervalScheduler`'s re-entrancy flag only saw cycles it launched itself — so the first tick started a second cycle alongside a bootstrap cycle that was still running an agent. Both cycles shared one git clone per repo, and `runStage`'s lock is keyed on the stage *name*, so a second cycle's `research` stage could check out its branch under a first cycle's running `creator`. The creator's commit then landed on the research branch, its own branch was pushed empty, and GitHub's `422 No commits between` was swallowed as an empty diff — the stage reported success with no PR. Three changes close it: `Daemon.runCycle` now owns the re-entrancy decision, `Engine.processProject` takes a `workspace:{repoId}` lock for the whole repo pass, and `persist` refuses to commit when HEAD has drifted off the branch the stage prepared (`WS_BRANCH_DRIFT`).
 - **README pointed at a `sync.sh` that does not exist.** The Contributing section told readers to run `bash intelligence/scripts/sync.sh`; the script lives at `intelligence/sync/scripts/sync.sh`. The same stale path sat in a `.gitignore` comment. Every relative link in `README.md`, `CONTRIBUTING.md`, and `SECURITY.md` now resolves to a file in the tree.
 - **README described a GitHub Actions workflow that was never committed.** The "Automation status" section documented an `orchestrator` workflow on a 5-minute cron, together with a `gh workflow run orchestrator.yml` command. No such workflow exists in `.github/workflows/`, in the git history, or on the remote. The section now describes what actually runs: Operator as an always-on daemon, with `Tests` and `Build Image` as the two CI workflows.
+
+### Security
+
+- **Dependency alerts cleared to zero** (`npm audit`: 0, from 8 locally / 15 on the default branch). In-range upgrades cover `js-yaml` 4.1.1 → 4.3.1 (quadratic-complexity DoS via merge keys), `next` 15.5.15 → 15.5.23 (SSRF in rewrites and Server Actions, Server Function endpoint disclosure, cache confusion, image-optimization DoS), `brace-expansion`, and `vite`. Three transitive pins that no in-range upgrade could reach are handled by `overrides` in the root `package.json`: `esbuild` → `^0.28.1` (dev-server arbitrary file read on Windows), and, inside `next`, `postcss` → `^8.5.26` (source-map path traversal, XSS in stringify output) and `sharp` → `^0.35.3` (inherited libvips CVEs). The overrides keep the app on the `next` 15 line — upgrading to 16 was the only alternative npm offered and it is a breaking change for no security gain.
 
 ## 0.5.0 — 2026-06-23
 

@@ -43,7 +43,6 @@
     "@operator/app",
     "node-cron",
     "@types/node-cron",
-    "@anthropic-ai/sdk",
     "better-sqlite3",
     "@types/better-sqlite3"
   ],
