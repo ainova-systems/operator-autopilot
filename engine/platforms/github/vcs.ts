@@ -1,6 +1,7 @@
 import type { Octokit } from "@octokit/rest";
 import type { CodeReview, Comment, Label, ReviewThread } from "@operator/core";
 import type { CheckRun, CheckAnnotation, PlatformCapabilities, VCSPlatform } from "@operator/core";
+import type { Logger } from "../../logging/logger.js";
 import { reRunFailedJobs, fetchJobLogTail } from "./actions.js";
 import {
   fetchReviewThreads,
@@ -171,6 +172,7 @@ export class GitHubVCS implements VCSPlatform {
     private readonly octokit: Octokit,
     private readonly owner: string,
     private readonly repo: string,
+    private readonly logger?: Logger,
   ) {}
 
   // ── Code reviews ────────────────────────────────────────────────────
@@ -388,17 +390,27 @@ export class GitHubVCS implements VCSPlatform {
       const { data: pr } = await this.octokit.rest.pulls.get({
         owner: this.owner, repo: this.repo, pull_number: codeReviewId,
       });
-      const { data } = await this.octokit.rest.checks.listForRef({
-        owner: this.owner, repo: this.repo, ref: pr.head.sha, per_page: 100,
-      });
+      const checkRuns = await this.octokit.paginate(
+        this.octokit.rest.checks.listForRef,
+        { owner: this.owner, repo: this.repo, ref: pr.head.sha, per_page: 100 },
+        (response) => (response.data as unknown as { check_runs: GhCheckRunPayload[] }).check_runs,
+      );
       // For failed checks we additionally fetch annotations so the agent
       // can see file:line:message pairs without scraping logs. Skip
       // annotation fetch on success to keep the API budget tight — most
       // CI configurations annotate failures only anyway.
       return await Promise.all(
-        data.check_runs.map((cr) => this.mapCheckRun(cr, pr.head.sha)),
+        checkRuns.map((cr) => this.mapCheckRun(cr, pr.head.sha)),
       );
-    } catch {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const cause = err instanceof Error && err.cause !== undefined
+        ? (err.cause instanceof Error ? err.cause.message : String(err.cause))
+        : undefined;
+      this.logger?.warn(
+        `getCheckRuns failed for PR #${codeReviewId}: ${message}${cause ? ` (cause: ${cause})` : ""}`,
+        { codeReviewId, error: message, ...(cause !== undefined && { cause }) },
+      );
       return [];
     }
   }
