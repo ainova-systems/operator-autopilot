@@ -4,6 +4,17 @@ Closed-loop SDLC engine that autonomously discovers issues, plans fixes, impleme
 
 **Status: 0.5.0 — first public release.** The v5 architecture rebuild is complete and running; this is the first public cut. See [CHANGELOG.md](CHANGELOG.md) for release notes. The v4 implementation was abandoned mid-migration — v5 collapses all pipeline work into `runStage` + 10 primitives, puts state in a pluggable KV model, and ships an observability UI from day one.
 
+## Before you run it — blast radius
+
+Operator acts on real repositories without a human in the loop. Know what it can reach before the first cycle:
+
+- It runs with a **git host token carrying repo scope**, and it invokes an **external agent CLI** that edits files in a local workspace.
+- It **pushes branches and opens pull requests** on every repository listed in `config/repos.yaml` — and nothing outside that list.
+- It **never pushes `master` / `main` / `develop`**. Every change arrives as a feature branch plus a pull request.
+- Every MVP stage ships with `merge: gated` in [engine/content/prompts/stages.yaml](engine/content/prompts/stages.yaml) — **nothing lands without a human approving the pull request**.
+
+Start against a **non-critical repository** — a scratch repo or a fork — until you have watched a few cycles end to end in the observability UI, and give the token access to that repository only.
+
 ## Documentation (read in this order)
 
 1. **[docs/vision.md](docs/vision.md)** — product direction, invariants, non-goals, refused directions
@@ -71,14 +82,26 @@ See [docs/deployment.md](docs/deployment.md) for systemd / Docker Compose / Kube
 
 ## Automation status
 
-The `orchestrator` GitHub Actions workflow runs on its 5-minute cron and on manual dispatch (`gh workflow run orchestrator.yml`). The workflow builds the engine, runs one `--once` cycle against every repo in `config/repos.yaml`, and surfaces the summary in the Actions UI. Observability is through the `@operator/app` UI — point it at the same SQLite file the engine writes.
+Operator runs as an always-on daemon, not as a CI job — it schedules its own cycles over every repo in `config/repos.yaml`. See [docs/deployment.md](docs/deployment.md) for the systemd / Docker Compose / Kubernetes manifests, or use `npm run exec` for a single manual cycle.
+
+Two GitHub Actions workflows back that: [Tests](.github/workflows/tests.yml) runs typecheck, tests, and lint on every push and pull request touching code, and [Build Image](.github/workflows/build-image.yml) publishes the engine image to GHCR on `master` and on a nightly schedule.
+
+Observability is through the `@operator/app` UI — point it at the same SQLite file the engine writes.
 
 ## Contributing
 
-PRs follow the rules in `intelligence/rules/` (synced to `.claude/` and `.cursor/` via `bash intelligence/scripts/sync.sh`). The non-negotiable three:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks, and the full code standards. PRs follow the rules in `intelligence/rules/` (synced to `.claude/` and `.cursor/` via `bash intelligence/sync/scripts/sync.sh`). The non-negotiable three:
 
 1. **No dead code.** Every export is reachable from `engine/entry.ts` or a colocated test. `ts-prune` via `scripts/check-ts-prune.mjs` is CI-blocking.
 2. **No force-push.** Every commit-push sequence is fast-forward-safe. `FileWorkspaceScope` is the only file that decides branch creation.
 3. **One PR per migration step.** Never combine. Rollback is a single revert.
 
 Commit message format: one line, capital letter, past tense, no prefixes (no `feat:`, `fix:`, etc.), no `Co-authored-by`, no `Signed-off-by`.
+
+## Security
+
+Report vulnerabilities privately through the repository's Security tab — see [SECURITY.md](SECURITY.md). Please do not open a public issue for a suspected vulnerability.
+
+## License
+
+[MIT](LICENSE).

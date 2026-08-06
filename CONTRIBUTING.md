@@ -25,7 +25,7 @@ Every change must pass all three before it is merged:
 
 ```bash
 npm run typecheck     # tsc --noEmit across all workspaces
-npm test              # vitest with coverage (>=90% on touched files)
+npm test              # vitest with the coverage gate from vitest.config.ts
 npm run lint          # eslint + ts-prune + knip (dead-code gates)
 ```
 
@@ -55,8 +55,10 @@ These are enforced in review and partly in CI. The non-negotiables:
 - **No dead code.** Every exported symbol is reachable from `engine/entry.ts`
   or a colocated test; `ts-prune` and `knip` run in CI.
 - **Colocated `*.test.ts`** for every implementation file, `>=90%` coverage on
-  touched files (`>=95%` for `engine/pipeline/primitives/`). Every bug fix ships
-  with a regression test named for the bug scenario.
+  touched files (`>=95%` for `engine/pipeline/primitives/`) — reviewed per change.
+  The gate CI enforces is project-wide and lives in `vitest.config.ts`: 90% lines,
+  functions, and statements, 81% branches. Every bug fix ships with a regression
+  test named for the bug scenario.
 - **`OperationContext` threaded** through every function that touches state,
   git, VCS, or the filesystem.
 - **Layer boundaries.** `@operator/core` never imports adapters/engine/app;
@@ -88,6 +90,12 @@ what changed, not what was tried — e.g. `Added the KVStore SQLite adapter`.
 2. Keep each PR to a single logical change with a clean revert.
 3. Ensure `npm run typecheck && npm test && npm run lint` are green.
 4. List anything the PR deletes in the description.
+
+## Reporting security issues
+
+Do not open a public issue or pull request for a suspected vulnerability. Report
+it privately through the repository's Security tab — see [SECURITY.md](SECURITY.md)
+for the process and what to expect.
 
 By contributing you agree that your contributions are licensed under the
 project's [MIT License](LICENSE).
