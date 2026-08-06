@@ -121,6 +121,22 @@ One file per primitive (`workspace-scope.ts`, `item-selector.ts`, `agent-invocat
 
 `pipeline/run-stage.ts` composes primitives and is also capped at ~150 lines. If it grows, a primitive is leaking out.
 
+## Architecture — Composer split convention
+
+Owner decision 2026-08-06, settled after the first two 200-line-cap split PRs diverged on placement:
+
+- **`engine/pipeline/composers/` root** holds only *stage composers* — the entry modules wired from
+  `stage-handlers.ts`.
+- **`engine/pipeline/composers/_shared/`** holds every helper module extracted from a composer —
+  whether it serves one composer family or several. "Shared" means "internal to the composers layer,
+  not wired by stage-handlers", not "2+ consumers".
+- **Every extracted implementation module gets its own colocated `.test.ts`** pinning its independent
+  contract — relying on the original composer's aggregate test is not enough (the rule at the top of
+  REQUIRED applies to split products with no exception). Type-only modules (pure `interface`/`type`
+  files) are exempt, per the `types/` exception.
+- A split must move the comments and JSDoc *with* the code they explain — the line caps exclude
+  comments, so deleting them buys nothing (see REQUIRED: line-count limits exclude logging and JSDoc).
+
 ## Architecture — Storage contracts
 
 - KV categories follow `category/key: json` shape. See `docs/architecture-v5.md §5.4` for the full list.

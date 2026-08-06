@@ -4,11 +4,11 @@ Operator is local-first: SQLite + filesystem + one agent API key is enough to ru
 
 ## Prerequisites
 
-- **Node.js 20+** (pinned as the runtime for the engine and app).
+- **Node.js 24+** (`package.json` `engines` requires `>=24.0.0`; the Docker image uses `node:24`).
 - **git 2.40+** on `$PATH` — the engine shells out to `git` inside managed workspaces.
 - **The agent CLIs configured in `engine/content/defaults/agents.yaml`**, reachable from `$PATH` (or a pinned absolute path). The shipped config uses **two** providers: `claude` (Claude Code — analysis/review roles) and `cursor` (`cursor-agent` — the code-writing roles `creator`/`improver`/`supervisor`, on the Composer model). A single-provider deployment only needs one CLI.
 - **ripgrep (`rg`)** on `$PATH` if the `cursor` provider is used — `cursor-agent` shells out to `rg` and refuses to run without it.
-- **One VCS token** with repo-scoped permissions. Set the env-var named by `repos.yaml:vcs.tokenEnvVar` (default `GITHUB_TOKEN`).
+- **One VCS token** with repo-scoped permissions. Set the env-var named by `repos.yaml:vcs.tokenEnvVar` — the field is required (no default); the example config and compose file use `MANAGED_REPO_GH_TOKEN`.
 - **Disk** for per-repo workspaces under `$WORKSPACE_BASE_DIR` (each managed repo gets one clone).
 
 ## Environment variables
@@ -21,7 +21,7 @@ Operator is local-first: SQLite + filesystem + one agent API key is enough to ru
 | `OPERATOR_APP_DB_PATH` | `envPaths('operator-app').config/app.db` | SQLite file backing the Next.js app's connections + app-state |
 | `WORKSPACE_OVERRIDE` | unset | Point at an existing checkout; engine refuses to run on a dirty workspace |
 | `LOG_LEVEL` | `info` | `info`, `debug`, or `warn` |
-| `GITHUB_TOKEN` (or per-repo `tokenEnvVar`) | — | VCS API token, scoped to the repos declared in `config/repos.yaml` |
+| `MANAGED_REPO_GH_TOKEN` (whatever each repo's `tokenEnvVar` names) | — | VCS API token, scoped to the repos declared in `config/repos.yaml` |
 | `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) | — | Claude Code auth — analysis/review roles |
 | `CURSOR_API_KEY` | — | Cursor Agent auth — code-writing roles (required by the shipped `agents.yaml`); or run `cursor-agent login` once on the host |
 | other agent-provider keys | — | Names come from `engine/content/defaults/agents.yaml` |
@@ -49,7 +49,7 @@ cp config/repos.yaml.example config/repos.yaml
 
 # Configure secrets locally
 cat > .env.local <<'EOF'
-GITHUB_TOKEN=ghp_...
+MANAGED_REPO_GH_TOKEN=ghp_...
 ANTHROPIC_API_KEY=sk-ant-...
 EOF
 
@@ -65,7 +65,7 @@ State files (`state/operator.db`, workspaces) stay inside the repo when `OPERATO
 
 ## VM / systemd
 
-Pick a host with Node.js 20 + git + your agent CLI already installed.
+Pick a host with Node.js 24 + git + your agent CLI already installed.
 
 ```ini
 # /etc/systemd/system/operator-engine.service
@@ -91,7 +91,7 @@ RestartSec=10s
 WantedBy=multi-user.target
 ```
 
-`/etc/operator/secrets.env` holds `GITHUB_TOKEN=…`, `ANTHROPIC_API_KEY=…`, etc. Use `chmod 600 /etc/operator/secrets.env` and `chown root:operator`. Enable + start:
+`/etc/operator/secrets.env` holds `MANAGED_REPO_GH_TOKEN=…`, `ANTHROPIC_API_KEY=…`, etc. Use `chmod 600 /etc/operator/secrets.env` and `chown root:operator`. Enable + start:
 
 ```bash
 systemctl daemon-reload
@@ -188,7 +188,7 @@ spec:
   resources: { requests: { storage: 20Gi } }
 ```
 
-Store `GITHUB_TOKEN` + agent API keys in the `operator-secrets` Secret (base64-encoded). The app Deployment mounts the same PVC in read-only mode and exposes port 3000 behind an Ingress.
+Store `MANAGED_REPO_GH_TOKEN` + agent API keys in the `operator-secrets` Secret (base64-encoded). The app Deployment mounts the same PVC in read-only mode and exposes port 3000 behind an Ingress.
 
 ## Backups
 
