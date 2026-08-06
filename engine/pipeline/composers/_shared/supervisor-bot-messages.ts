@@ -22,6 +22,17 @@ export function formatAppliedReviewFeedbackMessage(suffix: string): string {
   return `Applied review feedback.${suffix}`;
 }
 
+/**
+ * Format the no-changes bot comment for a supervisor cycle.
+ *
+ * The engine asserts ONLY the fact it can observe (clean tree + unchanged HEAD
+ * ⇒ no code changes this cycle). It must NOT editorialize the REASON: a
+ * verdict=approved + no-changes run can mean "feedback genuinely already
+ * addressed" OR "supervisor chose escalate" (supervisor.md maps escalate →
+ * approved + no changes). A fixed engine sentence contradicted the agent's
+ * own reasoning on escalate cycles (PR #892, 2026-05-21). The WHY lives in
+ * the agent's reasoning block below — never in a fixed engine sentence.
+ */
 export function formatNoCodeChangesMessage(effectiveSummary: string, suffix: string): string {
   const reasoning = effectiveSummary.trim().slice(0, 1500);
   const reasoningBlock = reasoning ? `\n\n${reasoning}` : "";

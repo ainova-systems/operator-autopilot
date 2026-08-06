@@ -38,6 +38,10 @@ export async function applySupervisorAgentEvents(
     applyErrors: applied.applyErrors.length,
   });
 
+  // Answer + resolve inline review threads the supervisor disposed of
+  // this cycle. Runs on every agent path (fix-in-place, cancel, escalate,
+  // …) so no reviewer comment is left without a note. Bot threads (Copilot)
+  // are resolved; human threads get the note but stay open for the human.
   if (payload.reviewThreads.length > 0 || applied.commentReplies.length > 0) {
     await applyThreadDispositions({
       prId: payload.prId,

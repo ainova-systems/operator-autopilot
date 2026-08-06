@@ -68,6 +68,11 @@ export function buildPrFeedbackSupervisorBeforeAgent(deps: PrFeedbackSupervisorH
       }
     }
 
+    // Capture HEAD SHA AFTER the workspace handle has resolved (branch
+    // checked out, base PR head pulled) so afterAgent can detect commits
+    // the agent itself made via Bash. Without this anchor a clean post-
+    // commit workspace looked identical to a no-op run, triggering the
+    // wrong "No code changes" comment.
     let preAgentHeadSha = "";
     try {
       preAgentHeadSha = (await deps.git.headSha()).trim();

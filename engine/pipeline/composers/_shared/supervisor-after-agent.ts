@@ -10,8 +10,6 @@ import { applySupervisorAgentEvents } from "./supervisor-aop-apply.js";
 import { detectSupervisorChanges } from "./supervisor-change-detection.js";
 import { routeSupervisorVerdict } from "./supervisor-verdict-routing.js";
 
-export type { SupervisorAfterAgentDeps } from "./supervisor-after-agent-deps.js";
-
 export async function processSupervisorAfterAgent(
   deps: SupervisorAfterAgentDeps,
   stage: StageDef,

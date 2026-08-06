@@ -23,6 +23,9 @@ export interface PrFeedbackSupervisorHookDeps {
   readonly log?: Logger;
   readonly debug?: boolean;
   readonly debugRunUrl?: string;
+  // ── Stage-shape parameters ────────────────────────────────────────
+  /** Supervisor agent role (e.g. `"supervisor"`). */
   readonly agentRole: AgentRoleName;
+  /** Verifier chain topic suffix, used as `verifier/{verifierTopic}`. */
   readonly verifierTopic: string;
 }
