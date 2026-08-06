@@ -5,6 +5,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLIAgentProvider, buildChildEnv } from "./cli.js";
+import { effectiveLauncher } from "./win-launcher.js";
 import type { CLIProviderConfig } from "./cli.js";
 import type { Logger } from "../../logging/logger.js";
 
@@ -129,7 +130,11 @@ describe("CLIAgentProvider", () => {
       });
 
       const callArgs = mockSpawn.mock.calls[0];
-      expect(callArgs[0]).toBe("claude");
+      // The configured command reaches spawn only after host-local launcher
+      // adaptation — on a Windows host with an npm claude install that is the
+      // resolved `.exe`, not the bare name. Assert through the same resolver
+      // so the expectation holds on every host the suite runs on.
+      expect(callArgs[0]).toBe(effectiveLauncher("claude", process.platform, process.env).command);
       const args = callArgs[1] as string[];
       expect(args).toContain("--dangerously-skip-permissions");
       expect(args).toContain("--model");

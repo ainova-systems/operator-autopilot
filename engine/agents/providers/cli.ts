@@ -122,9 +122,10 @@ export class CLIAgentProvider implements AgentProvider {
     },
   ): Promise<{ stdout: string; exitCode: number; durationMs: number }> {
     const effectivePrompt = await this.resolvePrompt(prompt, options.systemPromptFile);
-    // Host-local launch adaptation: on Windows, cursor-agent is a .cmd/.ps1
-    // shim spawn cannot run by bare name, so resolve it to its bundled
-    // node.exe + index.js. Identity on Linux/macOS and for .exe CLIs.
+    // Host-local launch adaptation: on Windows both cursor-agent and claude
+    // are .cmd/.ps1 shims spawn cannot run by bare name (PATH lookup resolves
+    // only .exe), so resolve each to the executable its own shim runs.
+    // Identity on Linux/macOS and for an explicitly configured .exe.
     const launcher = effectiveLauncher(this.config.command, process.platform, process.env);
     const command = launcher.command;
     const args = [...launcher.prependArgs, ...this.buildArgs(effectivePrompt, options)];

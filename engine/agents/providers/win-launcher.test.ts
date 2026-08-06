@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCursorWinLauncher, effectiveLauncher } from "./win-launcher.js";
+import {
+  resolveCursorWinLauncher,
+  resolveClaudeWinLauncher,
+  effectiveLauncher,
+} from "./win-launcher.js";
 
 async function makeVersion(home: string, ver: string): Promise<string> {
   const dir = join(home, "versions", ver);
@@ -10,6 +14,27 @@ async function makeVersion(home: string, ver: string): Promise<string> {
   await writeFile(join(dir, "node.exe"), "", "utf-8");
   await writeFile(join(dir, "index.js"), "", "utf-8");
   return dir;
+}
+
+/**
+ * Reproduce an npm-global claude install: the `.cmd` shim on PATH plus the
+ * native `.exe` it delegates to, inside the package's own `node_modules`.
+ * `dp0` picks which self-directory macro the shim uses — both shapes ship.
+ */
+async function makeClaudeShim(
+  binDir: string,
+  dp0: "%dp0%" | "%~dp0" = "%dp0%",
+): Promise<string> {
+  const exeDir = join(binDir, "node_modules", "@anthropic-ai", "claude-code", "bin");
+  await mkdir(exeDir, { recursive: true });
+  const exe = join(exeDir, "claude.exe");
+  await writeFile(exe, "", "utf-8");
+  await writeFile(
+    join(binDir, "claude.cmd"),
+    `@ECHO off\r\n"${dp0}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*\r\n`,
+    "utf-8",
+  );
+  return exe;
 }
 
 describe("resolveCursorWinLauncher", () => {
@@ -80,6 +105,63 @@ describe("resolveCursorWinLauncher", () => {
   });
 });
 
+describe("resolveClaudeWinLauncher", () => {
+  let binDir: string;
+  beforeEach(async () => {
+    binDir = await mkdtemp(join(tmpdir(), "npm-bin-"));
+  });
+  afterEach(async () => {
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  it("resolves the .exe quoted inside the .cmd shim", async () => {
+    const exe = await makeClaudeShim(binDir);
+    expect(resolveClaudeWinLauncher(binDir)).toEqual({ command: exe, prependArgs: [] });
+  });
+
+  it("expands the %~dp0 shim self-directory form too", async () => {
+    const exe = await makeClaudeShim(binDir, "%~dp0");
+    expect(resolveClaudeWinLauncher(binDir)).toEqual({ command: exe, prependArgs: [] });
+  });
+
+  it("prefers a native claude.exe sitting directly on PATH", async () => {
+    await makeClaudeShim(binDir);
+    const native = join(binDir, "claude.exe");
+    await writeFile(native, "", "utf-8");
+    expect(resolveClaudeWinLauncher(binDir)).toEqual({ command: native, prependArgs: [] });
+  });
+
+  it("walks PATH in order and skips entries without a claude install", async () => {
+    const empty = await mkdtemp(join(tmpdir(), "empty-bin-"));
+    const exe = await makeClaudeShim(binDir);
+    try {
+      expect(resolveClaudeWinLauncher(`${empty};"${binDir}"`))
+        .toEqual({ command: exe, prependArgs: [] });
+    } finally {
+      await rm(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when the shim points at an .exe that is gone", async () => {
+    await writeFile(
+      join(binDir, "claude.cmd"),
+      `"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n`,
+      "utf-8",
+    );
+    expect(resolveClaudeWinLauncher(binDir)).toBeNull();
+  });
+
+  it("returns null when the shim quotes no .exe target", async () => {
+    await writeFile(join(binDir, "claude.cmd"), "@ECHO off\r\nnode index.js %*\r\n", "utf-8");
+    expect(resolveClaudeWinLauncher(binDir)).toBeNull();
+  });
+
+  it("returns null for an empty or absent PATH", () => {
+    expect(resolveClaudeWinLauncher(undefined)).toBeNull();
+    expect(resolveClaudeWinLauncher(";  ;")).toBeNull();
+  });
+});
+
 describe("effectiveLauncher", () => {
   let home: string;
   beforeEach(async () => {
@@ -94,9 +176,57 @@ describe("effectiveLauncher", () => {
     expect(r).toEqual({ command: "cursor-agent", prependArgs: [] });
   });
 
-  it("is the identity for a non-cursor command on win32 (e.g. claude)", () => {
-    const r = effectiveLauncher("claude", "win32", { CURSOR_AGENT_HOME: home });
+  // Regression: claude IS on PATH as `claude` / `claude.cmd` / `claude.ps1`,
+  // yet `spawn("claude")` fails ENOENT because CreateProcess resolves only
+  // `.exe` — which killed every analyst run (research 20260806: "all 11
+  // analyzers failed" in 80ms) once the standalone claude.exe was gone.
+  // Returning the bare command here is the bug, not a safe default.
+  it("resolves claude on win32 to the .exe its PATH shim points at", async () => {
+    const exe = await makeClaudeShim(home);
+    const r = effectiveLauncher("claude", "win32", { PATH: home });
+    expect(r).toEqual({ command: exe, prependArgs: [] });
+  });
+
+  it("reads PATH case-insensitively, as Windows itself does", async () => {
+    const exe = await makeClaudeShim(home);
+    const r = effectiveLauncher("claude", "win32", { Path: home });
+    expect(r).toEqual({ command: exe, prependArgs: [] });
+  });
+
+  it("resolves a configured shim path against its own directory, not PATH", async () => {
+    const exe = await makeClaudeShim(home);
+    const r = effectiveLauncher(join(home, "claude.cmd"), "win32", {});
+    expect(r).toEqual({ command: exe, prependArgs: [] });
+  });
+
+  it("leaves an explicitly configured claude.exe alone", () => {
+    const exe = join(home, "claude.exe");
+    expect(effectiveLauncher(exe, "win32", { PATH: home })).toEqual({
+      command: exe, prependArgs: [],
+    });
+  });
+
+  it("is the identity for claude on Linux, where the CLI spawns by name", async () => {
+    await makeClaudeShim(home);
+    expect(effectiveLauncher("claude", "linux", { PATH: home })).toEqual({
+      command: "claude", prependArgs: [],
+    });
+  });
+
+  it("falls back to the bare claude command when no install is on PATH", () => {
+    const r = effectiveLauncher("claude", "win32", { PATH: join(home, "nope") });
     expect(r).toEqual({ command: "claude", prependArgs: [] });
+  });
+
+  it("falls back to the bare claude command when the env carries no PATH at all", () => {
+    expect(effectiveLauncher("claude", "win32", {})).toEqual({
+      command: "claude", prependArgs: [],
+    });
+  });
+
+  it("is the identity for an unknown command on win32", () => {
+    const r = effectiveLauncher("codex", "win32", { PATH: home });
+    expect(r).toEqual({ command: "codex", prependArgs: [] });
   });
 
   it("resolves the cursor launcher on win32 via CURSOR_AGENT_HOME", async () => {
@@ -114,5 +244,22 @@ describe("effectiveLauncher", () => {
   it("falls back to the bare command on win32 when the install is missing", () => {
     const r = effectiveLauncher("cursor-agent", "win32", { CURSOR_AGENT_HOME: join(home, "nope") });
     expect(r).toEqual({ command: "cursor-agent", prependArgs: [] });
+  });
+
+  it("falls back to LOCALAPPDATA/cursor-agent when CURSOR_AGENT_HOME is unset", async () => {
+    const localAppData = await mkdtemp(join(tmpdir(), "localappdata-"));
+    try {
+      const dir = await makeVersion(join(localAppData, "cursor-agent"), "2026.01.28-fd13201");
+      const r = effectiveLauncher("cursor-agent", "win32", { LOCALAPPDATA: localAppData });
+      expect(r).toEqual({ command: join(dir, "node.exe"), prependArgs: [join(dir, "index.js")] });
+    } finally {
+      await rm(localAppData, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the bare cursor command when neither home env var is set", () => {
+    expect(effectiveLauncher("cursor-agent", "win32", {})).toEqual({
+      command: "cursor-agent", prependArgs: [],
+    });
   });
 });
