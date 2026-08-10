@@ -190,12 +190,6 @@ spec:
 
 Store `MANAGED_REPO_GH_TOKEN` + agent API keys in the `operator-secrets` Secret (base64-encoded). The app Deployment mounts the same PVC in read-only mode and exposes port 3000 behind an Ingress.
 
-## Sandbox (Docker Sandboxes / `sbx`)
-
-Optional quick-start profile — see `deployment/sandbox/README.md`. The engine runs inside a microVM layered on top of a project's **own** sandbox image, so the managed repo's toolchain is the engine's toolchain: this is the one mode where a repo whose `scripts.verify` needs .NET, a JDK, or Playwright browsers passes its gate without forking `deployment/Dockerfile`. Lifecycle is `deployment/sandbox/operatorctl.sh` (`doctor` / `up` / `down` / `stop` / `status` / `logs` / `backup`).
-
-Per `docs/vision.md` invariant 8 this stays optional: plain VM, Docker, and Kubernetes remain first-class and gain no dependency on `sbx`.
-
 ## Backups
 
 SQLite files are the full state. Back up `OPERATOR_DB_PATH` + `OPERATOR_APP_DB_PATH` with any file-based backup tool. The engine uses WAL mode — copy the `.db` + `.db-wal` + `.db-shm` triple atomically (e.g. `sqlite3 operator.db '.backup /backup/operator.db'`). Workspaces under `WORKSPACE_BASE_DIR` are disposable — the engine re-clones them if missing.
