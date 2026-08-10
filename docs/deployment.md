@@ -2,6 +2,8 @@
 
 Operator is local-first: SQLite + filesystem + one agent API key is enough to run the closed loop. Production deployments add a supervisor (systemd / Docker / Kubernetes) but the engine code and the state layout are identical in every runtime. Pick the section that matches your environment.
 
+**Start here in every runtime: `http://localhost:3000/setup`.** The setup screen creates the engine's state database, checks the host for git, the agent CLIs, and a working git-host token, registers the first managed repository, and prints the command that runs the first cycle. It writes through the same validated endpoints as the rest of the UI, so a repository added there and a repository added in `config/repos.yaml` end up as the same `kv:repos/*` row — the file remains a perfectly good alternative for provisioning a host from configuration management.
+
 ## Prerequisites
 
 - **Node.js 24+** (`package.json` `engines` requires `>=24.0.0`; the Docker image uses `node:24`).
@@ -32,7 +34,7 @@ Never commit `.env` files. The engine and app load env-vars through `node --env-
 
 - **One-shot** — `npx tsx --env-file=.env.local engine/entry.ts --once --repo <id>`. Runs one cycle, exits non-zero on failure. Good for CI smoke tests and cron-style scheduling.
 - **Daemon** — `npx tsx --env-file=.env.local engine/entry.ts`. Runs the full cycle loop on the interval configured in `engine-defaults/global.cycleIntervalMs`. Graceful shutdown on `SIGINT` / `SIGTERM`.
-- **App** — `npm run dev --workspace @operator/app` (development) or `npm run build --workspace @operator/app && npm start --workspace @operator/app` (production). The app is read-mostly with a guarded write path for config edits.
+- **App** — `npm run dev --workspace @operator/app` (development) or `npm run build --workspace @operator/app && npm start --workspace @operator/app` (production). The app is read-mostly with a guarded write path for config edits and for the setup screen. It never starts, stops, or supervises the engine — it observes and configures the same SQLite file.
 
 ## Local-first development
 
@@ -43,25 +45,26 @@ git clone https://github.com/ainova-systems/operator-autopilot.git
 cd operator-autopilot
 npm install
 
-# Configure at least one managed repo
-cp config/repos.yaml.example config/repos.yaml
-# edit config/repos.yaml — set owner/repo, branch, tokenEnvVar
+# Secrets. The engine reads these; the setup screen only names the variable.
+cp .env.local.example .env.local
+# edit .env.local — MANAGED_REPO_GH_TOKEN, ANTHROPIC_API_KEY, CURSOR_API_KEY
 
-# Configure secrets locally
-cat > .env.local <<'EOF'
-MANAGED_REPO_GH_TOKEN=ghp_...
-ANTHROPIC_API_KEY=sk-ant-...
-EOF
-
-# Smoke test: one-shot cycle with a fresh database
-npx tsx --env-file=.env.local engine/entry.ts --once --fresh-db --repo <your-repo-id>
-
-# Start the app in another terminal to watch what happened
+# Guided setup: creates state/operator.db, checks this host, registers a repo
 npm run dev --workspace @operator/app
-# open http://localhost:3000
+# open http://localhost:3000/setup
+```
+
+The setup screen's host check reads the *app* process's environment, which is not the engine's. The root `.env.local` is passed to the engine explicitly (`--env-file`) and Next.js never sees it; Next loads `app/.env.local` instead (also gitignored). Copy the same values there, or export them in the shell before starting the app, if you want the credential checks to resolve rather than warn. They warn instead of failing precisely because the engine may hold credentials the app cannot see.
+
+Then run the first cycle against the repository you registered:
+
+```bash
+npx tsx --env-file=.env.local engine/entry.ts --once --repo <repo-id>
 ```
 
 State files (`state/operator.db`, workspaces) stay inside the repo when `OPERATOR_DIR` is unset — `state/` is gitignored. For a persistent local daemon, set `OPERATOR_DIR=/var/lib/operator` and point the app at the same path.
+
+**Provisioning without the screen.** `cp config/repos.yaml.example config/repos.yaml`, edit it, and start the engine. The seed mirror upserts every entry into `kv:repos/*` on each start and deletes rows that disappear from the file — but it never touches a row the UI owns, so the two paths coexist. Use the file when a host is provisioned by configuration management; use the screen when a person is onboarding a repository.
 
 ## VM / systemd
 
@@ -103,46 +106,29 @@ Run the app as a separate unit on the same host if you want the observability UI
 
 ## Docker Compose
 
-Minimal compose file for the engine + app sharing a named volume.
+Use the committed stack — [`deployment/docker-compose.yml`](../deployment/docker-compose.yml) — rather than a hand-written file. It is the same stack the operator's own VM runs, and [`deployment/Dockerfile`](../deployment/Dockerfile) bundles Node, git, `gh`, ripgrep, and the agent CLIs, so the host needs none of them.
 
-```yaml
-# docker-compose.yml
-services:
-  operator-engine:
-    image: node:20-bookworm
-    working_dir: /app
-    command: npx tsx engine/entry.ts
-    volumes:
-      - ./:/app:ro
-      - operator-state:/var/lib/operator
-    environment:
-      OPERATOR_DIR: /var/lib/operator
-      WORKSPACE_BASE_DIR: /var/lib/operator/workspaces
-      OPERATOR_DB_PATH: /var/lib/operator/operator.db
-      LOG_LEVEL: info
-    env_file: .env.production
-    restart: on-failure
+```bash
+cp deployment/.env.example deployment/.env         # then fill in the tokens
+docker compose -f deployment/docker-compose.yml up -d --build
 
-  operator-app:
-    image: node:20-bookworm
-    working_dir: /app
-    command: sh -c "npm install && npm run build --workspace @operator/app && npm start --workspace @operator/app"
-    volumes:
-      - ./:/app
-      - operator-state:/var/lib/operator
-    environment:
-      OPERATOR_APP_DB_PATH: /var/lib/operator/app.db
-      PORT: 3000
-    ports:
-      - "3000:3000"
-    depends_on:
-      - operator-engine
-
-volumes:
-  operator-state:
+# open http://localhost:3000/setup
+docker logs -f operator-engine
 ```
 
-Run `docker compose up -d`. The engine writes to `operator-state`; the app reads from the same volume via `OPERATOR_DB_PATH`. For production, bake an image instead of bind-mounting the source (`Dockerfile` with `RUN npm ci && npm run build`); the compose file above is optimized for quick-start + live-reload dev on a VM.
+What the stack gives you:
+
+| Service | Role |
+|---|---|
+| `operator-engine` | The daemon. `restart: unless-stopped`, `stop_grace_period: 5m` matched to the engine's SIGTERM drain, `--config /var/lib/operator/config` so instance config lives on the volume rather than in the image. |
+| `operator-app` | The observability + setup UI, same image with a different entrypoint, published on `127.0.0.1:3000`. `OPERATOR_DB_PATH` points it at the engine's state file, so it auto-creates its `default` connection and the setup screen opens with step one already satisfied. |
+| `watchtower` | Opt-in registry auto-poll (`--profile watchtower`), scoped by label to the two operator containers. |
+
+Both services mount the single `operator-state` volume. The engine is the continuous writer; the app writes only when someone edits configuration or completes the setup screen, and WAL mode serialises the two. **Never scale either service beyond one replica** — SQLite is not multi-writer safe.
+
+The UI is bound to loopback because it edits engine configuration and carries no authentication of its own. Reach it over an SSH tunnel (`ssh -L 3000:127.0.0.1:3000 <host>`), or put an authenticating reverse proxy in front and set `OPERATOR_APP_BIND=0.0.0.0`.
+
+Portainer and the push-based redeploy path are covered in [`deployment/README.md`](../deployment/README.md).
 
 ## Kubernetes
 
@@ -188,7 +174,7 @@ spec:
   resources: { requests: { storage: 20Gi } }
 ```
 
-Store `MANAGED_REPO_GH_TOKEN` + agent API keys in the `operator-secrets` Secret (base64-encoded). The app Deployment mounts the same PVC in read-only mode and exposes port 3000 behind an Ingress.
+Store `MANAGED_REPO_GH_TOKEN` + agent API keys in the `operator-secrets` Secret (base64-encoded). The app runs as its own single-replica Deployment from the same image with `command: ["npm", "run", "start", "--workspace", "@operator/app"]`, mounting the same PVC read-write (the setup screen and the config editor write rows) and exposing port 3000 behind an authenticating Ingress. `ReadWriteOnce` means both pods must land on the same node — co-schedule them, or move to a single pod with two containers.
 
 ## Backups
 
@@ -220,5 +206,7 @@ The container bakes the agent CLIs at **build time** — `npm install -g @anthro
 - **"Kind registry: empty category"** on boot — `kv:work-item-kinds/*` was not seeded. Run with `--reseed work-item-kinds` or confirm `engine/content/prompts/kinds.yaml` is readable.
 - **Cycle hangs for >2h** — the engine's top-level `AbortSignal.timeout(7_200_000)` fires. Check agent-provider logs for a stuck CLI invocation.
 - **"Workspace has uncommitted changes"** — `WORKSPACE_OVERRIDE` mode refuses to run on a dirty tree. Commit/stash or unset the override.
-- **App shows "no active connection"** — open `/connections`, create one pointing at `$OPERATOR_DB_PATH`, and click Switch.
+- **`EACCES: permission denied, mkdir '/var/lib/operator/state'`** — the named volume predates the image change that creates the mount point owned by uid 10001, so it is still root-owned. Fix it once: `docker compose -f deployment/docker-compose.yml down && docker run --rm -v operator-state:/v alpine chown -R 10001:37 /v && docker compose -f deployment/docker-compose.yml up -d` (use the project-prefixed volume name from `docker volume ls`).
+- **App shows "no active connection"** — open `/setup` and complete the first step, or create one by hand under `/connections` pointing at `$OPERATOR_DB_PATH` and click Switch.
+- **Setup's host check warns about credentials that are definitely set** — the check reads the app process's environment, not the engine's. Export the same variables where the app runs, or paste the token into the setup screen for a one-shot verification (it is not stored).
 - **Force-push attempted** — this is a bug in the code, not a config issue. The engine never force-pushes; any such attempt must be reported via an issue.

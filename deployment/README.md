@@ -1,16 +1,17 @@
 # Deployment
 
-Run the Operator engine as a single, always-on daemon container. The engine's
-internal scheduler drives cycles on the configured interval; the supervisor
-(Docker / Portainer) keeps it alive and delivers a graceful stop on redeploy.
+Run the Operator engine as a single, always-on daemon container, with the
+observability + setup UI alongside it. The engine's internal scheduler drives
+cycles on the configured interval; the supervisor (Docker / Portainer) keeps it
+alive and delivers a graceful stop on redeploy.
 
 ## Artifacts
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Self-contained engine image — Node + git + gh + ripgrep + the agent CLIs (Claude Code + Cursor Agent). No external base image. |
-| `docker-compose.yml` | Always-on `operator-engine` service (restart policy, graceful stop, state volume) + an opt-in `watchtower` profile for registry auto-poll. |
-| `deploy.sh` | Push-based redeploy — pull a pinned image, recreate `operator-engine`, prune. Run by the deploy job and by hand on the VM. |
+| `Dockerfile` | Self-contained image — Node + git + gh + ripgrep + the agent CLIs (Claude Code + Cursor Agent) + a pre-built Next.js app. No external base image. |
+| `docker-compose.yml` | Always-on `operator-engine` service (restart policy, graceful stop, state volume), the `operator-app` UI on loopback:3000, and an opt-in `watchtower` profile for registry auto-poll. |
+| `deploy.sh` | Push-based redeploy — pull a pinned image, recreate `operator-engine` and `operator-app`, prune. Run by the deploy job and by hand on the VM. |
 | `self-hosted-runner.md` | Sets up the operator's own VM to redeploy itself through a self-hosted runner. |
 | `.env.example` | Environment template (image tag, log level, secrets). |
 | `../.github/workflows/build-image.yml` | CI that builds + pushes the image to GHCR, then (on `master`) redeploys it via the self-hosted runner. |
@@ -19,7 +20,12 @@ internal scheduler drives cycles on the configured interval; the supervisor
 
 - **Single writer.** SQLite is not multi-writer safe — never run two engine
   containers against the same volume. One container, `container_name:
-  operator-engine`, never scaled.
+  operator-engine`, never scaled. `operator-app` shares the volume but is
+  read-mostly: it writes only on a config edit or a completed setup step, and
+  WAL mode serialises those against the engine.
+- **The UI is unauthenticated.** `operator-app` edits engine configuration, so
+  compose publishes it on `127.0.0.1` only. Reach it through an SSH tunnel, or
+  set `OPERATOR_APP_BIND` once an authenticating reverse proxy is in front.
 - **State on a volume.** `operator-state` holds the SQLite DB, KV, and managed
   workspaces. It must survive container recreate; without it every restart is
   a cold, empty database.
@@ -33,6 +39,8 @@ internal scheduler drives cycles on the configured interval; the supervisor
 ```bash
 cp deployment/.env.example deployment/.env   # fill in secrets
 docker compose -f deployment/docker-compose.yml up -d --build
+
+# Then register the first managed repository at http://localhost:3000/setup
 docker logs -f operator-engine
 ```
 
@@ -47,16 +55,20 @@ docker logs -f operator-engine
 
 ## Instance config
 
-The engine reads managed repos from `<config>/repos.yaml`. The compose file
-points `--config` at `/var/lib/operator/config` on the state volume, so the
-image stays free of instance data. Before first start, place your file at:
+Two equivalent ways to register a managed repository — both end as the same
+`kv:repos/*` row on the state volume:
 
-```
-<operator-state volume>/config/repos.yaml
-```
+- **The setup screen** (`http://localhost:3000/setup`) — no file, no restart.
+  The row it writes is owned by the UI, so the seed mirror below leaves it
+  alone on every subsequent start.
+- **`repos.yaml`** — for a host provisioned by configuration management. The
+  compose file points `--config` at `/var/lib/operator/config` on the state
+  volume, so the image stays free of instance data. Place your file at
+  `<operator-state volume>/config/repos.yaml` before first start; see
+  `../config/repos.yaml.example` for the schema.
 
-See `../config/repos.yaml.example` for the schema. `tokenEnvVar` in that file
-must name an env var set on the container (default `MANAGED_REPO_GH_TOKEN`).
+Either way, `tokenEnvVar` must name an env var set on the container (default
+`MANAGED_REPO_GH_TOKEN`).
 
 ## Updates
 
