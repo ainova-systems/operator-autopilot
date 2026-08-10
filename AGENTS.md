@@ -161,6 +161,12 @@ npm run exec                                  # alias for above
 
 ## Merge Authority (who may land a PR on `master`)
 
+`master` is protected for human and assistant development too, not only for the engine: code reaches
+it through a feature branch and a PR. The single exception — a change whose diff is entirely
+documentation or `intelligence/` content — and the required PR sequence are recorded once in
+`dev-project-profile.md` (`protected_branches`, `direct_push_paths`, `pr_flow`). This section covers
+only who is allowed to press merge.
+
 The engine daemon never merges and never pushes a protected branch — the first Global Rule above is
 unchanged and applies to every stage the operator runs.
 
@@ -245,7 +251,8 @@ Sync with `bash intelligence/sync/scripts/sync.sh`. Generated outputs (`.claude/
 - integration_branch: none          <!-- detected: no origin/develop; trunk-based on master -->
 - branch_prefixes: feature/, bugfix/, hotfix/   <!-- pack defaults; existing remote branches use no slash (e.g. fix-agent-lock-ttl) -->
 - update_strategy: merge
-- protected_branches: master        <!-- CONFLICT: owner's current own-repo practice commits directly to master; git-workflow pack rule treats the default branch as always protected. Owner decides — see report. -->
+- protected_branches: master        <!-- owner decision 2026-08-10, resolving the earlier CONFLICT note in favour of the git-workflow pack rule: master is protected. Code lands through a feature branch + PR only. Supersedes the previous direct-to-master practice. -->
+- direct_push_paths: docs/**, intelligence/**, *.md   <!-- LOCAL key, not a pack key: the one exception to protected_branches. A change whose diff is ENTIRELY within these paths may be committed and pushed straight to master. Anything else — engine/, packages/, app/, config/, deployment/, .github/, scripts/, dev/ — goes through the PR flow, and a change that touches both a source file and a doc is NOT an exception: the whole change goes through the PR. -->
 
 ## Commits
 
@@ -267,6 +274,7 @@ Sync with `bash intelligence/sync/scripts/sync.sh`. Generated outputs (`.claude/
 - merge_method: squash              <!-- owner-set: one PR = one logical change; operator branches carry noisy per-attempt commits -->
 - delete_remote_branch: true        <!-- owner-set: git-merge-pr passes --delete-branch; short-lived branches are not kept after merge -->
 - delete_local_branch: true         <!-- pack default, stated explicitly so it reads next to its remote counterpart -->
+- pr_flow: git-open-pr → git-finalize-pr → git-review-pr-comments → git-merge-pr   <!-- LOCAL key, not a pack key: the required sequence for anything outside direct_push_paths. A PR merges only when CI is green AND every review thread is answered and resolved — both are guards inside git-merge-pr, which stays owner-invoked (`disable-model-invocation: true`). An assistant drives a PR to ready and stops there. -->
 
 ## Releases
 

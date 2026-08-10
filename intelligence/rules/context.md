@@ -89,6 +89,12 @@ npm run exec                                  # alias for above
 
 ## Merge Authority (who may land a PR on `master`)
 
+`master` is protected for human and assistant development too, not only for the engine: code reaches
+it through a feature branch and a PR. The single exception — a change whose diff is entirely
+documentation or `intelligence/` content — and the required PR sequence are recorded once in
+`dev-project-profile.md` (`protected_branches`, `direct_push_paths`, `pr_flow`). This section covers
+only who is allowed to press merge.
+
 The engine daemon never merges and never pushes a protected branch — the first Global Rule above is
 unchanged and applies to every stage the operator runs.
 
