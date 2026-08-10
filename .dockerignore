@@ -24,9 +24,14 @@ workspace
 .operator-data
 .runtime-logs
 
-# Local env / secrets
+# Local env / secrets. The `**/` forms matter: dockerignore patterns without a
+# separator match the context root only, and `app/.env.local` is a real file —
+# Next.js loads it, so a developer following docs/deployment.md will have one.
 .env
 .env.local
+**/.env
+**/.env.local
+**/.env.*.local
 *.pem
 
 # Local AI-IDE tooling (generated, gitignored)
