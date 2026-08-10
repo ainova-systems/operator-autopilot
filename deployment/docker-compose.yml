@@ -1,8 +1,14 @@
-# Operator Engine — always-on daemon.
+# Operator — always-on engine daemon plus the observability / setup UI.
 #
 # Single writer against the SQLite state volume. NEVER scale beyond one
 # replica (SQLite is not multi-writer safe). One container; rely on
 # `restart: unless-stopped` to survive host / Docker-daemon restarts.
+#
+# The UI runs from the same image and the same volume: the engine is the
+# continuous writer, the app reads and — only when someone edits configuration
+# or completes the setup screen — writes a row. WAL mode serialises those, so
+# it stays one logical writer at a time. Open http://localhost:3000/setup after
+# the first `up` to register a managed repository without hand-editing a file.
 #
 # Redeploy: the operator's own VM uses a self-hosted-runner push deploy
 # (deployment/deploy.sh, driven by ../.github/workflows/build-image.yml) and
@@ -62,6 +68,42 @@ services:
       # (testcontainers, docker compose, image builds):
       # - /var/run/docker.sock:/var/run/docker.sock
 
+  # Observability + setup UI. Same image, different entrypoint, same state
+  # volume — so `/setup` writes the `repos/*` row the engine picks up on its
+  # next cycle, and `/executions` reads what that cycle did.
+  operator-app:
+    # No `build:` block: the engine service above builds this exact image and
+    # compose reuses the tag. `docker compose up -d --build` builds once.
+    image: ${OPERATOR_IMAGE:-operator-engine:local}
+    container_name: operator-app
+    restart: unless-stopped
+    depends_on:
+      - operator-engine
+    labels:
+      # Same image as the engine, so it must be recreated by the same
+      # auto-update pass — otherwise the UI keeps serving an older build.
+      - com.centurylinklabs.watchtower.enable=true
+    entrypoint: ["npm", "run", "start", "--workspace", "@operator/app"]
+
+    environment:
+      # Auto-creates a connection named `default` on first request, so the
+      # setup screen opens with its first step already satisfied.
+      OPERATOR_DB_PATH: /var/lib/operator/state/operator.db
+      # The app's own registry (connections, active selection) — kept beside
+      # the engine state so it survives a container recreate.
+      OPERATOR_APP_DB_PATH: /var/lib/operator/app/app.db
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+
+    ports:
+      # Bound to loopback by default: the UI edits engine configuration and
+      # has no authentication of its own. Put it behind a reverse proxy with
+      # auth before setting OPERATOR_APP_BIND to 0.0.0.0.
+      - "${OPERATOR_APP_BIND:-127.0.0.1}:${OPERATOR_APP_PORT:-3000}:3000"
+
+    volumes:
+      - operator-state:/var/lib/operator
+
   # Optional registry auto-poll — OFF by default (guarded by the `watchtower`
   # profile). The operator's own VM redeploys through the self-hosted-runner
   # push deploy instead and never starts this service. Enable it for a manual /
@@ -71,7 +113,8 @@ services:
   # on every master push — see ../.github/workflows/build-image.yml) and
   # recreates the container so the bundled agent CLIs (claude-code +
   # cursor-agent) and engine code stay current without a manual pull.
-  # `--label-enable` scopes it to operator-engine only; `--stop-timeout 300s`
+  # `--label-enable` scopes it to the two labelled operator containers;
+  # `--stop-timeout 300s`
   # matches the engine's SIGTERM drain budget so a swap never interrupts an
   # in-flight cycle; the daily `--schedule` fires after the CI build window
   # (build cron is 04:17 UTC).

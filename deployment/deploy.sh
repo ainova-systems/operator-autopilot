@@ -5,7 +5,9 @@
 # Runs on the self-hosted runner (label `operator-deploy`) from
 # ../.github/workflows/build-image.yml right after a fresh image is published to
 # GHCR, and by hand on the VM for a manual rollout or rollback. Idempotent:
-# pull the target image, recreate ONLY operator-engine, prune dangling layers.
+# pull the target image, recreate the two operator services that run it
+# (operator-engine and operator-app), prune dangling layers. Watchtower and
+# anything else in the stack are left alone.
 #
 # The runner must NOT belong to the `operator` compose project — `up -d` would
 # otherwise recreate the runner mid-job. Keep it in its own stack / systemd unit.
@@ -46,11 +48,14 @@ echo "deploy: rolling out $OPERATOR_IMAGE (project=$project)"
 
 compose=(docker compose -p "$project" -f "$compose_file" --env-file "$env_file")
 
-"${compose[@]}" pull operator-engine
-# Recreate only the daemon; SIGTERM drains the in-flight cycle within
+"${compose[@]}" pull operator-engine operator-app
+# Recreate the daemon; SIGTERM drains the in-flight cycle within
 # stop_grace_period before the new image starts (see docker-compose.yml).
 "${compose[@]}" up -d operator-engine
+# The UI serves a build baked into the same image, so it has to move with it.
+# Nothing to drain here — it holds no cycle state.
+"${compose[@]}" up -d operator-app
 # Reclaim the layers the superseded image left behind.
 docker image prune -f >/dev/null
 
-echo "deploy: operator-engine is now running $OPERATOR_IMAGE"
+echo "deploy: operator-engine and operator-app are now running $OPERATOR_IMAGE"
