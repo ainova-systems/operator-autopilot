@@ -52,6 +52,9 @@ export function LeftRail({
       ) : null}
 
       <SidebarSection className="mt-auto">
+        <Link href="/setup" className={`${navItemClass} text-muted-foreground`}>
+          Setup
+        </Link>
         <Link
           href="/connections"
           className={`${navItemClass} text-muted-foreground`}

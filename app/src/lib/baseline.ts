@@ -19,7 +19,7 @@ import { load as yamlLoad } from "js-yaml";
  * rule "`@operator/app` never imports engine runtime" is enforced by
  * ESLint; the content files themselves are shared data, not code.
  */
-function resolveContentRoot(): string {
+export function resolveContentRoot(): string {
   const override = process.env["OPERATOR_CONTENT_DIR"];
   if (override) return resolve(override);
   const here = dirname(fileURLToPath(import.meta.url));

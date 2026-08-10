@@ -1,7 +1,9 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Link2Off } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageContainer } from "@/components/shared/page-container";
+import { buttonVariants } from "@/components/ui/button";
 import { getActiveKV } from "@/lib/active-kv-registry";
 import { listConnections } from "@/lib/connections";
 
@@ -16,20 +18,25 @@ export default async function ShellIndex(): Promise<React.ReactElement> {
       <PageContainer>
         <EmptyState
           icon={Link2Off}
-          title="Add your first connection"
+          title="Set up this instance"
           description={
             <>
               <p className="m-0">
-                Connect the Operator app to a running engine instance by pointing it at
-                that instance&apos;s SQLite state file (usually <code>state/operator.db</code>).
+                Setup walks through the four things a first run needs: an engine state
+                database, a host that has the agent CLIs and a working token, a managed
+                repository, and the first cycle.
               </p>
               <p className="m-0 mt-2 text-xs">
-                Dev tip: set <code>OPERATOR_DB_PATH</code> before starting the app and a
-                default connection is auto-created on first request.
+                Already have an engine running? Add its <code>state/operator.db</code> from the
+                left rail instead.
               </p>
             </>
           }
-        />
+        >
+          <Link href="/setup" className={buttonVariants()}>
+            Start setup
+          </Link>
+        </EmptyState>
       </PageContainer>
     );
   }
@@ -39,7 +46,11 @@ export default async function ShellIndex(): Promise<React.ReactElement> {
         icon={Link2Off}
         title="Select a connection"
         description="Pick a connection from the left rail to view its work items and executions."
-      />
+      >
+        <Link href="/setup" className={buttonVariants({ variant: "outline" })}>
+          Open setup
+        </Link>
+      </EmptyState>
     </PageContainer>
   );
 }
