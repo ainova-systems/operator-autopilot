@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OperationContext } from "@operator/core";
@@ -239,5 +239,25 @@ describe("LocalStorageBundle — RateLimiter", () => {
     await new Promise((r) => setTimeout(r, 1100));
     const r = await bundle.allow("bucket", 1, ctx);
     expect(r.allowed).toBe(true);
+  });
+});
+
+describe("LocalStorageBundle — construction failures", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "kvstore-fail-"));
+  });
+
+  afterEach(() => {
+    // Removal is the assertion: an unreleased SQLite handle makes this
+    // throw EPERM on Windows.
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("closes the database handle when the file is not a SQLite database", () => {
+    const dbPath = join(dir, "not-a-db");
+    writeFileSync(dbPath, "plain text, definitely not SQLite", "utf-8");
+    expect(() => new LocalStorageBundle({ dbPath })).toThrow();
   });
 });

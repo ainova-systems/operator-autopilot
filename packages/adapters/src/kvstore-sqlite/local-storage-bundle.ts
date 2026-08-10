@@ -82,9 +82,20 @@ export class LocalStorageBundle implements KVStore, IdempotencyGuard, RateLimite
   private readonly db: Database.Database;
 
   constructor(opts: LocalStorageBundleOptions) {
+    // SQLite opens lazily, so `new Database` succeeds even for a path that
+    // is not a database — the failure surfaces on the first statement
+    // below. Without this guard the handle stays open with no owner to
+    // close it, which on Windows keeps a lock on the file for the rest of
+    // the process. Probing an arbitrary path (the app's connection test and
+    // setup preflight both do) must not leak one.
     this.db = new Database(opts.dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.exec(SCHEMA);
+    try {
+      this.db.pragma("journal_mode = WAL");
+      this.db.exec(SCHEMA);
+    } catch (err) {
+      this.db.close();
+      throw err;
+    }
   }
 
   // ── KVStore ─────────────────────────────────────────────────────────
