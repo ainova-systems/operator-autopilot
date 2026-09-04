@@ -20,6 +20,9 @@ targets:
   cursor:
     enabled: true
     output: ".cursor"
+  codex:
+    enabled: true
+    output: ".codex"
   agents:
     enabled: true
     output: "AGENTS.md"
