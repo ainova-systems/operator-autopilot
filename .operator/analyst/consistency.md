@@ -11,7 +11,7 @@ Cross-stack consistency checks for the monorepo. Reference, do not restate:
 
 ## Package & layer boundaries
 - Import direction holds everywhere: `core` (no I/O, no cross-workspace imports; zod only) ← `adapters` ← `engine`; `app` uses `core` types + `adapters` read-only, never `engine` runtime.
-- Inside `engine/`, imports flow strictly downward per the layer graph (`platforms/` ⇏ `agents/`, `storage/` ⇏ `pipeline/`, `infra/` → Node built-ins only).
+- Inside `engine/`, imports flow strictly downward per the layer graph (`platforms/` ⇏ `agents/`, `storage/` ⇏ `pipeline/`; `infra/` → `@operator/core` runtime + `logging/` (types) + Node built-ins (+ better-sqlite3 under `infra/local/`); `logging/` → `@operator/core` (types only) + pino + optional `pino-pretty` + Node built-ins).
 - Primitive-boundary calls (`git.*`, `PRManager.*`, `VCSPlatform.*`, `AgentRuntime.run`, KV writes) appear only in `engine/pipeline/primitives/**`.
 
 ## Vocabulary & language
