@@ -23,6 +23,7 @@ import {
   workItemActivityAt,
   type BoardWorkItem,
 } from "@/lib/work-item-board";
+import { loadBoardWorkItems } from "@/lib/work-item-board-data";
 
 export const dynamic = "force-dynamic";
 
@@ -106,32 +107,23 @@ export default async function BoardPage({
     );
   }
 
-  const rows = await active.kv.list("work-items", {
-    orderBy: "updated_at",
-    order: "desc",
-  });
-  const items: BoardWorkItem[] = rows.map(({ key, value }) => ({
-    key,
-    value: value as BoardWorkItem["value"],
-  }));
   const query = await (
     searchParams ?? Promise.resolve<{ readonly history?: string }>({})
   );
   const history = parseBoardHistory(query.history);
+  const items = await loadBoardWorkItems(active.kv, history);
   const visibleItems = filterBoardItemsByHistory(items, history);
   const kindPresentations = await loadWorkItemKindPresentations(
     active.kv,
     new Set(items.flatMap(({ value }) => (value.kind ? [value.kind] : []))),
   );
-  const allGrouped = groupBoardItems(items);
   const grouped = groupBoardItems(visibleItems);
-  const hiddenTotal = items.length - visibleItems.length;
 
   return (
     <PageContainer className="flex flex-col overflow-hidden">
       <PageHeader
         title="Board"
-        description={`${visibleItems.length} of ${items.length} work items shown, grouped by lifecycle`}
+        description={`${visibleItems.length} work items shown, grouped by lifecycle`}
         actions={
           <InlineActions>
             <Link href="/work-items" className={buttonVariants({ variant: "outline" })}>
@@ -159,9 +151,9 @@ export default async function BoardPage({
             {option.label}
           </Link>
         ))}
-        {hiddenTotal > 0 ? (
+        {history !== "all" ? (
           <span className="ml-1 text-xs text-muted-foreground">
-            {hiddenTotal} older {hiddenTotal === 1 ? "item" : "items"} hidden
+            Older Done and Needs attention items are hidden
           </span>
         ) : null}
       </div>
@@ -184,7 +176,6 @@ export default async function BoardPage({
           aria-label="Work-item board"
         >
           {BOARD_LANES.map((lane) => {
-            const hiddenCount = allGrouped[lane.id].length - grouped[lane.id].length;
             return (
               <section
                 key={lane.id}
@@ -198,7 +189,6 @@ export default async function BoardPage({
                     </h2>
                     <p className="m-0 mt-0.5 truncate text-xs text-muted-foreground">
                       {lane.description}
-                      {hiddenCount > 0 ? ` - ${hiddenCount} older hidden` : ""}
                     </p>
                   </div>
                   <Badge variant="outline" className="bg-background">

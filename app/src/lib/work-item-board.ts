@@ -60,6 +60,12 @@ const IN_PROGRESS_STATUSES = new Set(["in-progress", "running", "retry"]);
 const REVIEW_STATUSES = new Set(["in-review", "ready-to-merge"]);
 const DONE_STATUSES = new Set(["merged", "accepted", "completed", "approved"]);
 
+export const ACTIVE_BOARD_STATUSES = [
+  "pending",
+  ...IN_PROGRESS_STATUSES,
+  ...REVIEW_STATUSES,
+] as const;
+
 export function effectiveWorkItemStatus(value: BoardWorkItemValue): string {
   return (value.status ?? value.developFileStatus ?? "unknown").toLowerCase();
 }
@@ -81,6 +87,10 @@ export function parseBoardHistory(value: string | undefined): BoardHistory {
   return BOARD_HISTORY_OPTIONS.some((option) => option.value === value)
     ? (value as BoardHistory)
     : DEFAULT_BOARD_HISTORY;
+}
+
+export function boardHistoryCutoff(history: Exclude<BoardHistory, "all">, now = Date.now()): string {
+  return new Date(now - Number(history) * DAY_IN_MS).toISOString();
 }
 
 export function filterBoardItemsByHistory(

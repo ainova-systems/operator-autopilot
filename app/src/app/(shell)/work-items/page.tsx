@@ -128,6 +128,7 @@ const STATUS_GROUPS = {
 } as const;
 type StatusGroup = keyof typeof STATUS_GROUPS;
 const STATUS_GROUP_KEYS: readonly StatusGroup[] = ["active", "pending", "completed", "rejected"];
+const WORK_ITEM_LIST_LIMIT = 500;
 
 function parseGroup(value: string | undefined): StatusGroup | undefined {
   return STATUS_GROUP_KEYS.find((g) => g === value);
@@ -266,7 +267,11 @@ export default async function WorkItemsPage({
   const sortHref = (sort: SortColumn | undefined, dir: SortDir | undefined): string =>
     buildHref(query, { sort, dir });
 
-  const rows = await active.kv.list("work-items");
+  const rows = await active.kv.list("work-items", {
+    orderBy: "updated_at",
+    order: "desc",
+    limit: WORK_ITEM_LIST_LIMIT,
+  });
   if (rows.length === 0) {
     return (
       <PageContainer>
@@ -392,7 +397,7 @@ export default async function WorkItemsPage({
     <PageContainer>
       <PageHeader
         title="Work items"
-        description={`${items.length} total${q ? ` matching "${qRaw}"` : ""}${filterDescription}`}
+        description={`${items.length} shown${rows.length === WORK_ITEM_LIST_LIMIT ? ` from latest ${WORK_ITEM_LIST_LIMIT}` : ""}${q ? ` matching "${qRaw}"` : ""}${filterDescription}`}
         actions={
           <InlineActions>
             <Link href="/board" className={buttonVariants({ variant: "outline" })}>

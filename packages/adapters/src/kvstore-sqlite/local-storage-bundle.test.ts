@@ -108,6 +108,33 @@ describe("LocalStorageBundle — KVStore", () => {
     expect(active.map((e) => e.key).sort()).toEqual(["a", "c"]);
   });
 
+  it("applies JSON filters before pagination", async () => {
+    await bundle.put("repos", "a", { active: false });
+    await bundle.put("repos", "b", { active: true });
+    const active = await bundle.list("repos", { where: { active: true }, limit: 1 });
+    expect(active.map((e) => e.key)).toEqual(["b"]);
+  });
+
+  it("filters JSON fields by membership and inclusive lower bound", async () => {
+    await bundle.put("work-items", "a", { status: "completed", lastEventAt: "2026-08-01" });
+    await bundle.put("work-items", "b", { status: "pending", lastEventAt: "2026-09-01" });
+    await bundle.put("work-items", "c", { status: "failed", lastEventAt: "2026-09-02" });
+    const recentTerminal = await bundle.list("work-items", {
+      whereIn: { status: ["completed", "failed"] },
+      whereGte: { lastEventAt: "2026-09-01" },
+    });
+    expect(recentTerminal.map((e) => e.key)).toEqual(["c"]);
+  });
+
+  it("distinguishes explicit JSON null and handles empty membership", async () => {
+    await bundle.put("repos", "null", { marker: null });
+    await bundle.put("repos", "missing", {});
+    expect((await bundle.list("repos", { where: { marker: null } })).map((e) => e.key)).toEqual([
+      "null",
+    ]);
+    expect(await bundle.list("repos", { whereIn: { marker: [] } })).toEqual([]);
+  });
+
   it("honors limit and offset", async () => {
     for (const k of ["a", "b", "c", "d", "e"]) {
       await bundle.put("prompts", k, { body: k });
