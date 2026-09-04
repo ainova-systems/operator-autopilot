@@ -1,0 +1,85 @@
+export function buildSupervisorTask(
+  prType: string,
+  branch: string,
+  newFeedback: string,
+  threadFile: string,
+  checksContextFile?: string,
+): string {
+  const sections = [
+    "Review the PR event and decide the right action via AOP EMIT records.",
+    "",
+    "## PR Context",
+    "",
+    `- **PR Type**: ${prType}`,
+    `- **Branch**: ${branch}`,
+    "",
+    "## Decision Vocabulary",
+    "",
+    "Choose ONE outcome and emit the matching EMIT records (see supervisor.md for full spec):",
+    "",
+    "- **fix-in-place** — actionable feedback, you edit files in the working tree (do NOT run git add/commit/push — the orchestrator does that), end with `EMIT verdict value: approved`",
+    "- **cancel** — user said /cancel or scope dead → `EMIT status-update target: self status: cancelled` + `EMIT verdict value: cancelled`",
+    "- **duplicate** — user said /duplicate <id> → `EMIT status-update target: self status: duplicate` + `EMIT verdict value: rejected`",
+    "- **retry-as-new** — user clarified new scope → `EMIT child-item kind: task parent: self` + `EMIT status-update target: self status: rejected` + `EMIT verdict value: rejected`",
+    "- **escalate** — ambiguous/contradictory comments → `EMIT verdict value: approved` (no code changes, no status update)",
+    "",
+    "## Answering inline review comments (REQUIRED)",
+    "",
+    "Every `[Review #<id> …]` entry below is an inline review thread you MUST answer with exactly one `EMIT comment-reply`, whichever outcome you pick:",
+    "",
+    "- Code change addresses it → `disposition: fixed`",
+    "- Comment is wrong / out of scope / already satisfied → `disposition: not-applicable`",
+    "",
+    "```",
+    "=== EMIT comment-reply ===",
+    "thread: 123456789        # copy the #<id> from the [Review #<id> …] line",
+    "disposition: fixed",
+    "note: Added the missing null guard in login().",
+    "=== END EMIT ===",
+    "```",
+    "",
+    "The `#<id>` is the review comment id — copy it verbatim. Leave NO inline comment without a comment-reply; the note is what the reviewer reads. (Top-level PR comments and CI failures are answered by your verdict + summary, not by comment-reply.)",
+    "",
+    "## Rules",
+    "",
+    "- Emit one `EMIT comment-reply` for EVERY `[Review #<id> …]` entry — fixed or not-applicable, always with a note",
+    "- NEVER write `---\\nstatus:` frontmatter directly — emit EMIT status-update instead",
+    "- NEVER run git add/commit/push — git is owned by the orchestrator; make edits and stop. A commit you make but do not push is discarded, and claiming a commit you didn't push does not make the change land.",
+    "- For cancel/duplicate/retry-as-new/escalate, make NO code edits",
+    "- NEVER return verdict: approved if CI is failing without fixing the failure (edit the code; the orchestrator commits it)",
+    "- For research PRs, only update findings/tasks files; for retrospective PRs, only `.operator/data/retrospectives/`",
+  ];
+  if (checksContextFile) {
+    sections.push(
+      "",
+      "## CI Pipeline Context",
+      "",
+      `Detailed CI status (failing checks, annotations, log URLs) is in \`${checksContextFile}\`.`,
+      "Read this file with the Read tool BEFORE deciding on a fix when CI failures are referenced below.",
+      "Do NOT declare \"no changes needed\" on a failing PR without inspecting the failure details.",
+    );
+  }
+  if (threadFile) {
+    sections.push(
+      "",
+      "## Discussion History",
+      "",
+      `Full PR conversation thread is available in \`${threadFile}\`.`,
+      "Read it if a new comment references earlier discussion or you need context.",
+      "Do NOT re-address old comments that were already handled (those marked responded in the bot footer).",
+    );
+  }
+  sections.push(
+    "",
+    "## NEW Comments to Address",
+    "",
+    "These are the comments you MUST classify in this cycle:",
+    "",
+    newFeedback,
+    "",
+    "## Output",
+    "",
+    "End your output with AOP EMIT blocks. The orchestrator parses them. Anything outside EMIT blocks is captured as freeform analysis for the execution log.",
+  );
+  return sections.join("\n");
+}
