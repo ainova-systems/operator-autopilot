@@ -4,7 +4,7 @@ All notable changes to this project. 0.5.0 is the first public release of the v5
 
 ## [Unreleased]
 
-## [0.6.0] — 2026-08-12
+## [0.6.0] — 2026-09-04
 
 The first release since Operator started managing its own repository. On 2026-07-04 the repo `operator` was registered as a managed project, and most of the engine work below was discovered, planned, implemented, and reviewed by the engine running against its own code — the closed loop's first real proof. The rest is the onboarding half: a guided setup screen, the UI in the Docker stack, and the documentation a public repository owes a first-time reader.
 
@@ -64,13 +64,13 @@ The first release since Operator started managing its own repository. On 2026-07
 
 - **The agent subprocess inherited the operator's git-host token.** The environment denylist stripped four hardcoded GitHub variable names, so a repository configured with any other `tokenEnvVar` handed its token to every spawned agent CLI. The configured `tokenEnvVar` — for both the VCS and the tracker — is now stripped by name.
 - **Structured log data was not redacted.** `redactValue` was applied to log messages but not to the structured fields beside them, so a token in a log object's payload reached the sink verbatim. It is now wired through `wrapPino`.
-- **Dependency alerts cleared to zero** (`npm audit`: 0, from 8 locally / 15 on the default branch). In-range upgrades cover `js-yaml` 4.1.1 → 4.3.1 (quadratic-complexity DoS via merge keys), `next` 15.5.15 → 15.5.23 (SSRF in rewrites and Server Actions, Server Function endpoint disclosure, cache confusion, image-optimization DoS), `brace-expansion`, and `vite`. Three transitive pins that no in-range upgrade could reach are handled by `overrides` in the root `package.json`: `esbuild` → `^0.28.1` (dev-server arbitrary file read on Windows), and, inside `next`, `postcss` → `^8.5.26` (source-map path traversal, XSS in stringify output) and `sharp` → `^0.35.3` (inherited libvips CVEs). The overrides keep the app on the `next` 15 line — upgrading to 16 was the only alternative npm offered and it is a breaking change for no security gain.
+- **Dependency alerts cleared to zero** (`npm audit`: 0, from 8 locally / 15 on the default branch). In-range upgrades cover `js-yaml` 4.1.1 → 4.3.1 (quadratic-complexity DoS via merge keys), `next` 15.5.15 → 15.5.23 (SSRF in rewrites and Server Actions, Server Function endpoint disclosure, cache confusion, image-optimization DoS), `brace-expansion`, and `vite`. Four transitive pins that no in-range upgrade could reach are handled by `overrides` in the root `package.json`: `esbuild` → `^0.28.1` (dev-server arbitrary file read on Windows), `nanoid` → `^3.3.18` (unbounded loop when a custom generator is called with size zero — reached through the pinned `postcss`, whose own range still admits the vulnerable line), and, inside `next`, `postcss` → `^8.5.26` (source-map path traversal, XSS in stringify output) and `sharp` → `^0.35.3` (inherited libvips CVEs). The overrides keep the app on the `next` 15 line — upgrading to 16 was the only alternative npm offered and it is a breaking change for no security gain.
 
 ### Internal
 
 - **`master` is protected for human and assistant development too.** Code reaches it through a feature branch and a PR; the single exception is a change whose diff is entirely documentation or `intelligence/` content. Recorded once in the project profile (`protected_branches`, `direct_push_paths`, `pr_flow`).
 - **A long-term architect review gate over the operator's own open PRs.** Run under the owner's account, it fact-checks each change, squash-merges the ones that are clearly correct, and holds the rest by label. It never merges a protected surface, a change it cannot verify, or one carrying an unanswered human review thread.
-- **Files over the 200-line cap in `engine/pipeline/**` split** — `run-stage.ts` and the AOP planner stage extracted their composers. Two further splits are still open.
+- **Files over the 200-line cap in `engine/pipeline/**` split** — `run-stage.ts` and the AOP planner stage extracted their composers. The cap is documentation, not a CI gate, and the backlog behind it is larger than those two splits: 12 files under `engine/pipeline/**` are still over 200 code lines (`pr-feedback-supervisor-stage.ts` at 478 is the largest), `engine/entry.ts` sits at 477 against its own 200-line rule, and four further files in `engine/` plus four route components in `app/` are over the 300-line cap. Two splits are in open PRs (#38, #49); the rest are unclaimed.
 - **The Docker AI Sandbox profile was added and then withdrawn** pending a settled runtime choice. It ships in no form in this release.
 
 ### Verification
