@@ -1219,7 +1219,13 @@ describe("aggregateDerivedCompletions", () => {
     expect(f.state.updateWorkItemStatus).toHaveBeenCalledWith(
       expect.anything(), "F20260520-0001", "completed",
     );
-    expect(f.kvStore.get("work-items/F20260520-0001")).toMatchObject({ status: "completed" });
+    expect(f.kvStore.get("work-items/F20260520-0001")).toMatchObject({
+      status: "completed",
+      statusReason: "children-terminal",
+      updatedAt: expect.any(String),
+      contentHash: expect.any(String),
+      lastEventAt: expect.any(String),
+    });
   });
 
   it("leaves the parent alone when at least one child is still in-flight", async () => {

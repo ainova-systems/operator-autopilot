@@ -1183,6 +1183,7 @@ The user's frustration from v4 ("getting logs to see why and how executed") is a
 kinds:
   finding:
     label: Finding
+    color: "#B45309"       # UI badge; validated #RRGGBB
     idPrefix: F
     dataDir: findings
     branchPrefix: ai/findings
@@ -1191,6 +1192,7 @@ kinds:
 
   task:
     label: Task
+    color: "#2563EB"
     idPrefix: T
     dataDir: tasks
     branchPrefix: ai/tasks
@@ -1199,6 +1201,7 @@ kinds:
 
   request:
     label: Request
+    color: "#7C3AED"
     idPrefix: R
     dataDir: requests
     branchPrefix: ai/requests
@@ -1206,7 +1209,7 @@ kinds:
     terminalStatuses: [completed, rejected]
 ```
 
-Seeded into KV category `work-item-kinds/{kindName}`. Engine queries kind registry through `kinds.get("finding")` / `kinds.list()` methods on a `KindRegistry` interface. Adding a new kind = editing kinds.yaml + reseeding (or editing via UI).
+Seeded into KV category `work-item-kinds/{kindName}`. Engine queries kind registry through `kinds.get("finding")` / `kinds.list()` methods on a `KindRegistry` interface. The optional `color` is a validated `#RRGGBB` UI badge color; shipped kinds define one, while older custom rows remain valid. Adding a new kind = editing kinds.yaml + reseeding (or editing via UI).
 
 ### 8.2 Pattern and terminal checks
 

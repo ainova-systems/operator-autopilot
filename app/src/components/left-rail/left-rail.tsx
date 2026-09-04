@@ -33,6 +33,9 @@ export function LeftRail({
       {hasActive ? (
         <SidebarSection>
           <SectionLabel>Views</SectionLabel>
+          <Link href="/board" className={navItemClass}>
+            Board
+          </Link>
           <Link href="/work-items" className={navItemClass}>
             Work Items
           </Link>

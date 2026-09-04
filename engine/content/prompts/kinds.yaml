@@ -10,6 +10,7 @@
 kinds:
   finding:
     label: Finding
+    color: "#B45309"
     idPrefix: F
     dataDir: .operator/data/findings
     branchPrefix: ai/findings
@@ -36,6 +37,7 @@ kinds:
 
   task:
     label: Task
+    color: "#2563EB"
     idPrefix: T
     dataDir: .operator/data/tasks
     branchPrefix: ai/tasks
@@ -49,6 +51,7 @@ kinds:
 
   request:
     label: Request
+    color: "#7C3AED"
     idPrefix: R
     dataDir: .operator/data/requests
     branchPrefix: ai/requests
@@ -60,6 +63,7 @@ kinds:
 
   retrospective:
     label: Retrospective
+    color: "#0F766E"
     # Week-scoped singleton (id like `2026W26`); ids are scope keys, not
     # minted via generateId, so idPrefix is nominal.
     idPrefix: W

@@ -5,6 +5,30 @@ import type { StatusSources } from "./schemas/work-item.schema.js";
 const ts = (n = 1): string => `2026-04-17T10:00:0${n}Z`;
 
 describe("reconcileEffectiveStatus", () => {
+  it("preserves a child-derived completion when the merged PR is observed again", () => {
+    const result = reconcileEffectiveStatus({
+      sources: { prState: { value: "merged", observedAt: ts() } },
+      currentKV: { status: "completed", statusReason: "children-terminal" },
+      terminalStatuses: new Set(["merged", "completed"]),
+    });
+    expect(result).toEqual({
+      effectiveStatus: "completed",
+      effectiveStatusReason: "children-terminal",
+    });
+  });
+
+  it("still promotes a transient completed verdict to merged when its PR merges", () => {
+    const result = reconcileEffectiveStatus({
+      sources: { prState: { value: "merged", observedAt: ts() } },
+      currentKV: { status: "completed", statusReason: "execution-verdict" },
+      terminalStatuses: new Set(["merged", "completed"]),
+    });
+    expect(result).toEqual({
+      effectiveStatus: "merged",
+      effectiveStatusReason: "pr-state",
+    });
+  });
+
   it("develop-file (non-terminal) overrides terminal-sticky — finding/task can cycle merged → pending after a fresh PR opens", () => {
     // Regression: F20260416-0001 / F20260416-0002 sat with `status:
     // merged` (set when an old PR for the same finding actually

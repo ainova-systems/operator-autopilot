@@ -226,6 +226,7 @@ describe("workItemKindSchema", () => {
     const parsed = workItemKindSchema.parse({
       name: "finding",
       label: "Finding",
+      color: "#B45309",
       idPrefix: "F",
       dataDir: "findings",
       branchPrefix: "ai/findings",
@@ -233,6 +234,22 @@ describe("workItemKindSchema", () => {
       terminalStatuses: ["completed", "failed", "rejected", "duplicate"],
     });
     expect(parsed.terminalStatuses).toContain("completed");
+    expect(parsed.color).toBe("#B45309");
+  });
+
+  it("rejects a non-hex presentation color", () => {
+    expect(() =>
+      workItemKindSchema.parse({
+        name: "finding",
+        label: "Finding",
+        color: "amber",
+        idPrefix: "F",
+        dataDir: "findings",
+        branchPrefix: "ai/findings",
+        prPrefix: "[AI:Finding]",
+        terminalStatuses: ["completed"],
+      }),
+    ).toThrow();
   });
 
   it("rejects empty terminalStatuses", () => {

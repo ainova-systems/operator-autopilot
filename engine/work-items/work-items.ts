@@ -586,7 +586,15 @@ export async function aggregateDerivedCompletions(
       if (kvEntry) {
         const value = kvEntry.value as Record<string, unknown>;
         if (value.status !== "completed") {
-          await observations.kv.put("work-items", parent.id, { ...value, status: "completed" });
+          await observations.kv.put(
+            "work-items",
+            parent.id,
+            stampWorkItem(value, {
+              ...value,
+              status: "completed",
+              statusReason: "children-terminal",
+            }),
+          );
         }
       }
       await state.updateWorkItemStatus(ctx, parent.id, "completed");
@@ -645,6 +653,7 @@ export async function reconcileAndWrite(
   const priorEntry = await observations.kv.get("work-items", item.id);
   const priorValue = (priorEntry?.value ?? {}) as {
     status?: WorkItemStatus;
+    statusReason?: string;
     developFileStatus?: WorkItemStatus;
     statusSources?: StatusSources;
     recentExecutionIds?: string[];
@@ -666,7 +675,11 @@ export async function reconcileAndWrite(
   const drift = computeDrift(mergedSources);
   const reconciled = reconcileEffectiveStatus({
     sources: mergedSources,
-    currentKV: { status: priorValue.status, developFileStatus: priorValue.developFileStatus },
+    currentKV: {
+      status: priorValue.status,
+      statusReason: priorValue.statusReason,
+      developFileStatus: priorValue.developFileStatus,
+    },
     // Kind-aware terminal set — comes from `kinds.yaml`. PR-bound kinds
     // (finding/task) terminate at `merged`; virtual / DB-only kinds (no
     // PR in the loop) at `completed`. Lets `prState=merged` upgrade only
