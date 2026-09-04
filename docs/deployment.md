@@ -148,7 +148,9 @@ spec:
     spec:
       containers:
         - name: engine
-          image: ghcr.io/ainova-systems/operator-autopilot/operator-engine:0.5
+          # `Build Image` publishes `:latest` and `:<commit-sha>`. There is no
+          # version-numbered tag — pin to a SHA for a reproducible rollout.
+          image: ghcr.io/ainova-systems/operator-autopilot/operator-engine:latest
           command: ["npx", "tsx", "engine/entry.ts"]
           env:
             - { name: OPERATOR_DIR, value: /var/lib/operator }

@@ -4,11 +4,11 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.5.x   | Yes — current release line |
-| < 0.5   | No |
+| 0.6.x   | Yes — current release line |
+| < 0.6   | No |
 
 Only the current release line receives security fixes. Operator is pre-1.0; upgrade
-to the latest 0.5.x before reporting.
+to the latest 0.6.x before reporting.
 
 ## Reporting a vulnerability
 

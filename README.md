@@ -2,7 +2,7 @@
 
 Closed-loop SDLC engine that autonomously discovers issues, plans fixes, implements code, verifies, delivers, observes, and learns. **Orchestrator, not agent** — schedules work and invokes external agent CLIs (Claude Code, OpenCode, …) through a single generic stage loop.
 
-**Status: 0.5.0 — first public release.** The v5 architecture rebuild is complete and running; this is the first public cut. See [CHANGELOG.md](CHANGELOG.md) for release notes. The v4 implementation was abandoned mid-migration — v5 collapses all pipeline work into `runStage` + 10 primitives, puts state in a pluggable KV model, and ships an observability UI from day one.
+**Status: 0.6.0 — self-managed.** The v5 architecture rebuild is complete and running, and the engine now manages this repository itself. See [CHANGELOG.md](CHANGELOG.md) for release notes. The v4 implementation was abandoned mid-migration — v5 collapses all pipeline work into `runStage` + 10 primitives, puts state in a pluggable KV model, and ships an observability UI from day one.
 
 ## Before you run it — blast radius
 
