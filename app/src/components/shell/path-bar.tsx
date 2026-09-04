@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { Fragment } from "react";
 
 const ROOT_LABELS: Record<string, string> = {
+  board: "Board",
   "work-items": "Work items",
   executions: "Executions",
   config: "Config",

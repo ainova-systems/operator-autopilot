@@ -15,7 +15,9 @@ export interface KVEntry {
  * Filter applied by {@link KVStore.list}. All fields are optional.
  *
  * - `keyPrefix` — SQL `key LIKE prefix%` match.
- * - `where` — JSON field equality on the stored value (in-memory filter).
+ * - `where` — JSON field equality on the stored value.
+ * - `whereIn` — JSON field membership on the stored value.
+ * - `whereGte` — inclusive JSON field lower bound for strings or numbers.
  * - `orderBy` — one of `"key"` or `"updated_at"`. Other values are ignored.
  * - `order` — `"asc"` (default) or `"desc"`.
  * - `limit` / `offset` — pagination.
@@ -23,6 +25,8 @@ export interface KVEntry {
 export interface KVListFilter {
   readonly keyPrefix?: string;
   readonly where?: Record<string, unknown>;
+  readonly whereIn?: Record<string, readonly unknown[]>;
+  readonly whereGte?: Record<string, string | number>;
   readonly orderBy?: string;
   readonly order?: "asc" | "desc";
   readonly limit?: number;

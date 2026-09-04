@@ -7,10 +7,12 @@ import { buttonVariants } from "@/components/ui/button";
 import { getActiveKV } from "@/lib/active-kv-registry";
 import { listConnections } from "@/lib/connections";
 
+export const dynamic = "force-dynamic";
+
 export default async function ShellIndex(): Promise<React.ReactElement> {
   const active = await getActiveKV();
   if (active) {
-    redirect("/work-items");
+    redirect("/board");
   }
   const connections = await listConnections();
   if (connections.length === 0) {

@@ -49,11 +49,13 @@ const DEFAULT_TERMINAL_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
  * returned). `developFileStatus` is the prior raw develop-file literal
  * (renamed from the legacy `effectiveStatus` field 2026-05-13). Both
  * participate as sticky-source candidates: if either was terminal,
- * terminal-sticky preserves it. */
+ * terminal-sticky preserves it. `statusReason` distinguishes a derived
+ * parent completion from a verifier's transient `completed` result. */
 export interface ReconcileInput {
   readonly sources: StatusSources;
   readonly currentKV?: {
     readonly status?: WorkItemStatus;
+    readonly statusReason?: string;
     readonly developFileStatus?: WorkItemStatus;
   };
   /**
@@ -105,6 +107,18 @@ function labelToStatus(value: string): WorkItemStatus | null {
 export function reconcileEffectiveStatus(input: ReconcileInput): ReconcileResult {
   const { sources, currentKV } = input;
   const terminalSet = input.terminalStatuses ?? DEFAULT_TERMINAL_STATUSES;
+
+  // A merged parent whose children all terminated is promoted to the
+  // stronger derived `completed` state after the per-item reconcile pass.
+  // Preserve that explicitly-marked promotion when the next cycle observes
+  // the same merged PR; otherwise every cycle oscillates merged → completed
+  // and falsely records fresh activity for an unchanged item.
+  if (sources.prState?.value === "merged"
+      && currentKV?.status === "completed"
+      && currentKV.statusReason === "children-terminal"
+      && terminalSet.has("completed" as WorkItemStatus)) {
+    return { effectiveStatus: "completed", effectiveStatusReason: "children-terminal" };
+  }
 
   // 0. PR was merged AND `merged` is a valid terminal for this kind →
   // strongest possible signal. Beats terminal-sticky so an item whose

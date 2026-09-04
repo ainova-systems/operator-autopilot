@@ -12,6 +12,7 @@ import type {
   RateLimiter,
   RateLimiterDecision,
 } from "@operator/core";
+import { appendJsonListFilters } from "./json-list-filter.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS kv (
@@ -143,6 +144,7 @@ export class LocalStorageBundle implements KVStore, IdempotencyGuard, RateLimite
     }
     clauses.push("(expires_at IS NULL OR expires_at > ?)");
     params.push(new Date().toISOString());
+    appendJsonListFilters(clauses, params, filter);
 
     let sql = `SELECT key, value, metadata, expires_at FROM kv WHERE ${clauses.join(" AND ")}`;
 
@@ -161,18 +163,7 @@ export class LocalStorageBundle implements KVStore, IdempotencyGuard, RateLimite
     }
 
     const rows = this.db.prepare(sql).all(...params) as KVRow[];
-    let entries = rows.map(rowToEntry);
-
-    if (filter?.where) {
-      const expected = Object.entries(filter.where);
-      entries = entries.filter((e) => {
-        if (!e.value || typeof e.value !== "object") return false;
-        const obj = e.value as Record<string, unknown>;
-        return expected.every(([k, v]) => obj[k] === v);
-      });
-    }
-
-    return entries;
+    return rows.map(rowToEntry);
   }
 
   // ── IdempotencyGuard ────────────────────────────────────────────────

@@ -12,6 +12,8 @@ import { z } from "zod";
 export const workItemKindSchema = z.object({
   name: z.string().min(1),
   label: z.string().min(1),
+  /** Hex color used by UI badges. Optional for backward-compatible custom kinds. */
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   idPrefix: z.string().min(1),
   dataDir: z.string().min(1),
   branchPrefix: z.string().min(1),

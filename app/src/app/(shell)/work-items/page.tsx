@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ListChecks } from "lucide-react";
+import { Columns3, ListChecks } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import {
   Table,
@@ -23,8 +23,11 @@ import { PageContainer } from "@/components/shared/page-container";
 import { PageHeader } from "@/components/shared/page-header";
 import { RefreshButton } from "@/components/shared/refresh-button";
 import { SortableHeader } from "@/components/shared/sortable-header";
+import { buttonVariants } from "@/components/ui/button";
 import { WorkItemsSearch } from "@/components/features/work-items/work-items-search";
+import { WorkItemKindBadge } from "@/components/features/work-items/work-item-kind-badge";
 import { getActiveKV } from "@/lib/active-kv-registry";
+import { loadWorkItemKindPresentations } from "@/lib/work-item-kind-presentation";
 import {
   compareByOrder,
   compareNumbers,
@@ -125,6 +128,7 @@ const STATUS_GROUPS = {
 } as const;
 type StatusGroup = keyof typeof STATUS_GROUPS;
 const STATUS_GROUP_KEYS: readonly StatusGroup[] = ["active", "pending", "completed", "rejected"];
+const WORK_ITEM_LIST_LIMIT = 500;
 
 function parseGroup(value: string | undefined): StatusGroup | undefined {
   return STATUS_GROUP_KEYS.find((g) => g === value);
@@ -263,7 +267,11 @@ export default async function WorkItemsPage({
   const sortHref = (sort: SortColumn | undefined, dir: SortDir | undefined): string =>
     buildHref(query, { sort, dir });
 
-  const rows = await active.kv.list("work-items", { limit: 200 });
+  const rows = await active.kv.list("work-items", {
+    orderBy: "updated_at",
+    order: "desc",
+    limit: WORK_ITEM_LIST_LIMIT,
+  });
   if (rows.length === 0) {
     return (
       <PageContainer>
@@ -271,6 +279,10 @@ export default async function WorkItemsPage({
           title="Work items"
           actions={
             <InlineActions>
+              <Link href="/board" className={buttonVariants({ variant: "outline" })}>
+                <Columns3 className="mr-2 h-4 w-4" />
+                Board
+              </Link>
               <RefreshButton />
             </InlineActions>
           }
@@ -294,6 +306,10 @@ export default async function WorkItemsPage({
     key: r.key,
     value: r.value as WorkItemRow,
   }));
+  const kindPresentations = await loadWorkItemKindPresentations(
+    active.kv,
+    new Set(allItems.flatMap(({ value }) => (value.kind ? [value.kind] : []))),
+  );
 
   const filters: AppliedFilters = {
     group,
@@ -381,9 +397,13 @@ export default async function WorkItemsPage({
     <PageContainer>
       <PageHeader
         title="Work items"
-        description={`${items.length} total${q ? ` matching "${qRaw}"` : ""}${filterDescription}`}
+        description={`${items.length} shown${rows.length === WORK_ITEM_LIST_LIMIT ? ` from latest ${WORK_ITEM_LIST_LIMIT}` : ""}${q ? ` matching "${qRaw}"` : ""}${filterDescription}`}
         actions={
           <InlineActions>
+            <Link href="/board" className={buttonVariants({ variant: "outline" })}>
+              <Columns3 className="mr-2 h-4 w-4" />
+              Board
+            </Link>
             <RefreshButton />
             <CopyJsonButton
               payload={items.map(({ key, value }) => ({ key, value }))}
@@ -505,7 +525,10 @@ export default async function WorkItemsPage({
                   </Link>
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {value.kind ?? "—"}
+                  <WorkItemKindBadge
+                    kind={value.kind}
+                    presentation={value.kind ? kindPresentations.get(value.kind) : undefined}
+                  />
                 </TableCell>
                 <TableCell>{value.title ?? "—"}</TableCell>
                 <TableCell>
