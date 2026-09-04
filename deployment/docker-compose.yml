@@ -10,10 +10,9 @@
 # it stays one logical writer at a time. Open http://localhost:3000/setup after
 # the first `up` to register a managed repository without hand-editing a file.
 #
-# Redeploy: the operator's own VM uses a self-hosted-runner push deploy
-# (deployment/deploy.sh, driven by ../.github/workflows/build-image.yml) and
-# runs WITHOUT the watchtower service below. Manual / generic deployments can
-# instead opt into registry auto-poll with `--profile watchtower`.
+# Redeploy: CI publishes images and stops there. Take a new one by hand
+# (deployment/deploy.sh), or opt into registry auto-poll with
+# `--profile watchtower` below.
 #
 # Local / VM:  docker compose -f deployment/docker-compose.yml up -d --build
 # Portainer:   Stacks -> Add stack -> Web editor -> paste -> set env -> Deploy
@@ -105,9 +104,9 @@ services:
       - operator-state:/var/lib/operator
 
   # Optional registry auto-poll — OFF by default (guarded by the `watchtower`
-  # profile). The operator's own VM redeploys through the self-hosted-runner
-  # push deploy instead and never starts this service. Enable it for a manual /
-  # generic deployment (a fork, or a Portainer stack with no runner):
+  # profile), because a host should opt in to being updated without asking.
+  # Enable it on an always-on deployment that wants the nightly image without a
+  # manual step:
   #   docker compose -f deployment/docker-compose.yml --profile watchtower up -d
   # It watches the registry for a new operator-engine image (rebuilt nightly +
   # on every master push — see ../.github/workflows/build-image.yml) and
