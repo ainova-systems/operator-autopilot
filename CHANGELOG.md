@@ -4,6 +4,15 @@ All notable changes to this project. 0.5.0 is the first public release of the v5
 
 ## [Unreleased]
 
+### Removed
+
+- **The `deploy` job and the self-hosted-runner deployment path.** `Build Image` now builds and publishes to GHCR, and stops there — no workflow reaches into a running deployment. The job was added in the 0.6.0 cycle pinned to `runs-on: [self-hosted, operator-deploy]`, a runner that was never registered, so all 77 runs since went `build: success` → `deploy: queued` → cancelled by GitHub at the 24-hour mark. Publishing-only makes the deployment story identical for this project's own instance, a fork, and a customer VM, and removes a self-hosted runner from a public repository. `deployment/self-hosted-runner.md` is gone; `deployment/deploy.sh` stays as the manual rollout and rollback command.
+
+### Changed
+
+- **`deployment/README.md` gained a "Host setup for an always-on instance" section** carrying the parts of the deleted runbook that outlive the runner: where the runtime secrets file lives (`OPERATOR_ENV_FILE`, no root required), how to seed `repos.yaml` onto the state volume, and the pinned first rollout that doubles as the rollback command.
+- **Watchtower is now the documented low-effort update path** rather than the fallback for hosts without a runner. It stays behind its opt-in profile — a host should choose to be updated without asking.
+
 ## [0.6.0] — 2026-09-04
 
 The first release since Operator started managing its own repository. On 2026-07-04 the repo `operator` was registered as a managed project, and most of the engine work below was discovered, planned, implemented, and reviewed by the engine running against its own code — the closed loop's first real proof. The rest is the onboarding half: a guided setup screen, the UI in the Docker stack, and the documentation a public repository owes a first-time reader.

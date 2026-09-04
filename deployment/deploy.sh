@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
 #
-# Push-based redeploy of the always-on operator-engine daemon.
+# Rollout and rollback of the always-on operator-engine daemon.
 #
-# Runs on the self-hosted runner (label `operator-deploy`) from
-# ../.github/workflows/build-image.yml right after a fresh image is published to
-# GHCR, and by hand on the VM for a manual rollout or rollback. Idempotent:
-# pull the target image, recreate the two operator services that run it
-# (operator-engine and operator-app), prune dangling layers. Watchtower and
-# anything else in the stack are left alone.
-#
-# The runner must NOT belong to the `operator` compose project — `up -d` would
-# otherwise recreate the runner mid-job. Keep it in its own stack / systemd unit.
+# Run by hand on the host. CI publishes images and stops there — nothing
+# reaches into a running deployment on its own. Idempotent: pull the target
+# image, recreate the two operator services that run it (operator-engine and
+# operator-app), prune dangling layers. Watchtower and anything else in the
+# stack are left alone.
 #
 # Required:
 #   OPERATOR_IMAGE        full image ref to roll out, e.g.
 #                         ghcr.io/<owner>/<repo>/operator-engine:<sha>
 # Optional:
-#   OPERATOR_ENV_FILE     runtime secrets file (default /opt/operator/.env) —
+#   OPERATOR_ENV_FILE     runtime secrets file (default /opt/operator/.env; any
+#                         readable 0600 path works, see deployment/README.md) —
 #                         holds MANAGED_REPO_GH_TOKEN / ANTHROPIC_API_KEY /
 #                         CURSOR_API_KEY
 #   COMPOSE_PROJECT_NAME  compose project (default operator) — pins the state
 #                         volume name so it survives every recreate
 #
-# Manual rollback:
+# Rollback — the same command with an earlier tag:
 #   OPERATOR_IMAGE=ghcr.io/<owner>/<repo>/operator-engine:<old-sha> \
 #     bash deployment/deploy.sh
 #
