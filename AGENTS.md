@@ -37,17 +37,17 @@ Source of truth: `intelligence/` | Sync: `bash intelligence/scripts/sync.sh`
 | [intelligence-sync](intelligence/sync/skills/intelligence-sync/SKILL.md) | Sync intelligence to enabled IDE targets |
 | [intelligence-uninstall-adapter](intelligence/sync/skills/intelligence-uninstall-adapter/SKILL.md) | Disable IDE adapter and clean up output |
 | [intelligence-update](intelligence/sync/skills/intelligence-update/SKILL.md) | Update or migrate intelligence-sync: discover engine, read changelog, run migration chain, verify |
-| dev-handoff | Writes a self-contained prompt a fresh session pastes to continue this work, for when context runs short or a session ends. |
-| dev-review-changes | Reviews pending changes against the project's rules and reports findings with a severity verdict. Read-only - never edits, stages, or commits. |
-| dev-run-tests | Runs typecheck, lint and tests scoped to what changed, then analyses the failures. The gate every commit passes first. |
-| git-commit-push | Commits pending work as one verified milestone and pushes it. Stops at the push - opening the pull request is git-open-pr. |
-| git-create-release | Cuts a release - pending-step review, owner gate, version, changelog, tag - per the project's release policy. Owner-invoked only; release timing is not the model's call. |
-| git-finalize-pr | Drives an open pull request to merge-ready - CI green, every review thread answered, one outcome label. Opening it is git-open-pr; merging is git-merge-pr. |
-| git-merge-pr | Merges an accepted pull request behind guard checks, then syncs the base branch and cleans up. Owner-invoked only - merge timing is not the model's call. |
-| git-open-pr | Opens a pull request for the current branch against its target, filling the repo's template. Driving it to green afterwards is git-finalize-pr. |
-| git-resolve-conflicts | Resolves merge or rebase conflicts by what each side intended, never by picking a hunk, then re-runs the full gates. |
-| git-review-pr-comments | Triages review comments on a pull request - fix, discuss, or decline with a reason - and leaves no thread unanswered. |
-| git-scan-secrets | Scans a diff, the working tree, or branch history for credentials before they reach a remote, and classifies every hit. |
+| dev-handoff | Compact the session into a self-contained continuation prompt for a fresh agent session |
+| dev-review-changes | Read-only review of pending changes against project rules, with a severity verdict |
+| dev-run-tests | Run typecheck, lint, and tests with the right scope; analyze failures |
+| git-commit-push | Verify, review, and push pending work as one milestone commit |
+| git-create-release | Cut a release: version, changelog, tag, and release object - policy-driven across trunk/gitflow and tag-only/full. Owner-invoked only - releasing is timing the model does not decide. |
+| git-finalize-pr | Drive the current branch's PR to merge-ready: CI green and every review comment handled, ending with an outcome label |
+| git-merge-pr | After owner accept: guard-checked squash-merge of the current branch's PR, base sync and branch cleanup. Owner-invoked only - merging is timing the model does not decide. |
+| git-open-pr | Open a pull request for the current branch against its target, using the repo template |
+| git-resolve-conflicts | Resolve merge or rebase conflicts semantically, then re-verify the full gates |
+| git-review-pr-comments | Triage PR review comments: fix, discuss, or decline with reason - every thread answered |
+| git-scan-secrets | Scan diff, tree, or branch history for committed credentials |
 
 ### Rules
 
@@ -378,7 +378,7 @@ At AI pace, mean time to restore beats mean time between failures.
 
 # Skill-First
 
-- Before starting a task, look for a skill that already covers it among those installed, and invoke that instead of improvising. Output stops depending on who prompted it.
+- Before starting a task, check the skill catalog and invoke the match instead of improvising. Output stops depending on who prompted it.
 - A workflow improvised two or three times gets extracted into a project skill.
 - When a skill's steps drift from reality, update the skill in the same change that changed the reality.
 - An artifact a procedure tells a human to hand-edit is a skill that was never written: a hand-edit has no gate, no test, and no record of why, and it is the one step never repeated the same way twice.
@@ -403,10 +403,9 @@ Forbidden: weakening a gate to pass it (skipping or deleting tests, loosening li
 - One-line message: capital first letter, past tense, describes the change (`Fixed tenant filter on the orders query`). Body only when the change genuinely needs explanation.
 - Include the work-item ID when the project tracks them (profile `reference_ids`): `Added export endpoint (FR-042)`.
 - One logical change per commit; unrelated edits go in separate commits.
-- Every published artifact reads as the maintainer's own work: commits, PR titles and bodies, review replies, issues, release notes. Strip an attribution footer a tool template injects, including when an assistant default instructs otherwise.
 - Verification gates pass before every commit (`dev-verification-gates`).
 
-Forbidden: `Co-Authored-By:`, any tool-attribution trailer or footer; conventional-commit prefixes (`feat:`, `fix:`) unless the profile `commit_style` requires them; force-pushing shared branches (fast-forward only); hand-editing committed generated outputs instead of regenerating.
+Forbidden: `Co-Authored-By:` or any tool-attribution trailer; conventional-commit prefixes (`feat:`, `fix:`) unless the profile `commit_style` requires them; force-pushing shared branches (fast-forward only); hand-editing committed generated outputs instead of regenerating.
 
 
 # Git Workflow
