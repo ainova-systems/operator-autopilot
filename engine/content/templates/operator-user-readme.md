@@ -40,6 +40,19 @@ scripts:
 - `scripts.init` — run before agent execution (install dependencies)
 - `scripts.verify` — run after agent changes (build/lint/test gate)
 
+**Both scripts are ONE shell command string, run from the repo root by the operator host's shell —
+which may be Windows `cmd.exe`, not POSIX `sh`.** Keep them portable:
+
+- Chain steps with `&&` only. `cmd.exe` reads `A || B && C` as `A || (B && C)`, so a successful `A`
+  skips the rest of the chain and still exits 0 — a fallback guard silently turns the tail of `init`
+  into a no-op that the engine caches as a successful run.
+- Reach other directories with tool-native flags — `npm --prefix <dir> ci`, `dotnet build <path>` —
+  never with `cd` or a `(…)` subshell, which does not isolate the working directory in `cmd.exe`.
+- Avoid POSIX-only syntax: `sh -c '…'` (`cmd.exe` keeps the quotes), `>/dev/null`, `command -v`,
+  `[[ … ]]`, `$(…)`.
+- `init` installs THIS repo's dependencies. A CLI the host is expected to provide is a prerequisite,
+  not something `init` self-installs — let `init` fail loudly instead, and fix the host.
+
 > Pipeline features (which stages run), active-item limits, and schedules are configured **in the operator instance**, not in `project.yaml`.
 
 ### 2. Phase Rule Folders
