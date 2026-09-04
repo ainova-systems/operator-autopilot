@@ -83,16 +83,33 @@ executed from the repo root — it is NOT path-scoped. Therefore:
 - `init` MUST install the toolchain for every stack `verify` runs (if `verify` runs `npm run build`
   in `web/`, `init` must `npm ci` in `web/` — otherwise verify fails on a missing toolchain).
 - Exclude ONLY the frozen / out-of-scope paths you actually identified, and say so in a YAML comment.
-- **Shell-portable — no POSIX `(cd …)` subshell chains.** `init`/`verify` run in the operator
-  host's shell, which may be Windows `cmd.exe`, not POSIX `sh`. Do NOT chain per-directory steps as
-  `(cd app && npm ci) && (cd admin && npm ci)`: in `cmd.exe` the `(…)` group does NOT isolate the
-  working directory, so the second `cd` runs from the first one's directory and fails ("The system
-  cannot find the path specified"). Use tool-native directory flags that need no `cd` —
-  `npm --prefix <dir> ci`, `npm --prefix <dir> run <script>`, `dotnet build <path>`,
-  `dotnet test <path>` — so one command string works on Windows and Linux alike.
+- **Shell-portable — ONE command string that behaves the same in `cmd.exe` and in `sh`.**
+  `init`/`verify` run in the operator host's shell, which may be Windows `cmd.exe`, not POSIX `sh`.
+  Every rule below comes from a real `workspace-prep` failure, so treat them as hard constraints:
+  - **No `(cd …)` subshell chains.** In `cmd.exe` the `(…)` group does NOT isolate the working
+    directory, so the second `cd` runs from the first one's directory and fails ("The system cannot
+    find the path specified"). Use tool-native directory flags that need no `cd` —
+    `npm --prefix <dir> ci`, `npm --prefix <dir> run <script>`, `dotnet build <path>`,
+    `dotnet test <path>`.
+  - **Chain with `&&` only — never a `||` fallback in front of `&&` steps.** `cmd.exe` parses
+    `A || B && C` as `A || (B && C)`: when `A` SUCCEEDS, everything after the `||` is skipped and
+    the command still exits 0. A `<tool> --version || install <tool> && <tool> run && npm ci` guard
+    therefore turns the rest of `init` into a silent no-op that the engine caches as a successful
+    run — the worst possible failure mode, because nothing reports it.
+  - **No POSIX-only syntax.** No `sh -c '…'` — `cmd.exe` does not strip single quotes, so they
+    reach the child glued to its arguments (`…@latest'` → npm `ETARGET`). No `>/dev/null` (an
+    invalid path on Windows), no `command -v`, `[[ … ]]`, `$(…)`, or backticks. Plain
+    `cmd1 && cmd2 && cmd3` of real executables is the whole portable vocabulary.
+  - **Never self-install a host-level tool from `init`.** `init` prepares THIS repo — dependencies,
+    restores, generated files. A CLI the host is expected to provide is a prerequisite, not
+    something `init` installs behind a fallback: a global install fails under an unprivileged
+    container user, and a `<tool>@latest` fetched at init time drifts ahead of the version the repo
+    is pinned to and rewrites tracked files mid-cycle. A missing tool MUST fail `init` loudly.
 - If building every stack on every change is too slow for a large polyglot repo, you MAY instead set
-  `verify: bash .operator/verify.sh` and generate that script so it diffs the PR against the base
-  branch and runs only the gates for the stacks whose files changed. Never silently drop a modifiable
+  `verify: node .operator/verify.mjs` and generate that script so it diffs the PR against the base
+  branch and runs only the gates for the stacks whose files changed. Write it in Node, not shell:
+  the engine runs on Node so the interpreter is guaranteed on every host, while a `bash`-launched
+  verify script needs a POSIX shell the Windows host may not have. Never silently drop a modifiable
   stack from the gate — narrow by changed paths, not by ignoring a stack.
 
 ### File 2: `.operator/context/project.md`
