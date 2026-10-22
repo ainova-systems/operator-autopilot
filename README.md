@@ -115,7 +115,7 @@ Observability is through the `@operator/app` UI — point it at the same SQLite 
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks, and the full code standards. PRs follow the rules in `intelligence/rules/` (synced to `.claude/` and `.cursor/` via `bash intelligence/sync/scripts/sync.sh`). The non-negotiable three:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks, and the full code standards. PRs follow the rules in `intelligence/rules/` (synced to `.claude/` and `.cursor/` via `intelligence sync`). The non-negotiable three:
 
 1. **No dead code.** Every export is reachable from `engine/entry.ts` or a colocated test. `ts-prune` via `scripts/check-ts-prune.mjs` is CI-blocking.
 2. **No force-push.** Every commit-push sequence is fast-forward-safe. `FileWorkspaceScope` is the only file that decides branch creation.

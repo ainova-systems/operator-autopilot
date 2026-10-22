@@ -1,0 +1,46 @@
+project:
+  name: "operator-autopilot"
+
+sources:
+  rules:
+    - "intelligence/rules"
+    - ".intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules"
+    - ".intelligence/packages/@ainova-systems/sync/rules"
+  agents:
+    - "intelligence/agents"
+    - ".intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents"
+    - ".intelligence/packages/@ainova-systems/sync/agents"
+  skills:
+    - "intelligence/skills"
+    - ".intelligence/packages/@ainova-systems/sync/skills"
+    - ".intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills"
+
+targets:
+  claude:
+    enabled: true
+    output: ".claude"
+  cursor:
+    enabled: true
+    output: ".cursor"
+  codex:
+    enabled: true
+    output: ".codex"
+  agents:
+    enabled: true
+    output: "AGENTS.md"
+
+ignore:
+  - "node_modules"
+  - ".tmp"
+  - "dist"
+  - "coverage"
+  - "state"
+  - "intelligence/_backup"
+  - "engine/content"
+schema_version: "0.23.0"
+
+packages:
+  "@ainova-systems/intelligence-dev-packs":
+    ref: "main"
+  "@ainova-systems/sync":
+    version: "0.23.0"
