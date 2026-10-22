@@ -109,7 +109,7 @@ sync_opencode_commands() {
                     echo "Forward any provided arguments to the skill: \$ARGUMENTS"
                 fi
             } > "$out_file"
-            normalize_file_to_lf "$out_file"
+            finalize_output_file "$out_file"
             count=$((count + 1))
             echo "  command: /$skill_name"
         done
@@ -169,7 +169,7 @@ sync_opencode_agents() {
                 echo ""
                 printf '%s\n' "$body"
             } > "$out_file"
-            normalize_file_to_lf "$out_file"
+            finalize_output_file "$out_file"
             count=$((count + 1))
             echo "  agent: $name.md"
         done

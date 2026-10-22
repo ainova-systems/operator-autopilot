@@ -21,7 +21,7 @@ The original negative pattern stays in the rule body as an illustrative example 
 
 ## Phase A — Analyze (read-only)
 
-1. **Read authoring conventions first**: load `intelligence/skills/intelligence-add-rule/SKILL.md`, `intelligence-add-skill/SKILL.md`, `intelligence-add-agent/SKILL.md`, and `docs/CONVENTIONS.md` (Authoring Discipline section). This skill writes nothing on its own — it delegates to the add-* skills, which carry authoring conventions.
+1. **Read authoring conventions first.** Discover the paths, never assume them: the umbrella is the directory holding `config.yaml` (`intelligence/`, `Intelligence/`, a codename), and the engine module is the directory under it holding both `scripts/sync.sh` and `scripts/VERSION` (conventionally `sync/`). The meta-skills live in `<module>/skills/`, not directly under the umbrella. Load `<module>/skills/intelligence-add-rule/SKILL.md`, `<module>/skills/intelligence-add-skill/SKILL.md`, `<module>/skills/intelligence-add-agent/SKILL.md`, and `<module>/docs/CONVENTIONS.md` (Authoring Discipline section). This skill writes nothing on its own — it delegates to the add-* skills, which carry the authoring conventions.
 
 2. **Capture the lesson** from session context or user input. Strip session-specific detail, keep the underlying pattern.
 
@@ -32,7 +32,7 @@ The original negative pattern stays in the rule body as an illustrative example 
    Confirm the translation with the user if removing the negation changes meaning.
 
 4. **Route to the right artifact type**:
-   - Behavioral preference, tone, communication style → **rule** (`intelligence/rules/<NNN-name>.md`)
+   - Behavioral preference, tone, communication style → **rule** (`<umbrella>/rules/<name>.md`)
    - Multi-step repeatable workflow → use `intelligence-extract-skill` instead
    - Knowledge scope / persona / expertise area → **agent**
    - Project-specific context tied to a path → scoped rule with `paths:` frontmatter
@@ -58,7 +58,7 @@ Present the proposal list to the user. User accepts or rejects per item. Only ac
    - `CREATE` skill → call `intelligence-add-skill`
    - `CREATE` agent → call `intelligence-add-agent`
    - `UPDATE` existing artifact → edit the file directly, applying the proposed change
-   - `ARCHIVE` → move to `intelligence/_archive/` and update cross-references that point at it
+   - `ARCHIVE` → move to `<umbrella>/_archive/` and update cross-references that point at it
 
 8. **Run `/intelligence-sync`** once all accepted items are applied.
 
@@ -66,4 +66,4 @@ Present the proposal list to the user. User accepts or rejects per item. Only ac
 
 - `intelligence-extract-skill` — when the lesson is a multi-step workflow to be made reusable
 - `intelligence-review-skills` — broader audit across existing intelligence/ artifacts
-- `intelligence-add-rule`, `intelligence-add-skill`, `intelligence-add-agent` — atomic creators that Phase B delegates to
+- `intelligence-add-rule`, `intelligence-add-skill`, `intelligence-add-agent` — each authors one artifact; Phase B delegates to them

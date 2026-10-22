@@ -1,17 +1,24 @@
 project:
   name: "operator-autopilot"
 
+packs:
+  intelligence-dev-packs:
+    url: https://github.com/ainova-systems/intelligence-dev-packs.git
+    ref: main
+
 sources:
   rules:
     - "intelligence/rules"
-    - "git+https://github.com/ainova-systems/intelligence-dev-packs.git@main#packs/core/rules"
+    - "@intelligence-dev-packs/packs/core/rules"
+    - "intelligence/sync/rules"
   agents:
     - "intelligence/agents"
-    - "git+https://github.com/ainova-systems/intelligence-dev-packs.git@main#packs/core/agents"
+    - "@intelligence-dev-packs/packs/core/agents"
+    - "intelligence/sync/agents"
   skills:
     - "intelligence/skills"
     - "intelligence/sync/skills"
-    - "git+https://github.com/ainova-systems/intelligence-dev-packs.git@main#packs/core/skills"
+    - "@intelligence-dev-packs/packs/core/skills"
 
 targets:
   claude:
@@ -35,4 +42,4 @@ ignore:
   - "state"
   - "intelligence/_backup"
   - "engine/content"
-sync_version: "0.5.0"
+sync_version: "0.10.4"

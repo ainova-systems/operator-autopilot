@@ -13,6 +13,27 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 
+# Repo-relative paths to the umbrella folder and the engine module, DERIVED —
+# never hardcoded. The umbrella is named by the project (`intelligence/`,
+# `Intelligence/`, a codename) and the engine lives in a module inside it;
+# detect_layout resolved both before any adapter ran. A literal path here would
+# print a sync command that does not exist, and would be wrong outright on a
+# case-sensitive filesystem — in the one document Cursor, Copilot and Codex all
+# read as canonical.
+# sync.sh exports both as layout tokens; recompute only when an adapter is
+# driven directly (tests), never assume a folder name.
+agents_md_umbrella_rel() {
+    local repo_root="$1" rel="${IS_UMBRELLA_REL:-}"
+    [ -n "$rel" ] || rel="$(repo_rel_dir "$repo_root" "${LS_UMBRELLA_DIR:-$repo_root/intelligence}")"
+    printf '%s' "${rel:-intelligence}"
+}
+
+agents_md_module_rel() {
+    local repo_root="$1" rel="${IS_MODULE_REL:-}"
+    [ -n "$rel" ] || rel="$(repo_rel_dir "$repo_root" "${LS_MODULE_DIR:-$repo_root/intelligence/sync}")"
+    printf '%s' "${rel:-intelligence/sync}"
+}
+
 # Append the static header block from config.yaml (or a fallback).
 agents_md_append_header() {
     local output="$1"
@@ -44,7 +65,10 @@ agents_md_append_agents_table() {
         local dir
         dir="$(resolve_source_dir "$repo_root" "$src")"
         [ -d "$dir" ] || continue
-        for f in "$dir"/*.md; do
+        # Byte-order (LC_ALL=C) sort so generated output is identical across
+        # platforms — bash glob order follows LC_COLLATE, which differs between
+        # Linux CI (UTF-8, ignores `-`) and Git Bash (C, byte order).
+        while IFS= read -r f; do
             [ -f "$f" ] || continue
             local name rel tier access desc
             name="$(basename "$f" .md)"
@@ -58,7 +82,7 @@ agents_md_append_agents_table() {
                 rows+="| $name | ${tier:--} | ${access:--} | ${desc:--} |"$'\n'
             fi
             count=$((count + 1))
-        done
+        done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print | LC_ALL=C sort)
     done < <(read_yaml_list "$config_file" "agents")
 
     [ "$count" -eq 0 ] && return 0
@@ -88,7 +112,9 @@ agents_md_append_skills_table() {
         local dir
         dir="$(resolve_source_dir "$repo_root" "$src")"
         [ -d "$dir" ] || continue
-        for skill_dir in "$dir"/*/; do
+        # Byte-order (LC_ALL=C) sort so generated output is identical across
+        # platforms — see the note in agents_md_append_agents_table.
+        while IFS= read -r skill_dir; do
             [ -d "$skill_dir" ] || continue
             local dirname
             dirname="$(basename "$skill_dir")"
@@ -104,7 +130,7 @@ agents_md_append_skills_table() {
                 rows+="| $dirname | ${desc:--} |"$'\n'
             fi
             count=$((count + 1))
-        done
+        done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
     done < <(read_yaml_list "$config_file" "skills")
 
     [ "$count" -eq 0 ] && return 0
@@ -135,7 +161,10 @@ agents_md_append_rules_list() {
         local dir
         dir="$(resolve_source_dir "$repo_root" "$src")"
         [ -d "$dir" ] || continue
-        for f in "$dir"/*.md; do
+        # Byte-order (LC_ALL=C) sort so generated output — and the inline order
+        # of always-on rules below — is identical across platforms. See the
+        # note in agents_md_append_agents_table.
+        while IFS= read -r f; do
             [ -f "$f" ] || continue
             local name rel scope
             name="$(basename "$f" .md)"
@@ -152,7 +181,7 @@ agents_md_append_rules_list() {
                 lines+="- $name ($scope)"$'\n'
             fi
             count=$((count + 1))
-        done
+        done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print | LC_ALL=C sort)
     done < <(read_yaml_list "$config_file" "rules")
 
     [ "$count" -eq 0 ] && return 0
@@ -172,12 +201,14 @@ agents_md_append_rules_list() {
     # Path-scoped rules stay in tool-specific channels (.cursor/rules/,
     # .github/instructions/) so monorepo scoping is preserved.
     if [ "${#global_rule_files[@]}" -gt 0 ]; then
+        local umbrella_rel
+        umbrella_rel="$(agents_md_umbrella_rel "$repo_root")"
         {
             echo "---"
             echo ""
             echo "## Project Context"
             echo ""
-            echo "<!-- Inlined from always-on rules in intelligence/rules/ -->"
+            echo "<!-- Inlined from always-on rules in $umbrella_rel/rules/ -->"
             echo ""
         } >> "$output"
         local rf
@@ -214,9 +245,24 @@ sync_to_agents() {
 
     mkdir -p "$(dirname "$output_file")"
 
+    local umbrella_rel module_rel
+    umbrella_rel="$(agents_md_umbrella_rel "$repo_root")"
+    module_rel="$(agents_md_module_rel "$repo_root")"
+
+    # These two strings are written into a COMMITTED file. An absolute path here
+    # means the derivation failed, and a machine-specific path in AGENTS.md is
+    # worse than a failed sync — fail loudly instead.
+    case "$umbrella_rel$module_rel" in
+        /*|*:[\\/]*)
+            echo "  ERROR: AGENTS.md paths did not resolve relative to the repo root:" >&2
+            echo "         umbrella='$umbrella_rel' module='$module_rel' repo_root='$repo_root'" >&2
+            return 1
+            ;;
+    esac
+
     {
         echo "<!-- Generated by intelligence-sync. Do not edit manually. -->"
-        echo "<!-- Source: intelligence/ | Sync: bash intelligence/scripts/sync.sh -->"
+        echo "<!-- Source: $umbrella_rel/ | Sync: bash $module_rel/scripts/sync.sh -->"
         echo ""
     } > "$output_file"
 
@@ -225,7 +271,7 @@ sync_to_agents() {
     {
         echo "## Intelligence"
         echo ""
-        echo "Source of truth: \`intelligence/\` | Sync: \`bash intelligence/scripts/sync.sh\`"
+        echo "Source of truth: \`$umbrella_rel/\` | Sync: \`bash $module_rel/scripts/sync.sh\`"
         echo ""
     } >> "$output_file"
 
@@ -233,7 +279,7 @@ sync_to_agents() {
     agents_md_append_skills_table "$repo_root" "$config_file" "$output_file"
     agents_md_append_rules_list  "$repo_root" "$config_file" "$output_file"
 
-    normalize_file_to_lf "$output_file"
+    finalize_output_file "$output_file"
 
     # Safety net: AGENTS.md is committed, so it must never carry an absolute or
     # transient link target (remote-pack content lives under the run cache). If

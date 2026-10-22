@@ -28,7 +28,7 @@ Both end at the same artifact format. Extract starts from observed behavior, so 
 
 4. **Determine domain prefix** (for skill / agent): reuse the existing domain when one fits — list `intelligence/skills/` and `intelligence/agents/`. Derive from repo structure only when no existing domain matches.
 
-5. **Determine naming** (for skill): `<domain>-<verb>-<noun>` with convention verbs — `add-` (atomic create), `create-` (orchestrator), `update-` (modify), `run-` (execute), `review-` (read-only analysis).
+5. **Determine naming** (for skill): `<domain>-<verb>-<noun>` with convention verbs — `add-` (one new member of a set that already exists), `create-` (the container itself, where nothing hosted it), `update-` (revise what is there), `run-` (execute), `review-` (read-only analysis).
 
 6. **Check for matching agent**: if creating a skill and an agent already covers the domain, link via `agent:` frontmatter. If no matching agent and one is warranted, call `intelligence-add-agent` first.
 

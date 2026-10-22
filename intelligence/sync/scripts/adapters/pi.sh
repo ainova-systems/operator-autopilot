@@ -84,7 +84,7 @@ sync_pi_rules() {
             display_sep=""
 
             cp "$f" "$rules_root/$base"
-            normalize_file_to_lf "$rules_root/$base"
+            finalize_output_file "$rules_root/$base"
 
             while IFS= read -r pat; do
                 [ -z "$pat" ] && continue
@@ -145,7 +145,7 @@ When the task touches files that match one of these path patterns, use the read 
 }
 EOF
         } > "$extension_file"
-        normalize_file_to_lf "$extension_file"
+        finalize_output_file "$extension_file"
     fi
 
     echo "  -> Rules: $count scoped"
@@ -226,7 +226,7 @@ EOF
                 echo ""
                 echo "User task: \$@"
             } > "$prompt_file"
-            normalize_file_to_lf "$prompt_file"
+            finalize_output_file "$prompt_file"
             count=$((count + 1))
             echo "  agent: intelligence-agent-$name.md"
         done

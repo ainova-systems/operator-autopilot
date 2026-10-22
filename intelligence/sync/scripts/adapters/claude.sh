@@ -3,7 +3,7 @@
 # Transforms source prompts to .claude/ format
 #
 # Rules: copy as-is (paths: frontmatter preserved)
-# Skills: copy SKILL.md directories
+# Skills: copy skill directories in full (SKILL.md + bundled resources)
 # Agents: tier -> model, access -> tools/disallowedTools
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
@@ -22,13 +22,13 @@ sync_claude_rules() {
         for f in "$dir"/*.md; do
             [ -f "$f" ] || continue
             cp "$f" "$output_dir/rules/"
-            normalize_file_to_lf "$output_dir/rules/$(basename "$f")"
+            finalize_output_file "$output_dir/rules/$(basename "$f")"
             echo "  rule: $(basename "$f")"
         done
     done < <(read_yaml_list "$config_file" "rules")
 }
 
-# Sync skills to Claude format (copy SKILL.md directories)
+# Sync skills to Claude format (copy skill directories in full)
 sync_claude_skills() {
     local repo_root="$1"
     local config_file="$2"
@@ -44,9 +44,7 @@ sync_claude_skills() {
             local skill_name
             skill_name="$(basename "$d")"
             [ -f "$d/SKILL.md" ] || continue
-            mkdir -p "$output_dir/skills/$skill_name"
-            cp "$d/SKILL.md" "$output_dir/skills/$skill_name/SKILL.md"
-            normalize_file_to_lf "$output_dir/skills/$skill_name/SKILL.md"
+            copy_skill_bundle "$d" "$output_dir/skills/$skill_name"
             echo "  skill: $skill_name"
         done
     done < <(read_yaml_list "$config_file" "skills")
@@ -79,13 +77,13 @@ sync_claude_agent() {
         }
         /^---$/ { count++ }
         count==2 && /^---$/ {
-            print "tools: " tools
+            if (tools != "") print "tools: " tools
             if (extra != "") print "disallowedTools: " extra
             print "model: " model
         }
         { print }
     ' "$src" > "$output_dir/agents/$name"
-    normalize_file_to_lf "$output_dir/agents/$name"
+    finalize_output_file "$output_dir/agents/$name"
     echo "  agent: $name (tier=$tier -> model=$model, access=$access)"
 }
 

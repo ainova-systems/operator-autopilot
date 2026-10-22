@@ -9,7 +9,7 @@
 #     into AGENTS.md. We also do not generate .github/copilot-instructions.md
 #     because Copilot bug copilot-cli#489 makes AGENTS.md ignored when
 #     copilot-instructions.md is present.
-# Skills: copy SKILL.md to .github/skills/{name}/SKILL.md
+# Skills: copy skill directories in full to .github/skills/{name}/
 # Agents: -> .github/agents/{name}.agent.md (description, tools, model)
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
@@ -71,7 +71,7 @@ sync_copilot_rules() {
                     past_fm || !in_fm { print }
                 ' "$f"
             } > "$instructions_dir/$base.instructions.md"
-            normalize_file_to_lf "$instructions_dir/$base.instructions.md"
+            finalize_output_file "$instructions_dir/$base.instructions.md"
             scoped_count=$((scoped_count + 1))
             echo "  rule: $base.instructions.md (scoped)"
         done
@@ -97,9 +97,7 @@ sync_copilot_skills() {
             local skill_name
             skill_name="$(basename "$d")"
             [ -f "$d/SKILL.md" ] || continue
-            mkdir -p "$output_dir/skills/$skill_name"
-            cp "$d/SKILL.md" "$output_dir/skills/$skill_name/SKILL.md"
-            normalize_file_to_lf "$output_dir/skills/$skill_name/SKILL.md"
+            copy_skill_bundle "$d" "$output_dir/skills/$skill_name"
             count=$((count + 1))
             echo "  skill: $skill_name"
         done
@@ -162,7 +160,7 @@ sync_copilot_agents() {
                     past_fm { print }
                 ' "$f"
             } > "$output_dir/agents/$name.agent.md"
-            normalize_file_to_lf "$output_dir/agents/$name.agent.md"
+            finalize_output_file "$output_dir/agents/$name.agent.md"
             count=$((count + 1))
             echo "  agent: $name.agent.md (tier=$tier -> model=$model)"
         done

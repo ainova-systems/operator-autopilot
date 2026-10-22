@@ -6,8 +6,8 @@
 # inlines always-on rules into AGENTS.md, so this adapter only emits skills
 # and subagent definitions.
 #
-# Skills: copy SKILL.md to .agents/skills/{name}/SKILL.md (Codex reads from
-#   $REPO_ROOT/.agents/skills exclusively per official docs)
+# Skills: copy skill directories in full to .agents/skills/{name}/ (Codex
+#   reads from $REPO_ROOT/.agents/skills exclusively per official docs)
 # Agents: -> .codex/agents/{name}.toml (name, description, model,
 #   model_reasoning_effort, sandbox_mode, developer_instructions)
 
@@ -88,7 +88,7 @@ sync_codex_agents() {
                 echo "$body_safe"
                 echo "\"\"\""
             } > "$output_dir/$name.toml"
-            normalize_file_to_lf "$output_dir/$name.toml"
+            finalize_output_file "$output_dir/$name.toml"
             count=$((count + 1))
             echo "  agent: $name.toml"
         done

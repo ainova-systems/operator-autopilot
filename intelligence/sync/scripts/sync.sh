@@ -71,6 +71,16 @@ REPO_ROOT_RAW="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || (cd "
 REPO_ROOT="$(cd "$REPO_ROOT_RAW" && pwd)"
 unset REPO_ROOT_RAW
 
+# Layout tokens for generated output (see finalize_output_file in common.sh).
+# Engine-shipped rules/agents cannot hardcode the umbrella's name — the project
+# chooses it — so they write `<umbrella>` / `<module>` and every adapter expands
+# them to these repo-relative paths on the way out.
+IS_UMBRELLA_REL="$(repo_rel_dir "$REPO_ROOT" "$LS_UMBRELLA_DIR")"
+IS_MODULE_REL="$(repo_rel_dir "$REPO_ROOT" "$LS_MODULE_DIR")"
+IS_UMBRELLA_REL="${IS_UMBRELLA_REL:-intelligence}"
+IS_MODULE_REL="${IS_MODULE_REL:-intelligence/sync}"
+export IS_UMBRELLA_REL IS_MODULE_REL
+
 # Config: explicit env > config.yaml in the umbrella folder
 if [ -n "${CONFIG_FILE:-}" ]; then
     CONFIG_FILE="$CONFIG_FILE"
@@ -120,13 +130,31 @@ if [ -z "$TARGET_FILTER" ]; then
     fi
 fi
 
-# Remote sources (git+<url> specs in sources.*) are shallow-cloned on demand by
-# resolve_source_dir. Give it a run-scoped cache dir so each spec is fetched at
-# most once per sync and is removed on exit. Honors $TMPDIR (never hardcodes
-# /tmp), mirroring update.sh.
+# Remote sources (declared `packs:` reached via `@<pack>`, and inline `git+`
+# specs in sources.*) are shallow-cloned on demand by resolve_source_dir. Give
+# it a run-scoped cache dir so each spec is fetched at most once per sync and is
+# removed on exit. Honors $TMPDIR (never hardcodes /tmp), mirroring update.sh.
 IS_REMOTE_CACHE="$(mktemp -d -t intelligence-sync-remotes-XXXXXX 2>/dev/null || mktemp -d)"
 export IS_REMOTE_CACHE
 trap 'rm -rf "$IS_REMOTE_CACHE"' EXIT INT TERM
+
+# A `@<pack>` token carries only the reference; its url / ref / mirror live in
+# config.yaml. resolve_source_dir keeps its published two-argument contract so
+# project-owned adapters written against it keep working, so the config path
+# reaches it the same way the clone cache does — through the environment.
+IS_CONFIG_FILE="$CONFIG_FILE"
+export IS_CONFIG_FILE
+
+# Fail closed on an undeclared pack reference or an unsafe mirror, before any
+# adapter runs — see validate_pack_refs for why this cannot live in the resolver.
+validate_pack_refs "$REPO_ROOT" "$CONFIG_FILE"
+
+# A pack that declares `mirror:` is additionally materialized into a tracked
+# directory in the repo, so an upstream bump is visible in `git diff` rather
+# than only in the generated output. Without it, the pack stays transient.
+while IFS= read -r mirror_rel; do
+    [ -n "$mirror_rel" ] && echo "  Pack mirror: $mirror_rel"
+done < <(list_pack_mirrors "$REPO_ROOT" "$CONFIG_FILE")
 
 # Lint frontmatter across all source files (rules, agents, skills).
 # Catches issues like unquoted colons that strict YAML consumers reject.
@@ -147,18 +175,55 @@ for section in rules agents skills; do
     done < <(read_yaml_list "$CONFIG_FILE" "$section")
 done
 
-# Available adapters (filename without .sh, excluding _template)
+# Adapters come from two places, discovered by filename (minus `.sh`,
+# `_template` excluded):
+#
+#   1. Built-in   — <module>/scripts/adapters/   (upstream-owned; update.sh
+#                   replaces this directory wholesale on every engine update)
+#   2. Project    — <umbrella>/adapters/         (project-owned; update.sh
+#                   never touches it)
+#
+# A custom adapter therefore belongs in the umbrella's `adapters/` — put one in
+# the engine's own adapters/ and the next update deletes it. A project adapter
+# whose name matches a built-in overrides it (an escape hatch for patching a
+# built-in without forking the engine — announced, never silent).
 ADAPTERS=()
-for adapter_file in "$SCRIPT_DIR/adapters"/*.sh; do
-    [ -f "$adapter_file" ] || continue
-    adapter_name="$(basename "$adapter_file" .sh)"
-    [ "$adapter_name" = "_template" ] && continue
-    ADAPTERS+=("$adapter_name")
+ADAPTER_FILES=()
+
+register_adapter() {
+    local name="$1" file="$2"
+    local n=${#ADAPTERS[@]} i=0
+    while [ "$i" -lt "$n" ]; do
+        if [ "${ADAPTERS[$i]}" = "$name" ]; then
+            ADAPTER_FILES[$i]="$file"
+            echo "  NOTE: project adapter '$name' overrides the built-in one ($(basename "$INTELLIGENCE_DIR")/adapters/$(basename "$file"))"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    ADAPTERS+=("$name")
+    ADAPTER_FILES+=("$file")
+}
+
+for adapters_dir in "$SCRIPT_DIR/adapters" "$INTELLIGENCE_DIR/adapters"; do
+    [ -d "$adapters_dir" ] || continue
+    for adapter_file in "$adapters_dir"/*.sh; do
+        [ -f "$adapter_file" ] || continue
+        adapter_name="$(basename "$adapter_file" .sh)"
+        [ "$adapter_name" = "_template" ] && continue
+        register_adapter "$adapter_name" "$adapter_file"
+    done
 done
 
 synced=0
+adapter_count=${#ADAPTERS[@]}
+adapter_idx=0
 
-for adapter in "${ADAPTERS[@]}"; do
+while [ "$adapter_idx" -lt "$adapter_count" ]; do
+    adapter="${ADAPTERS[$adapter_idx]}"
+    adapter_file="${ADAPTER_FILES[$adapter_idx]}"
+    adapter_idx=$((adapter_idx + 1))
+
     # Skip if user requested specific target and this isn't it
     if [ -n "$TARGET_FILTER" ] && [ "$adapter" != "$TARGET_FILTER" ]; then
         continue
@@ -177,16 +242,16 @@ for adapter in "${ADAPTERS[@]}"; do
     fi
     output_dir="$REPO_ROOT/$output"
 
-    # Refuse to run if output would clobber repo content (e.g. config.yaml
-    # accidentally sets `output: "."` or `output: "intelligence"`). The
-    # `agents` adapter writes a single file (AGENTS.md) and is exempt.
-    if [ "$adapter" != "agents" ]; then
-        validate_output_path "$REPO_ROOT" "$CONFIG_FILE" "$adapter" "$output_dir"
-    fi
+    # Refuse to run if the output would clobber content — `output: "."`,
+    # `output: "intelligence"`, or a `../` path that escapes the repo. Applies
+    # to EVERY adapter, `agents` included: dir-writing adapters `rm -rf` their
+    # output, and `agents` overwrites whatever single file it is handed. Both
+    # turn a bad config line into a destructive write.
+    validate_output_path "$REPO_ROOT" "$CONFIG_FILE" "$adapter" "$output_dir"
 
     # Source adapter and run.
     # shellcheck source=/dev/null
-    source "$SCRIPT_DIR/adapters/$adapter.sh"
+    source "$adapter_file"
     "sync_to_$adapter" "$REPO_ROOT" "$CONFIG_FILE" "$output_dir"
     echo ""
     synced=$((synced + 1))
@@ -208,6 +273,18 @@ warn_unsynced "$REPO_ROOT" "$CONFIG_FILE"
 # Report model overrides that drift from intelligence-sync defaults
 # (helpful when defaults move forward — e.g., gpt-5.5 -> gpt-5.6).
 report_model_drift "$CONFIG_FILE"
+
+# This is the final vendored line; development continues in the intelligence
+# CLI. A short stderr block keeps IS_STATUS stdout parsing (skills, CI)
+# untouched and is suppressible for pipelines. The move is the update skill's step 7 and
+# needs your explicit approval — nothing here changes on its own.
+if [ -z "${IS_SUPPRESS_CLI_NOTE:-}" ]; then
+    echo "NEXT: Intelligence Sync is now the archived vendored line. Its supported successor is:" >&2
+    echo "      https://github.com/ainova-systems/intelligence" >&2
+    echo "      Install the stable CLI: npm install -g @ainova-systems/intelligence@latest" >&2
+    echo "      To migrate now, tell your agent: \"Update intelligence-sync and migrate this project to the Intelligence CLI.\"" >&2
+    echo "      It will explain the one-way changes, run 'intelligence init --preview', and ask before applying them." >&2
+fi
 
 echo ""
 # sync.sh never migrates (the update flow owns that), so success is always ok.

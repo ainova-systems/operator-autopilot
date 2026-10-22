@@ -22,9 +22,9 @@ argument-hint: <domain> <verb-noun> [description]
    - **Every skill needs a domain prefix.** If the scope is unclear, ask the user before proceeding.
 
 2. **Determine naming**: Build full name as `<domain>-<verb>-<noun>` using convention:
-   - `add-` — creates a single artifact (atomic)
-   - `create-` — orchestrates multiple `add-` skills (MUST use `create-`, never `add-`)
-   - `update-` — modifies existing files across stack
+   - `add-` — adds one new member to a set that already exists (a field on an existing type, a record among records)
+   - `create-` — brings into existence the container nothing hosted before (MUST use `create-`, never `add-`)
+   - `update-` — revises what is already there
    - `run-` — executes an operation (tests, build, sync)
    - `review-` — read-only analysis
 
@@ -46,7 +46,7 @@ argument-hint: <domain> <verb-noun> [description]
 
    **YAML safety (required):** **always wrap `description`, `argument-hint` and any other free-text string value in double quotes**, regardless of content. Codex CLI uses strict YAML — an unquoted colon in `description: Build retrospective: monthly` parses as a nested mapping and the skill is rejected at startup. Quoting unconditionally removes the whole class of bug and makes lint trivial. If the value itself contains a double quote, escape it as `\"` or wrap the whole value in single quotes — e.g. `description: 'Use as a quick "what do we have" view'` — so an inner quote does not terminate the scalar early.
 
-6. **Write steps**: Numbered, concrete, executable. Include verification (build/test) at the end. For orchestrators — reference atomic skills by name.
+6. **Write steps**: Numbered, concrete, executable. Include verification (build/test) at the end. A step that dispatches to another skill names it and never restates its content.
 
 7. **Update agent**: Add skill name to the `skills:` list in the matching agent's frontmatter.
 
