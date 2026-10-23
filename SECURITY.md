@@ -4,11 +4,11 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.6.x   | Yes — current release line |
-| < 0.6   | No |
+| latest  | Yes — current release line |
+| older   | No |
 
 Only the current release line receives security fixes. Operator is pre-1.0; upgrade
-to the latest 0.6.x before reporting.
+to the latest release before reporting.
 
 ## Reporting a vulnerability
 
@@ -37,16 +37,14 @@ These are best-effort targets for a small maintainer team, not a contractual SLA
 
 ## Scope
 
-In scope: the engine (`engine/`), the shared packages (`packages/core`,
-`packages/adapters`), the observability UI (`app/`), and the deployment manifests
-under `deployment/`.
+In scope: the runtime (`src/`), its CLI, and the service and container definitions under
+`deploy/` and `Dockerfile`.
 
-Operator is an autonomous orchestrator: it runs with a git host token that has repo
-scope, executes an external agent CLI, and pushes branches and opens pull requests on
-the repositories listed in `config/repos.yaml`. Findings that let an attacker widen
-that blast radius — token exfiltration, escaping the managed workspace, injecting
-instructions that reach the agent CLI, or pushing outside the configured repositories
-— are the highest-value reports.
+Operator runs a project's scripts and agent CLIs with the credentials of the host user, and holds
+an Ainoflow key for its state. Findings that widen that blast radius - exposing the Ainoflow key
+or a project secret, running an operation the manifest does not define, letting a trigger or a
+result file inject a command, or making one project's runs act on another project's state - are
+the highest-value reports.
 
 Out of scope: vulnerabilities in the external agent CLIs themselves (report those to
 their maintainers), and issues that require an already-compromised host or an operator

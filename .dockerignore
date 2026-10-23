@@ -1,0 +1,10 @@
+node_modules
+dist
+fixtures
+.git
+.claude
+.codex
+.cursor
+.agents
+.intelligence
+*.md
