@@ -1,0 +1,32 @@
+{
+  "name": "@ainova-systems/operator",
+  "version": "0.6.0",
+  "description": "A small generic runtime that runs a project's workflow operations - scripts and agent CLIs - on timers and triggers, with its state in Ainoflow.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "operator": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=4 \"src/**/*.test.ts\"",
+    "test:pack": "node scripts/pack-smoke.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

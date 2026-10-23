@@ -1,0 +1,188 @@
+import { after, test } from 'node:test';
+import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { enqueue } from './jobs.ts';
+import { readJsonFile, runPath, type WrapperInfo } from './runfiles.ts';
+import { createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
+import { fireTrigger } from './triggers.ts';
+
+const projects: TestProject[] = [];
+async function project(options?: Parameters<typeof createTestProject>[0]): Promise<TestProject> {
+  const created = await createTestProject(options);
+  projects.push(created);
+  return created;
+}
+after(async () => { for (const p of projects) await p.cleanup(); });
+
+function discover(p: TestProject, id: string) {
+  return enqueue(p.daemon().jobs, { project: 'demo', workflow: 'demo', operation: 'discover', subject: '', input: {}, trigger: { id, name: 'test', kind: 'manual' } });
+}
+
+test('a discovered item runs through script, agent and follow-on operation', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  assert.equal(await daemon.acquireLeader(), true);
+  await p.drop('item-1.work', '1');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'finish', 'item-1'))[0]?.status === 'done');
+  const [discoverJob] = await jobsBy(daemon, 'discover');
+  const [work] = await jobsBy(daemon, 'work', 'item-1');
+  assert.equal(discoverJob?.status, 'done');
+  assert.equal(work?.status, 'done');
+  assert.deepEqual(discoverJob?.outcome?.next, [work?.id]);
+  assert.equal(work?.run?.placement.degraded, 'herdr is not reachable');
+  assert.deepEqual(JSON.parse(await readFile(join(p.data, 'done', 'item-1.done'), 'utf8')), { worked: 1 });
+  assert.equal(daemon.launches, 3);
+});
+
+test('an empty discovery is noop and starts nothing else', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'discover'))[0]?.status === 'noop');
+  assert.equal((await daemon.jobs.list()).length, 1);
+});
+
+test('the same trigger id twice is one job', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  const first = await fireTrigger(p.manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: '', input: {}, id: 'hook-42' });
+  const second = await fireTrigger(p.manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: '', input: {}, id: 'hook-42' });
+  assert.equal(first.started?.created, true);
+  assert.equal(second.started?.created, false);
+  assert.equal(second.started?.jobId, first.started?.jobId);
+  assert.equal((await daemon.jobs.list()).length, 1);
+});
+
+test('a timer slot fires once however often the daemon ticks', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  const now = new Date('2026-10-23T10:00:30Z');
+  await daemon.tick(now);
+  await daemon.tick(new Date('2026-10-23T10:00:45Z'));
+  const restarted = p.daemon();
+  await p.backend.locks.release('leader');
+  await restarted.acquireLeader();
+  await restarted.tick(new Date('2026-10-23T10:00:50Z'));
+  assert.equal((await jobsBy(daemon, 'discover')).length, 1);
+  await restarted.tick(new Date('2026-10-23T10:01:05Z'));
+  assert.equal((await jobsBy(daemon, 'discover')).length, 2);
+});
+
+test('a full pool queues the job and says why', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  for (const subject of ['a', 'b']) {
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'work', subject, input: { seconds: 2 }, trigger: { id: subject, name: 'test', kind: 'manual' } });
+  }
+  await daemon.poll();
+  const [a, b] = [(await jobsBy(daemon, 'work', 'a'))[0], (await jobsBy(daemon, 'work', 'b'))[0]];
+  assert.equal(a?.status, 'running');
+  assert.equal(b?.status, 'queued');
+  assert.match(b?.waitingFor ?? '', /every workspace of pool agent-slot is busy/);
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'b'))[0]?.status === 'done');
+  assert.equal((await p.launches()).length, 2);
+});
+
+test('a question waits across a restart and resumes on the answer trigger', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await p.drop('item-2.ask');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'ask', 'item-2'))[0]?.status === 'needs-input');
+  const [wait] = await daemon.waits.listOpen();
+  assert.equal(wait?.key, 'q1');
+
+  await p.backend.locks.release('leader');
+  const restarted = p.daemon();
+  assert.equal(await restarted.acquireLeader(), true);
+  assert.equal((await restarted.waits.listOpen()).length, 1);
+  await assert.rejects(fireTrigger(p.manifest, restarted.jobs, restarted.waits, { workflow: 'demo', name: 'answer', subject: 'item-2', key: 'q2', input: { answer: 'no' } }), /matched no open wait/);
+  const answered = await fireTrigger(p.manifest, restarted.jobs, restarted.waits, { workflow: 'demo', name: 'answer', subject: 'item-2', key: 'q1', input: { answer: 'yes' } });
+  assert.equal(answered.resumed.length, 1);
+  await pollUntil(restarted, async () => (await jobsBy(restarted, 'answered', 'item-2'))[0]?.status === 'done');
+  assert.deepEqual(JSON.parse(await readFile(join(p.data, 'done', 'item-2.answer'), 'utf8')), { question: 'q1', answer: 'yes' });
+  assert.equal((await restarted.waits.listOpen()).length, 0);
+});
+
+test('a restarted daemon adopts the running job instead of starting it again', async () => {
+  const p = await project();
+  const first = p.daemon();
+  await first.acquireLeader();
+  await enqueue(first.jobs, { project: 'demo', workflow: 'demo', operation: 'work', subject: 'long', input: { seconds: 3 }, trigger: { id: 'x', name: 'test', kind: 'manual' } });
+  await first.poll();
+  assert.equal((await jobsBy(first, 'work', 'long'))[0]?.status, 'running');
+
+  // The first daemon is gone without releasing anything; a new one takes over.
+  await p.backend.locks.release('leader');
+  const second = p.daemon();
+  await second.acquireLeader();
+  await pollUntil(second, async () => (await jobsBy(second, 'finish', 'long'))[0]?.status === 'done');
+  assert.equal(second.launches, 1, 'only the finish step was started by the new daemon');
+  assert.equal((await p.launches()).length, 1);
+  assert.equal((await jobsBy(second, 'work', 'long'))[0]?.attempt, 1);
+});
+
+test('a run whose wrapper died is interrupted and runs again', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'work', subject: 'crash', input: { seconds: 5 }, trigger: { id: 'x', name: 'test', kind: 'manual' } });
+  await daemon.poll();
+  const job = (await jobsBy(daemon, 'work', 'crash'))[0];
+  const runDir = job?.run?.runDir ?? '';
+  await pollUntil(daemon, async () => (await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'))) !== undefined);
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+  process.kill(wrapper?.pid ?? 0, 'SIGKILL');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'crash'))[0]?.attempt === 2);
+  const retried = (await jobsBy(daemon, 'work', 'crash'))[0];
+  assert.ok(retried?.history.some((entry) => entry.event === 'interrupted'));
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'crash'))[0]?.status === 'done', 30_000);
+});
+
+test('a retryable failure runs again within the configured retries', async () => {
+  const p = await project({ extraOperations: '      flaky: { kind: script, command: node scripts/fake-agent.mjs, retries: 1, retryDelay: 100ms }' });
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'flaky', subject: 'f', input: { seconds: 1, fail: 'retryable' }, trigger: { id: 'x', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'flaky', 'f'))[0]?.status === 'failed');
+  const job = (await jobsBy(daemon, 'flaky', 'f'))[0];
+  assert.equal(job?.attempt, 2);
+  assert.equal(job?.outcome?.failure?.reason, 'demo failure');
+  assert.equal((await p.launches()).length, 2);
+});
+
+test('a result asking for an operation the workflow lacks fails the job', async () => {
+  const p = await project({ extraOperations: '      stray: { kind: script, command: "node -e \\"require(\'fs\').writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({contract:1,status:\'done\',next:[{operation:\'nowhere\'}]}))\\"" }' });
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'stray', subject: 's', input: {}, trigger: { id: 'x', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'stray', 's'))[0]?.status === 'failed');
+  assert.match((await jobsBy(daemon, 'stray', 's'))[0]?.outcome?.failure?.reason ?? '', /unknown operation\(s\): nowhere/);
+});
+
+test('exit 0 without a result file is a failure, not a success', async () => {
+  const p = await project({ extraOperations: '      silent: { kind: script, command: "true" }' });
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'silent', subject: 's', input: {}, trigger: { id: 'x', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'silent', 's'))[0]?.status === 'failed');
+  assert.equal((await jobsBy(daemon, 'silent', 's'))[0]?.outcome?.failure?.reason, 'exited 0 without writing a result file');
+});
+
+test('a dry run runs scripts and only logs agents', async () => {
+  const p = await project();
+  const daemon = p.daemon({ dryRun: true });
+  await daemon.acquireLeader();
+  await p.drop('item-3.work');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'item-3'))[0]?.status === 'noop');
+  assert.equal((await p.launches()).length, 0);
+  assert.ok(p.lines.some((line) => line.includes('dry run: would start agent') && line.includes('fake-agent.mjs')));
+  assert.equal((await jobsBy(daemon, 'discover'))[0]?.status, 'done');
+});

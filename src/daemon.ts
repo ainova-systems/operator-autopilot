@@ -1,0 +1,463 @@
+import { mkdir, rm } from 'node:fs/promises';
+import { hostname } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { collectRun, readExit } from './collect.ts';
+import type { OperationResult } from './contract.ts';
+import { OperatorError } from './errors.ts';
+import type { Herdr } from './herdr.ts';
+import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
+import { jobTitle, openHerdrTab, prepareRun, startHeadless, startInHerdr } from './launch.ts';
+import { errorText, type Logger } from './log.ts';
+import type { Manifest, OperationSpec } from './manifest.ts';
+import { Pools } from './pools.ts';
+import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type ExitInfo, type WrapperInfo } from './runfiles.ts';
+import type { StateBackend } from './state/types.ts';
+import { dueFirings } from './triggers.ts';
+import { WaitStore } from './waits.ts';
+
+export interface DaemonOptions {
+  manifest: Manifest;
+  backend: StateBackend;
+  log: Logger;
+  herdr: Herdr;
+  dryRun?: boolean;
+  host?: string;
+}
+
+interface LeaderFile { token: string; pid: number; host: string; acquiredAt: string }
+
+const HEARTBEAT_STALE_MS = 30_000;
+const START_GRACE_MS = 60_000;
+const MAX_INTERRUPTIONS = 3;
+const WAIT_SWEEP_MS = 60_000;
+
+/**
+ * The runtime's single active process per project. It holds the leader lease, fires timers, starts
+ * queued jobs within their pools, observes running ones through their run directories, and turns
+ * each finished run into its follow-on jobs or wait. It never decides anything a skill decides.
+ */
+export class Daemon {
+  readonly manifest: Manifest;
+  readonly backend: StateBackend;
+  readonly log: Logger;
+  readonly herdr: Herdr;
+  readonly dryRun: boolean;
+  readonly host: string;
+  readonly jobs: JobStore;
+  readonly waits: WaitStore;
+  readonly pools: Pools;
+  /** Number of runs this process started; tests use it to prove nothing launched twice. */
+  launches = 0;
+  private leader: { token: string; renewedAt: number } | undefined;
+  private readonly timerMemo = new Map<string, string>();
+  private readonly deferred = new Map<string, number>();
+  private readonly renewedAt = new Map<string, number>();
+  private readonly notified = new Set<string>();
+  private lastPoll = 0;
+  private lastWaitSweep = 0;
+  private stopped = false;
+
+  constructor(options: DaemonOptions) {
+    this.manifest = options.manifest;
+    this.backend = options.backend;
+    this.log = options.log;
+    this.herdr = options.herdr;
+    this.dryRun = options.dryRun === true;
+    this.host = options.host ?? hostname();
+    this.jobs = new JobStore(this.backend.docs, this.manifest.runtime.retentionMs);
+    this.waits = new WaitStore(this.backend.docs);
+    this.pools = new Pools(this.manifest, this.backend, this.log);
+  }
+
+  private get leaseTtl(): number { return this.manifest.runtime.leaseTtlMs; }
+  private get leaderFile(): string { return join(this.manifest.runtime.stateDir, 'leader.json'); }
+
+  /** Runs until stop(): waits for the leader lease, then ticks. */
+  async run(): Promise<void> {
+    let waitingLogged = false;
+    while (!this.stopped && !(await this.acquireLeader())) {
+      if (!waitingLogged) { this.log.info('another daemon holds the leader lease; waiting for it', { project: this.manifest.project }); waitingLogged = true; }
+      await sleep(Math.max(1000, this.leaseTtl / 3));
+    }
+    if (this.stopped) return;
+    this.log.info('daemon started', { project: this.manifest.project, host: this.host, state: this.backend.kind, dryRun: this.dryRun, workflows: [...this.manifest.workflows.keys()].join(',') });
+    try {
+      while (!this.stopped) {
+        try {
+          await this.tick();
+        } catch (error) {
+          if (error instanceof OperatorError && error.code === 'LEADER_LOST') throw error;
+          this.log.error('tick failed; retrying next tick', { error: errorText(error) });
+        }
+        await sleep(this.manifest.runtime.tickMs);
+      }
+    } finally {
+      await this.releaseLeader();
+      this.log.info('daemon stopped', { project: this.manifest.project });
+    }
+  }
+
+  stop(): void {
+    this.stopped = true;
+  }
+
+  async acquireLeader(): Promise<boolean> {
+    const previous = await readJsonFile<LeaderFile>(this.leaderFile);
+    if (previous && previous.host === this.host && previous.pid !== process.pid) {
+      if (processAlive(previous.pid)) return false;
+      // The previous daemon on this host died without releasing; its lease is ours to continue.
+      if ((await this.backend.locks.renew('leader', previous.token, this.leaseTtl)) === 'renewed') {
+        await this.writeLeader(previous.token);
+        this.log.info('adopted the leader lease of a daemon that stopped without releasing it', { previousPid: previous.pid });
+        return true;
+      }
+    }
+    if (await this.backend.locks.exists('leader')) return false;
+    const lease = await this.backend.locks.acquire('leader', this.leaseTtl, `${this.host}:${process.pid}`);
+    if (!lease.acquired) return false;
+    await this.writeLeader(lease.token);
+    return true;
+  }
+
+  private async writeLeader(token: string): Promise<void> {
+    this.leader = { token, renewedAt: Date.now() };
+    await mkdir(this.manifest.runtime.stateDir, { recursive: true });
+    await writeJsonAtomic(this.leaderFile, { token, pid: process.pid, host: this.host, acquiredAt: new Date().toISOString() } satisfies LeaderFile);
+  }
+
+  private async renewLeader(): Promise<void> {
+    if (!this.leader) throw new OperatorError('NOT_LEADER', 'tick called without the leader lease');
+    if (Date.now() - this.leader.renewedAt < this.leaseTtl / 3) return;
+    const outcome = await this.backend.locks.renew('leader', this.leader.token, this.leaseTtl);
+    if (outcome === 'renewed') { this.leader.renewedAt = Date.now(); return; }
+    if (outcome === 'lifetime-exceeded') {
+      await this.backend.locks.release('leader');
+      const lease = await this.backend.locks.acquire('leader', this.leaseTtl, `${this.host}:${process.pid}`);
+      if (lease.acquired) { await this.writeLeader(lease.token); this.log.info('leader lease re-acquired after its 24h lifetime'); return; }
+    }
+    this.leader = undefined;
+    throw new OperatorError('LEADER_LOST', 'the leader lease was lost; another daemon may be running for this project');
+  }
+
+  private async releaseLeader(): Promise<void> {
+    if (!this.leader) return;
+    try {
+      await this.backend.locks.release('leader');
+      await rm(this.leaderFile, { force: true });
+    } catch (error) {
+      this.log.warn('could not release the leader lease; it expires by itself', { error: errorText(error) });
+    }
+    this.leader = undefined;
+  }
+
+  async tick(now: Date = new Date()): Promise<void> {
+    await this.renewLeader();
+    await this.fireTimers(now);
+    if (now.getTime() - this.lastPoll >= this.manifest.runtime.pollMs) {
+      this.lastPoll = now.getTime();
+      await this.poll(now);
+    }
+  }
+
+  /** One observation pass without the timer and poll cadence; tests drive the daemon with it. */
+  async poll(now: Date = new Date()): Promise<void> {
+    for (const job of await this.jobs.list('running')) {
+      try { await this.observe(job, now); } catch (error) { this.log.error('observing a running job failed', { job: job.id, error: errorText(error) }); }
+    }
+    for (const job of await this.jobs.list('queued')) {
+      try { await this.dispatch(job, now); } catch (error) { this.log.error('starting a queued job failed', { job: job.id, error: errorText(error) }); }
+    }
+    if (now.getTime() - this.lastWaitSweep >= WAIT_SWEEP_MS) {
+      this.lastWaitSweep = now.getTime();
+      await this.sweepWaits(now);
+    }
+  }
+
+  private async fireTimers(now: Date): Promise<void> {
+    for (const firing of dueFirings(this.manifest, now)) {
+      const memoKey = `${firing.workflow}:${firing.trigger.index}`;
+      if (this.timerMemo.get(memoKey) === firing.triggerId) continue;
+      const { id, created } = await enqueue(this.jobs, {
+        project: this.manifest.project,
+        workflow: firing.workflow,
+        operation: firing.trigger.run,
+        subject: firing.trigger.subject,
+        input: firing.trigger.input,
+        trigger: { id: firing.triggerId, name: firing.trigger.kind === 'every' ? `every ${firing.trigger.intervalMs / 1000}s` : `cron ${firing.trigger.schedule.expression}`, kind: 'timer' },
+      });
+      this.timerMemo.set(memoKey, firing.triggerId);
+      if (created) {
+        this.log.info('timer fired', { workflow: firing.workflow, operation: firing.trigger.run, trigger: firing.triggerId, job: id });
+        this.lastPoll = 0;
+      } else {
+        this.log.debug('timer slot already enqueued', { trigger: firing.triggerId, job: id });
+      }
+    }
+  }
+
+  private operation(job: JobRecord): OperationSpec | undefined {
+    const workflow = this.manifest.workflows.get(job.workflow);
+    return workflow?.enabled ? workflow.operations.get(job.operation) : undefined;
+  }
+
+  private async dispatch(job: JobRecord, now: Date): Promise<void> {
+    if (job.notBefore && Date.parse(job.notBefore) > now.getTime()) return;
+    if ((this.deferred.get(job.id) ?? 0) > now.getTime()) return;
+    const op = this.operation(job);
+    if (!op) {
+      await this.finishWithoutRun(job, 'failed', `operation ${job.workflow}/${job.operation} is not configured or its workflow is disabled`);
+      return;
+    }
+    if (this.dryRun && op.kind === 'agent') {
+      const prepared = await prepareRun(this.manifest, job, op, { cwd: this.manifest.root, dryRun: true });
+      this.log.info('dry run: would start agent', { job: job.id, operation: job.operation, subject: job.subject, placement: op.placement, pool: op.pool, argv: JSON.stringify(prepared.command.argv) });
+      await this.finishWithoutRun(job, 'noop', 'dry run: agent not started');
+      return;
+    }
+
+    let hold: SlotHold | undefined;
+    let cwd = this.manifest.root;
+    let herdrWorkspace = this.manifest.herdr.workspace;
+    if (op.pool) {
+      const decision = await this.pools.acquire(op.pool, job.id);
+      if (!decision.granted) {
+        this.deferred.set(job.id, now.getTime() + decision.retryAfterMs);
+        if (job.waitingFor !== decision.waitingFor) {
+          this.log.info('job queued', { job: job.id, operation: job.operation, subject: job.subject, reason: decision.waitingFor });
+          await this.jobs.update(job.id, (current) => {
+            if (current.status !== 'queued') return undefined;
+            current.waitingFor = decision.waitingFor;
+            addHistory(current, 'waiting', decision.waitingFor);
+            return current;
+          });
+        }
+        return;
+      }
+      hold = decision.hold;
+      const member = decision.member ?? this.pools.member(hold);
+      if (member) { cwd = member.cwd; herdrWorkspace = member.herdr; }
+    }
+
+    const leaseKey = `run.${job.id}`;
+    const lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
+    if (!lease.acquired) {
+      if (hold) await this.pools.release(job.id, hold);
+      this.deferred.set(job.id, now.getTime() + this.leaseTtl);
+      this.log.warn('run lease is held elsewhere; not starting the job twice', { job: job.id });
+      return;
+    }
+
+    const threadId = op.thread === 'per-subject' ? (await this.backend.docs.get<{ threadId: string }>('threads', this.threadKey(job)))?.value.threadId : undefined;
+    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, ...(threadId ? { threadId } : {}) });
+    const placement: JobRun['placement'] = { kind: 'headless' };
+    if (op.placement === 'herdr') {
+      if (!herdrWorkspace) placement.degraded = 'no herdr workspace configured';
+      else {
+        try {
+          const tab = await openHerdrTab(this.herdr, herdrWorkspace, cwd, jobTitle(job));
+          if ('degraded' in tab) placement.degraded = tab.degraded;
+          else Object.assign(placement, { kind: 'herdr', workspace: tab.workspaceId, tabId: tab.tabId, paneId: tab.paneId });
+        } catch (error) {
+          placement.degraded = `herdr refused the tab: ${errorText(error)}`;
+        }
+      }
+    }
+    const run: JobRun = { attempt: job.attempt, host: this.host, runDir: prepared.runDir, startedAt: now.toISOString(), placement, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}) };
+    const started = await this.jobs.update(job.id, (current) => {
+      if (current.status !== 'queued' || current.attempt !== job.attempt) return undefined;
+      current.status = 'running';
+      current.run = run;
+      delete current.waitingFor;
+      delete current.notBefore;
+      addHistory(current, 'started', `${placement.kind}${placement.paneId ? ` ${placement.paneId}` : ''}${placement.degraded ? ` (degraded: ${placement.degraded})` : ''} attempt ${job.attempt}`);
+      return current;
+    });
+    if (!started) {
+      await this.releaseRun(job.id, run);
+      this.log.info('job changed before it started; not started', { job: job.id });
+      return;
+    }
+    if (placement.kind === 'herdr' && placement.paneId) await startInHerdr(this.herdr, placement.paneId, prepared.runDir);
+    else startHeadless(prepared.runDir);
+    this.launches += 1;
+    this.deferred.delete(job.id);
+    this.renewedAt.set(job.id, Date.now());
+    this.log.info('job started', { job: job.id, workflow: job.workflow, operation: job.operation, subject: job.subject, attempt: job.attempt, placement: placement.kind, pane: placement.paneId, member: hold?.member, degraded: placement.degraded });
+  }
+
+  private threadKey(job: JobRecord): string {
+    return stableId('t', job.workflow, job.operation, job.subject);
+  }
+
+  private async observe(job: JobRecord, now: Date): Promise<void> {
+    const run = job.run;
+    if (!run) { await this.interrupt(job, 'running without a run record'); return; }
+    if (run.host !== this.host) {
+      if (run.lease && (await this.backend.locks.exists(run.lease.key))) return;
+      await this.interrupt(job, `run lease from host ${run.host} expired`);
+      return;
+    }
+    const exit = await readExit(run.runDir);
+    if (exit) { await this.finish(job, run, exit); return; }
+    const wrapper = await readJsonFile<WrapperInfo>(runPath(run.runDir, 'wrapper'));
+    const heartbeatAge = await ageMs(runPath(run.runDir, 'heartbeat'));
+    if (wrapper && processAlive(wrapper.pid) && heartbeatAge !== undefined && heartbeatAge < HEARTBEAT_STALE_MS) {
+      await this.keepAlive(job, run);
+      return;
+    }
+    if (!wrapper && now.getTime() - Date.parse(run.startedAt) < START_GRACE_MS) return;
+    const lateExit = await readExit(run.runDir);
+    if (lateExit) { await this.finish(job, run, lateExit); return; }
+    await this.interrupt(job, wrapper ? `wrapper process ${wrapper.pid} is gone` : 'the wrapper never started');
+  }
+
+  private async keepAlive(job: JobRecord, run: JobRun): Promise<void> {
+    if (run.slot && !this.pools.held.get(run.slot.pool)?.has(job.id)) {
+      this.pools.adopt(job.id, run.slot);
+      this.log.info('resumed observing a running job', { job: job.id, operation: job.operation, subject: job.subject, pane: run.placement.paneId });
+    }
+    if (Date.now() - (this.renewedAt.get(job.id) ?? 0) < this.leaseTtl / 3) return;
+    this.renewedAt.set(job.id, Date.now());
+    const changes: Partial<JobRun> = {};
+    if (run.lease) {
+      const outcome = await this.backend.locks.renew(run.lease.key, run.lease.token, this.leaseTtl);
+      if (outcome !== 'renewed') {
+        const lease = await this.backend.locks.acquire(run.lease.key, this.leaseTtl, `${this.host}:${job.attempt}`);
+        if (lease.acquired) changes.lease = { key: run.lease.key, token: lease.token };
+      }
+    }
+    if (run.slot) {
+      const renewed = await this.pools.renew(job.id, run.slot);
+      if (renewed.token !== run.slot.token) changes.slot = renewed;
+    }
+    if (Object.keys(changes).length > 0) {
+      await this.jobs.update(job.id, (current) => (current.status === 'running' && current.run ? { ...current, run: { ...current.run, ...changes } } : undefined));
+    }
+    if (run.placement.paneId && !this.notified.has(job.id)) {
+      const status = await this.herdr.agentStatus(run.placement.paneId).catch(() => undefined);
+      if (status === 'blocked') {
+        this.notified.add(job.id);
+        this.log.warn('agent pane is blocked; the runtime never answers it', { job: job.id, pane: run.placement.paneId });
+        await this.herdr.notify(`operator: ${jobTitle(job)} is blocked`, `pane ${run.placement.paneId} needs the owner`).catch(() => undefined);
+      }
+    }
+  }
+
+  private async finish(job: JobRecord, run: JobRun, exit: ExitInfo): Promise<void> {
+    const op = this.operation(job);
+    let result: OperationResult;
+    if (!op) {
+      result = { contract: 1, status: 'failed', evidence: [], next: [], failure: { reason: 'operation no longer configured', retryable: false } };
+    } else {
+      const collected = await collectRun(job, op, run.runDir, exit);
+      result = collected.result;
+      if (collected.threadId && op.thread === 'per-subject') {
+        await this.backend.docs.replace('threads', this.threadKey(job), { threadId: collected.threadId, updatedAt: new Date().toISOString() }, { ttlMs: 30 * 86_400_000 });
+      }
+    }
+    const workflow = this.manifest.workflows.get(job.workflow);
+    const unknown = [...result.next.map((n) => n.operation), ...(result.wait ? [result.wait.resume] : [])].filter((name) => !workflow?.operations.has(name));
+    if (unknown.length > 0) {
+      result = { contract: 1, status: 'failed', evidence: result.evidence, next: [], failure: { reason: `result requests unknown operation(s): ${unknown.join(', ')}`, retryable: false } };
+    }
+
+    const nextIds: string[] = [];
+    for (const [index, request] of result.next.entries()) {
+      const queued = await enqueue(this.jobs, {
+        project: this.manifest.project,
+        workflow: job.workflow,
+        operation: request.operation,
+        subject: request.subject,
+        input: request.input,
+        trigger: { id: `next:${job.id}:${job.attempt}:${index}`, name: job.operation, kind: 'next' },
+        ...(request.notBefore ? { notBefore: request.notBefore } : {}),
+      });
+      nextIds.push(queued.id);
+    }
+    if (result.wait) await this.waits.open(this.manifest.project, job.workflow, job.id, job.attempt, result.wait);
+
+    const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt <= op.retries;
+    await this.releaseRun(job.id, run);
+    const finishedAt = new Date().toISOString();
+    await this.jobs.update(job.id, (current) => {
+      if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      current.outcome = {
+        finishedAt,
+        status: result.status,
+        evidence: result.evidence,
+        next: nextIds,
+        exitCode: exit.exitCode,
+        ...(result.message ? { message: result.message } : {}),
+        ...(result.failure ? { failure: result.failure } : {}),
+      };
+      if (retry && op) {
+        current.status = 'queued';
+        current.attempt += 1;
+        current.notBefore = new Date(Date.now() + op.retryDelayMs).toISOString();
+        delete current.run;
+        addHistory(current, 'retry scheduled', result.failure?.reason);
+      } else {
+        current.status = result.status;
+        addHistory(current, result.status, result.failure?.reason ?? result.message);
+      }
+      return current;
+    });
+    this.renewedAt.delete(job.id);
+    this.notified.delete(job.id);
+    const seconds = Math.round((Date.parse(finishedAt) - Date.parse(run.startedAt)) / 1000);
+    const fields = { job: job.id, operation: job.operation, subject: job.subject, status: result.status, seconds, next: nextIds.length, message: result.message, reason: result.failure?.reason, wait: result.wait ? `${result.wait.on}${result.wait.key ? `:${result.wait.key}` : ''}` : undefined };
+    if (result.status === 'failed') this.log.warn(retry ? 'job failed; retry scheduled' : 'job failed', fields);
+    else this.log.info('job finished', fields);
+  }
+
+  private async interrupt(job: JobRecord, reason: string): Promise<void> {
+    if (job.run) await this.releaseRun(job.id, job.run);
+    const interruptions = job.history.filter((entry) => entry.event === 'interrupted').length + 1;
+    const giveUp = interruptions >= MAX_INTERRUPTIONS;
+    await this.jobs.update(job.id, (current) => {
+      if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      addHistory(current, 'interrupted', reason);
+      delete current.run;
+      if (giveUp) {
+        current.status = 'failed';
+        current.outcome = { finishedAt: new Date().toISOString(), status: 'failed', evidence: [], next: [], failure: { reason: `interrupted ${interruptions} times; last: ${reason}`, retryable: false } };
+      } else {
+        current.status = 'queued';
+        current.attempt += 1;
+      }
+      return current;
+    });
+    this.log.warn(giveUp ? 'job interrupted too often; failed' : 'job interrupted; it will run again', { job: job.id, operation: job.operation, subject: job.subject, reason, attempt: job.attempt });
+  }
+
+  private async finishWithoutRun(job: JobRecord, status: 'failed' | 'noop', message: string): Promise<void> {
+    await this.jobs.update(job.id, (current) => {
+      if (current.status !== 'queued') return undefined;
+      current.status = status;
+      current.outcome = { finishedAt: new Date().toISOString(), status, evidence: [], next: [], ...(status === 'failed' ? { failure: { reason: message, retryable: false } } : { message }) };
+      addHistory(current, status, message);
+      return current;
+    });
+    if (status === 'failed') this.log.warn('job failed before starting', { job: job.id, reason: message });
+  }
+
+  /** Gives back what a run held: its pool slot, its run lease and its herdr tab. */
+  private async releaseRun(jobId: string, run: JobRun): Promise<void> {
+    const steps: Promise<unknown>[] = [];
+    if (run.slot) steps.push(this.pools.release(jobId, run.slot));
+    if (run.lease) steps.push(this.backend.locks.release(run.lease.key));
+    if (run.placement.tabId) steps.push(this.herdr.closeTab(run.placement.tabId));
+    for (const outcome of await Promise.allSettled(steps)) {
+      if (outcome.status === 'rejected') this.log.warn('releasing part of a run failed; it expires by itself', { job: jobId, error: errorText(outcome.reason) });
+    }
+  }
+
+  private async sweepWaits(now: Date): Promise<void> {
+    for (const wait of await this.waits.listOpen()) {
+      if (wait.expiresAt && Date.parse(wait.expiresAt) <= now.getTime() && (await this.waits.close(wait.id, 'expired'))) {
+        this.log.info('wait expired unanswered', { wait: wait.id, job: wait.jobId, on: wait.on, subject: wait.subject });
+      }
+    }
+  }
+}

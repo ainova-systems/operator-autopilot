@@ -65,3 +65,9 @@ intelligence/skills/*.local/
 .agents/skills/
 .codex/agents/
 AGENTS.override.md
+
+# Demo fixture run data
+/fixtures/demo/data/*
+!/fixtures/demo/data/inbox/
+/fixtures/demo/data/inbox/*
+!/fixtures/demo/data/inbox/.gitkeep
