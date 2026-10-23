@@ -85,9 +85,7 @@ export async function openHerdrTab(herdr: Herdr, workspace: string, cwd: string,
   if (!(await herdr.available())) return { degraded: 'herdr is not reachable' };
   const workspaceId = await herdr.findWorkspace(workspace);
   if (!workspaceId) return { degraded: `herdr workspace ${workspace} not found` };
-  const tab = await herdr.createTab(workspaceId, cwd, title);
-  await herdr.setTitle(tab.paneId, title);
-  return tab;
+  return herdr.createTab(workspaceId, cwd, title);
 }
 
 export async function startInHerdr(herdr: Herdr, paneId: string, runDir: string): Promise<void> {

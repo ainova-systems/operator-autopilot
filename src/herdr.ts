@@ -55,7 +55,8 @@ export function createHerdr(exec: HerdrExec = defaultHerdrExec): Herdr {
       await exec(['pane', 'run', paneId, command]);
     },
     async setTitle(paneId: string, title: string): Promise<void> {
-      await exec(['pane', 'report-metadata', '--source', 'operator', '--title', title, paneId]);
+      // herdr reads the pane id only before the options here.
+      await exec(['pane', 'report-metadata', paneId, '--source', 'operator', '--title', title]);
     },
     async closeTab(tabId: string): Promise<void> {
       await exec(['tab', 'close', tabId]);

@@ -21,7 +21,7 @@ test('the herdr adapter opens its own tab and names it, using the CLI\'s JSON an
   assert.equal(await herdr.agentStatus('wA:p3'), 'blocked');
   await herdr.closeTab('wA:t3');
   assert.deepEqual(calls[3], ['tab', 'create', '--workspace', 'wA', '--cwd', '/repo', '--label', 'pr-7 op:review', '--no-focus']);
-  assert.deepEqual(calls[4], ['pane', 'report-metadata', '--source', 'operator', '--title', 'pr-7 op:review', 'wA:p3']);
+  assert.deepEqual(calls[4], ['pane', 'report-metadata', 'wA:p3', '--source', 'operator', '--title', 'pr-7 op:review']);
   assert.deepEqual(calls.at(-1), ['tab', 'close', 'wA:t3']);
 });
 

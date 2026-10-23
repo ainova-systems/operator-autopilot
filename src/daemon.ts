@@ -257,7 +257,13 @@ export class Daemon {
         try {
           const tab = await openHerdrTab(this.herdr, herdrWorkspace, cwd, jobTitle(job));
           if ('degraded' in tab) placement.degraded = tab.degraded;
-          else Object.assign(placement, { kind: 'herdr', workspace: tab.workspaceId, tabId: tab.tabId, paneId: tab.paneId });
+          else {
+            Object.assign(placement, { kind: 'herdr', workspace: tab.workspaceId, tabId: tab.tabId, paneId: tab.paneId });
+            // The title is display-only; a refusal must not cost the run its tab.
+            await this.herdr.setTitle(tab.paneId, jobTitle(job)).catch((error: unknown) => {
+              this.log.warn('herdr refused the pane title; the run keeps its tab', { job: job.id, pane: tab.paneId, error: errorText(error) });
+            });
+          }
         } catch (error) {
           placement.degraded = `herdr refused the tab: ${errorText(error)}`;
         }
