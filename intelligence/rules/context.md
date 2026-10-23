@@ -158,4 +158,4 @@ Rules, agents, skills for this project live in `intelligence/`:
 - `intelligence/agents/` — specialized AI personas for development tasks
 - `intelligence/skills/` — reusable command sequences
 
-Sync with `bash intelligence/sync/scripts/sync.sh`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.
+Sync with `intelligence sync`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.

@@ -4,6 +4,10 @@ All notable changes to this project. 0.5.0 is the first public release of the v5
 
 ## [Unreleased]
 
+### Changed
+
+- **The intelligence layer moved from the vendored intelligence-sync engine to the Intelligence CLI.** `intelligence/sync/` and `intelligence/config.yaml` are gone; `intelligence.yaml` and `intelligence.lock` at the repository root pin the packages, and `intelligence sync` restores them into the gitignored `.intelligence/` store and regenerates the IDE outputs. Contributors install the CLI once with `npm install -g @ainova-systems/intelligence`.
+
 ## [0.6.0] — 2026-09-04
 
 The first release since Operator started managing its own repository. On 2026-07-04 the repo `operator` was registered as a managed project, and most of the engine work below was discovered, planned, implemented, and reviewed by the engine running against its own code — the closed loop's first real proof. The rest is the onboarding half: a guided setup screen, the UI in the Docker stack, and the documentation a public repository owes a first-time reader.
