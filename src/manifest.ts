@@ -38,6 +38,8 @@ export interface OperationSpec {
   retries: number;
   retryDelayMs: number;
   then?: string;
+  /** At most one run of this operation at a time in its workflow, e.g. a discovery script. */
+  exclusive: boolean;
   env: Record<string, string>;
 }
 
@@ -180,7 +182,7 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
 function readOperation(reader: Reader, name: string, value: unknown, path: string): OperationSpec | undefined {
   if (!NAME.test(name)) { reader.problem(path, 'operation names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
-  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'env'], path);
+  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env'], path);
   const kind = value['kind'];
   if (kind !== 'script' && kind !== 'agent') { reader.problem(`${path}.kind`, 'expected script or agent'); return undefined; }
   const engineValue = value['engine'] ?? (kind === 'script' ? 'command' : undefined);
@@ -209,6 +211,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
   if (placement !== 'headless' && placement !== 'herdr') reader.problem(`${path}.placement`, 'expected headless or herdr');
   const env = reader.object(value, 'env', path);
   for (const [key, envValue] of Object.entries(env)) if (typeof envValue !== 'string') reader.problem(`${path}.env.${key}`, 'expected a string');
+  if (value['exclusive'] !== undefined && typeof value['exclusive'] !== 'boolean') reader.problem(`${path}.exclusive`, 'expected true or false');
 
   return {
     name,
@@ -220,6 +223,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     timeoutMs: reader.duration(value, 'timeout', path, DEFAULT_TIMEOUT_MS[kind]),
     retries: reader.integer(value, 'retries', path, 0, 0),
     retryDelayMs: reader.duration(value, 'retryDelay', path, 60_000),
+    exclusive: value['exclusive'] === true,
     env: env as Record<string, string>,
     ...(command ? { command } : {}),
     ...(skill ? { skill } : {}),

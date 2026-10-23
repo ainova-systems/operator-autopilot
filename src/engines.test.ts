@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { buildCommand, findCodexThread } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
-const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, env: {} };
+const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {} };
 const context = { root: '/repo', cwd: '/repo', runDir: '/runs/j1/a1', inputPath: '/runs/j1/a1/input.json', resultPath: '/runs/j1/a1/result.json', workflow: 'development', operation: 'implement', subject: 'pr-7' };
 
 test('a claude operation runs its skill headlessly with a pointer prompt', () => {

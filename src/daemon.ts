@@ -258,6 +258,15 @@ export class Daemon {
       return;
     }
 
+    if (op.exclusive) {
+      const busy = (await this.jobs.list('running')).some((other) => other.workflow === job.workflow && other.operation === job.operation);
+      if (busy) {
+        this.deferred.set(job.id, now.getTime() + this.manifest.runtime.pollMs);
+        this.log.debug('exclusive operation already running; waiting', { job: job.id, operation: job.operation });
+        return;
+      }
+    }
+
     let hold: SlotHold | undefined;
     let cwd = this.manifest.root;
     let herdrWorkspace = this.manifest.herdr.workspace;

@@ -28,6 +28,8 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
 - **Crash safety.** A run's wrapper is detached from the daemon and leaves a heartbeat and
   `exit.json` in its run directory. A restarted daemon adopts running jobs instead of starting them
   again, and re-runs a job whose wrapper died.
+- **Exclusive operations.** `exclusive: true` keeps an operation - typically discovery - to one run
+  at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
 - **herdr.** `placement: herdr` opens a tab of the runtime's own in the target workspace and runs the

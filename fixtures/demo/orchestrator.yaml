@@ -25,7 +25,7 @@ workflows:
       - { every: 1m, run: discover }
       - { on: poke, run: discover }
     operations:
-      discover: { kind: script, command: node scripts/discover.mjs, timeout: 2m }
+      discover: { kind: script, command: node scripts/discover.mjs, timeout: 2m, exclusive: true }
       work:     { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: agent-slot, placement: herdr, timeout: 30m }
       finish:   { kind: script, command: node scripts/finish.mjs, pool: checks }
       ask:      { kind: agent, engine: command, command: node scripts/ask.mjs, pool: agent-slot, placement: herdr }

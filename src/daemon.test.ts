@@ -215,3 +215,18 @@ test('two daemons racing for the lease after a crash get one leader', async () =
   const results = await Promise.all([a.acquireLeader(), b.acquireLeader()]);
   assert.deepEqual(results.filter(Boolean).length, 1);
 });
+
+test('an exclusive operation never runs twice at once', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await p.drop('one.work', '1');
+  await discover(p, 'timer-slot');
+  await discover(p, 'manual-poke');
+  await daemon.poll();
+  const running = (await jobsBy(daemon, 'discover')).filter((job) => job.status === 'running');
+  assert.equal(running.length, 1);
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'discover')).every((job) => job.status === 'done' || job.status === 'noop'));
+  // The item was taken once, so exactly one work job exists for it.
+  assert.equal((await jobsBy(daemon, 'work', 'one')).length, 1);
+});
