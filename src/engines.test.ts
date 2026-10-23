@@ -4,7 +4,7 @@ import { buildCommand, findCodexThread } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
 const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, env: {} };
-const context = { root: '/repo', runDir: '/runs/j1/a1', inputPath: '/runs/j1/a1/input.json', resultPath: '/runs/j1/a1/result.json', workflow: 'development', operation: 'implement', subject: 'pr-7' };
+const context = { root: '/repo', cwd: '/repo', runDir: '/runs/j1/a1', inputPath: '/runs/j1/a1/input.json', resultPath: '/runs/j1/a1/result.json', workflow: 'development', operation: 'implement', subject: 'pr-7' };
 
 test('a claude operation runs its skill headlessly with a pointer prompt', () => {
   const { argv } = buildCommand({ ...base, engine: 'claude', skill: 'orchestrator-implement', model: 'opus', args: ['--permission-mode', 'acceptEdits'] }, context);
@@ -22,6 +22,8 @@ test('a codex operation is read-only, schema-bound, and resumes its thread', () 
   assert.equal(fresh.argv[fresh.argv.indexOf('--output-schema') + 1], '/repo/schemas/review.json');
   assert.equal(fresh.outputPath, '/runs/j1/a1/output.json');
   assert.match(fresh.argv.at(-1) ?? '', /Act as the code-reviewer agent defined in \/repo\/\.codex\/agents\/code-reviewer\.toml/);
+  const inSlot = buildCommand(op, { ...context, cwd: '/slots/d1' });
+  assert.match(inSlot.argv.at(-1) ?? '', /defined in \/slots\/d1\/\.codex\/agents\/code-reviewer\.toml/);
   const resumed = buildCommand(op, { ...context, threadId: 'th-1' });
   assert.deepEqual(resumed.argv.slice(0, 4), ['codex', 'exec', 'resume', 'th-1']);
   assert.ok(!resumed.argv.includes('-s'));

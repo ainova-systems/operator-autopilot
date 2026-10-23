@@ -3,7 +3,9 @@ import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { enqueue } from './jobs.ts';
-import { readJsonFile, runPath, type WrapperInfo } from './runfiles.ts';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { existsSync } from 'node:fs';
+import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo } from './runfiles.ts';
 import { createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
 import { fireTrigger } from './triggers.ts';
 
@@ -51,7 +53,7 @@ test('the same trigger id twice is one job', async () => {
   const first = await fireTrigger(p.manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: '', input: {}, id: 'hook-42' });
   const second = await fireTrigger(p.manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: '', input: {}, id: 'hook-42' });
   assert.equal(first.started?.created, true);
-  assert.equal(second.started?.created, false);
+  assert.equal(second.duplicate, true);
   assert.equal(second.started?.jobId, first.started?.jobId);
   assert.equal((await daemon.jobs.list()).length, 1);
 });
@@ -103,8 +105,12 @@ test('a question waits across a restart and resumes on the answer trigger', asyn
   assert.equal(await restarted.acquireLeader(), true);
   assert.equal((await restarted.waits.listOpen()).length, 1);
   await assert.rejects(fireTrigger(p.manifest, restarted.jobs, restarted.waits, { workflow: 'demo', name: 'answer', subject: 'item-2', key: 'q2', input: { answer: 'no' } }), /matched no open wait/);
-  const answered = await fireTrigger(p.manifest, restarted.jobs, restarted.waits, { workflow: 'demo', name: 'answer', subject: 'item-2', key: 'q1', input: { answer: 'yes' } });
+  const answered = await fireTrigger(p.manifest, restarted.jobs, restarted.waits, { workflow: 'demo', name: 'answer', subject: 'item-2', key: 'q1', id: 'comment-9', input: { answer: 'yes' } });
   assert.equal(answered.resumed.length, 1);
+  // The same delivery again (a repeated poll) is recognised, even though the wait is now closed.
+  const repeated = await fireTrigger(p.manifest, restarted.jobs, restarted.waits, { workflow: 'demo', name: 'answer', subject: 'item-2', key: 'q1', id: 'comment-9', input: { answer: 'yes' } });
+  assert.equal(repeated.duplicate, true);
+  assert.equal(repeated.resumed[0]?.jobId, answered.resumed[0]?.jobId);
   await pollUntil(restarted, async () => (await jobsBy(restarted, 'answered', 'item-2'))[0]?.status === 'done');
   assert.deepEqual(JSON.parse(await readFile(join(p.data, 'done', 'item-2.answer'), 'utf8')), { question: 'q1', answer: 'yes' });
   assert.equal((await restarted.waits.listOpen()).length, 0);
@@ -138,10 +144,15 @@ test('a run whose wrapper died is interrupted and runs again', async () => {
   const runDir = job?.run?.runDir ?? '';
   await pollUntil(daemon, async () => (await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'))) !== undefined);
   const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+  await pollUntil(daemon, async () => (await readJsonFile<CommandInfo>(runPath(runDir, 'command'))) !== undefined);
+  const command = await readJsonFile<CommandInfo>(runPath(runDir, 'command'));
   process.kill(wrapper?.pid ?? 0, 'SIGKILL');
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'crash'))[0]?.attempt === 2);
   const retried = (await jobsBy(daemon, 'work', 'crash'))[0];
   assert.ok(retried?.history.some((entry) => entry.event === 'interrupted'));
+  // The orphaned command of attempt 1 is stopped, so it cannot overlap attempt 2.
+  await sleep(200);
+  assert.equal(processAlive(command?.pid ?? 0), false);
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'crash'))[0]?.status === 'done', 30_000);
 });
 
@@ -185,4 +196,22 @@ test('a dry run runs scripts and only logs agents', async () => {
   assert.equal((await p.launches()).length, 0);
   assert.ok(p.lines.some((line) => line.includes('dry run: would start agent') && line.includes('fake-agent.mjs')));
   assert.equal((await jobsBy(daemon, 'discover'))[0]?.status, 'done');
+});
+
+test('a timeout ends the command\'s whole process tree', async () => {
+  const p = await project({ extraOperations: '      orphan: { kind: script, command: "(sleep 2; touch \\"$(dirname $OPERATOR_MANIFEST)/data/orphan\\") & sleep 30", timeout: 1s }' });
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'orphan', subject: 'o', input: {}, trigger: { id: 'x', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'orphan', 'o'))[0]?.status === 'failed');
+  assert.match((await jobsBy(daemon, 'orphan', 'o'))[0]?.outcome?.failure?.reason ?? '', /timed out after 1s/);
+  await sleep(2500);
+  assert.equal(existsSync(join(p.data, 'orphan')), false);
+});
+
+test('two daemons racing for the lease after a crash get one leader', async () => {
+  const p = await project();
+  const [a, b] = [p.daemon(), p.daemon()];
+  const results = await Promise.all([a.acquireLeader(), b.acquireLeader()]);
+  assert.deepEqual(results.filter(Boolean).length, 1);
 });

@@ -79,3 +79,23 @@ workflows:
 test('caps Guard slot leases at Ainoflow\'s 24 hours', () => {
   assert.throws(() => parseManifest(VALID.replace('{ limit: 3, shared: true }', '{ limit: 3, slotTtl: 2d }'), 'm.yaml'), /slotTtl: Guard slot leases cannot exceed 24h/);
 });
+
+test('a bad runtime value is reported, not replaced by its default', () => {
+  const text = VALID.replace('state: { provider: ainoflow }', 'state: { provider: ainoflow }\nruntime: { tick: nope, leaseTtl: -1 }');
+  assert.throws(() => parseManifest(text, 'm.yaml'), (error: unknown) => {
+    assert.ok(error instanceof ManifestError);
+    assert.equal(error.problems.length, 2);
+    assert.match(error.problems.join('\n'), /runtime\.tick: expected a duration/);
+    assert.match(error.problems.join('\n'), /runtime\.leaseTtl: expected a duration/);
+    return true;
+  });
+});
+
+test('enabled must be a boolean, not a string that looks like one', () => {
+  assert.throws(() => parseManifest(VALID.replace('    enabled: false', '    enabled: "false"'), 'm.yaml'), /workflows\.staging\.enabled: expected true or false/);
+});
+
+test('an operation that can outlive its Guard slot is refused', () => {
+  const text = VALID.replace('{ limit: 3, shared: true }', '{ limit: 3, slotTtl: 1h, shared: true }');
+  assert.throws(() => parseManifest(text, 'm.yaml'), /operations\.review\.timeout: 14400s exceeds pool codex-review slotTtl 3600s/);
+});

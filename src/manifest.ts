@@ -237,6 +237,7 @@ function readWorkflow(reader: Reader, name: string, value: unknown, pools: Map<s
   if (!NAME.test(name)) { reader.problem(path, 'workflow names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
   reader.unknownKeys(value, ['enabled', 'timezone', 'triggers', 'operations'], path);
+  if (value['enabled'] !== undefined && typeof value['enabled'] !== 'boolean') reader.problem(`${path}.enabled`, 'expected true or false');
   const enabled = value['enabled'] !== false;
   const timezone = reader.string(value, 'timezone', path) ?? 'UTC';
   try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }); } catch { reader.problem(`${path}.timezone`, `unknown time zone ${JSON.stringify(timezone)}`); }
@@ -254,6 +255,11 @@ function readWorkflow(reader: Reader, name: string, value: unknown, pools: Map<s
     const opPath = `${path}.operations.${op.name}`;
     if (op.pool && !pools.has(op.pool)) reference(`${opPath}.pool`, `unknown pool ${JSON.stringify(op.pool)}`);
     if (op.then && !operations.has(op.then)) reference(`${opPath}.then`, `unknown operation ${JSON.stringify(op.then)}`);
+    const pool = op.pool ? pools.get(op.pool) : undefined;
+    // Guard slots cannot be renewed: the run must end (the wrapper kills it at its timeout) before its slot expires.
+    if (pool?.kind === 'limit' && op.timeoutMs > pool.slotTtlMs) {
+      reference(`${opPath}.timeout`, `${op.timeoutMs / 1000}s exceeds pool ${pool.name} slotTtl ${pool.slotTtlMs / 1000}s; a run could outlive its slot`);
+    }
   }
 
   const triggers: TriggerSpec[] = [];
@@ -332,41 +338,40 @@ export function parseManifest(text: string, path: string): LoadedManifest {
   }
   if (workflows.size === 0) reader.problem('workflows', 'define at least one workflow');
 
-  if (reader.problems.length > 0) throw new ManifestError(path, reader.problems);
-  const namespace = reader.string(stateRaw, 'namespace', 'state') ?? `op-${project}`;
-  return {
-    warnings: reader.warnings,
-    manifest: {
-      contract: CONTRACT_VERSION,
-      path: resolve(path),
-      root,
-      project,
-      ...(envFile ? { envFile: resolve(root, expandHome(envFile)) } : {}),
-      ...(Array.isArray(envKeys) ? { envKeys: envKeys.map(String) } : {}),
-      state: {
-        provider: provider === 'file' ? 'file' : 'ainoflow',
-        namespace,
-        baseUrl: reader.string(stateRaw, 'baseUrl', 'state') ?? 'https://api.ainoflow.io',
-        require,
-        ...(dir ? { dir: resolve(root, expandHome(dir)) } : {}),
-      },
-      runtime: {
-        stateDir: stateDir ? resolve(root, expandHome(stateDir)) : join(stateHome, 'operator', project),
-        tickMs: reader.duration(runtimeRaw, 'tick', 'runtime', 5_000),
-        pollMs: reader.duration(runtimeRaw, 'poll', 'runtime', 10_000),
-        leaseTtlMs: reader.duration(runtimeRaw, 'leaseTtl', 'runtime', 120_000),
-        retentionMs: {
-          done: reader.duration(retentionRaw, 'done', 'runtime.retention', 14 * DAY),
-          noop: reader.duration(retentionRaw, 'noop', 'runtime.retention', DAY),
-          failed: reader.duration(retentionRaw, 'failed', 'runtime.retention', 30 * DAY),
-          waiting: reader.duration(retentionRaw, 'waiting', 'runtime.retention', 30 * DAY),
-        },
-      },
-      herdr: herdrWorkspace ? { workspace: herdrWorkspace } : {},
-      pools,
-      workflows,
+  const namespace = reader.string(stateRaw, 'namespace', 'state', { pattern: /^[a-z][a-z0-9-]{0,62}$/ }) ?? `op-${project}`;
+  const manifest: Manifest = {
+    contract: CONTRACT_VERSION,
+    path: resolve(path),
+    root,
+    project,
+    ...(envFile ? { envFile: resolve(root, expandHome(envFile)) } : {}),
+    ...(Array.isArray(envKeys) ? { envKeys: envKeys.map(String) } : {}),
+    state: {
+      provider: provider === 'file' ? 'file' : 'ainoflow',
+      namespace,
+      baseUrl: reader.string(stateRaw, 'baseUrl', 'state') ?? 'https://api.ainoflow.io',
+      require,
+      ...(dir ? { dir: resolve(root, expandHome(dir)) } : {}),
     },
+    runtime: {
+      stateDir: stateDir ? resolve(root, expandHome(stateDir)) : join(stateHome, 'operator', project),
+      tickMs: reader.duration(runtimeRaw, 'tick', 'runtime', 5_000),
+      pollMs: reader.duration(runtimeRaw, 'poll', 'runtime', 10_000),
+      leaseTtlMs: reader.duration(runtimeRaw, 'leaseTtl', 'runtime', 120_000),
+      retentionMs: {
+        done: reader.duration(retentionRaw, 'done', 'runtime.retention', 14 * DAY),
+        noop: reader.duration(retentionRaw, 'noop', 'runtime.retention', DAY),
+        failed: reader.duration(retentionRaw, 'failed', 'runtime.retention', 30 * DAY),
+        waiting: reader.duration(retentionRaw, 'waiting', 'runtime.retention', 30 * DAY),
+      },
+    },
+    herdr: herdrWorkspace ? { workspace: herdrWorkspace } : {},
+    pools,
+    workflows,
   };
+  // Checked last, so a bad runtime or state value is reported instead of silently defaulted.
+  if (reader.problems.length > 0) throw new ManifestError(path, reader.problems);
+  return { manifest, warnings: reader.warnings };
 }
 
 export function loadManifest(path: string): LoadedManifest {

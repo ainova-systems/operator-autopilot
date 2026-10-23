@@ -175,8 +175,8 @@ async function commandTrigger(values: Values, positionals: string[]): Promise<nu
     ...(values.id ? { id: values.id } : {}),
   });
   print(values, result, () => [
-    ...result.resumed.map((r) => `resumed wait ${r.waitId} -> job ${r.jobId}${r.created ? '' : ' (already queued)'}`),
-    ...(result.started ? [`${result.started.created ? 'queued' : 'duplicate, dropped:'} job ${result.started.jobId}`] : []),
+    ...result.resumed.map((r) => (result.duplicate ? `duplicate, dropped: wait ${r.waitId} was already resumed as job ${r.jobId}` : `resumed wait ${r.waitId} -> job ${r.jobId}${r.created ? '' : ' (already queued)'}`)),
+    ...(result.started ? [`${result.started.created && !result.duplicate ? 'queued' : 'duplicate, dropped:'} job ${result.started.jobId}`] : []),
   ].join('\n'));
   return 0;
 }

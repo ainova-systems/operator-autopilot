@@ -32,6 +32,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
   const resultPath = runPath(runDir, 'result');
   const command = buildCommand(op, {
     root: manifest.root,
+    cwd: options.cwd,
     runDir,
     inputPath,
     resultPath,
@@ -74,10 +75,14 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
 }
 
 /** Starts the wrapper as a detached child, so a daemon restart does not end the run. */
-export function startHeadless(runDir: string): number | undefined {
+export async function startHeadless(runDir: string): Promise<number> {
   const child = spawn(process.execPath, [CLI_ENTRY, 'job-exec', runDir], { cwd: runDir, detached: true, stdio: 'ignore' });
+  await new Promise<void>((resolveSpawn, rejectSpawn) => {
+    child.once('spawn', resolveSpawn);
+    child.once('error', rejectSpawn);
+  });
   child.unref();
-  return child.pid;
+  return child.pid ?? 0;
 }
 
 /** Opens a tab of its own in the target herdr workspace; the wrapper starts there separately. */

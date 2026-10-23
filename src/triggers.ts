@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { JsonObject } from './contract.ts';
 import { OperatorError } from './errors.ts';
-import { enqueue, type JobStore } from './jobs.ts';
-import type { Manifest, TriggerSpec } from './manifest.ts';
+import { enqueue, stableId, type JobStore } from './jobs.ts';
+import type { Manifest, TriggerSpec, WorkflowSpec } from './manifest.ts';
 import type { WaitStore } from './waits.ts';
 
 export interface TimerFiring {
@@ -44,7 +44,13 @@ export interface TriggerRequest {
 export interface TriggerResult {
   resumed: { waitId: string; jobId: string; created: boolean }[];
   started?: { jobId: string; created: boolean };
+  /** True when this trigger id was delivered before; the earlier delivery's targets are returned. */
+  duplicate?: boolean;
 }
+
+interface Delivery { status: 'pending' | 'done'; at: string; result?: TriggerResult }
+
+const DELIVERY_TTL_MS = 30 * 86_400_000;
 
 /**
  * Delivers a named trigger: first to the open waits it answers, otherwise to the workflow's `on`
@@ -54,6 +60,22 @@ export async function fireTrigger(manifest: Manifest, jobs: JobStore, waits: Wai
   const workflow = manifest.workflows.get(request.workflow);
   if (!workflow) throw new OperatorError('UNKNOWN_WORKFLOW', `no workflow ${JSON.stringify(request.workflow)} in ${manifest.path}`);
   if (!workflow.enabled) throw new OperatorError('WORKFLOW_DISABLED', `workflow ${workflow.name} is disabled`);
+  // A trigger with an id is delivered once: its delivery record is written before it is acted on,
+  // so a repeat cannot pick a different target after the first delivery closed a wait.
+  const deliveryKey = request.id ? stableId('d', workflow.name, request.name, request.subject, request.key ?? '', request.id) : undefined;
+  if (deliveryKey) {
+    const created = await jobs.docs.create<Delivery>('deliveries', deliveryKey, { status: 'pending', at: new Date().toISOString() }, DELIVERY_TTL_MS);
+    if (created === 'exists') {
+      const earlier = (await jobs.docs.get<Delivery>('deliveries', deliveryKey))?.value;
+      if (earlier?.status === 'done' && earlier.result) return { ...earlier.result, duplicate: true };
+    }
+  }
+  const result = await deliver(manifest, workflow, jobs, waits, request);
+  if (deliveryKey) await jobs.docs.replace<Delivery>('deliveries', deliveryKey, { status: 'done', at: new Date().toISOString(), result }, { ttlMs: DELIVERY_TTL_MS });
+  return result;
+}
+
+async function deliver(manifest: Manifest, workflow: WorkflowSpec, jobs: JobStore, waits: WaitStore, request: TriggerRequest): Promise<TriggerResult> {
   const result: TriggerResult = { resumed: [] };
   const now = Date.now();
   const candidates = await waits.listOpen({ workflow: workflow.name, on: request.name, subject: request.subject });

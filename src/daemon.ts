@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, open, rm } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -7,11 +7,12 @@ import type { OperationResult } from './contract.ts';
 import { OperatorError } from './errors.ts';
 import type { Herdr } from './herdr.ts';
 import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
+import { signalGroup } from './job-exec.ts';
 import { jobTitle, openHerdrTab, prepareRun, startHeadless, startInHerdr } from './launch.ts';
 import { errorText, type Logger } from './log.ts';
 import type { Manifest, OperationSpec } from './manifest.ts';
 import { Pools } from './pools.ts';
-import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type ExitInfo, type WrapperInfo } from './runfiles.ts';
+import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
 import type { StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
 import { WaitStore } from './waits.ts';
@@ -50,6 +51,7 @@ export class Daemon {
   /** Number of runs this process started; tests use it to prove nothing launched twice. */
   launches = 0;
   private leader: { token: string; renewedAt: number } | undefined;
+  private renewing: Promise<void> | undefined;
   private readonly timerMemo = new Map<string, string>();
   private readonly deferred = new Map<string, number>();
   private readonly renewedAt = new Map<string, number>();
@@ -82,6 +84,14 @@ export class Daemon {
     }
     if (this.stopped) return;
     this.log.info('daemon started', { project: this.manifest.project, host: this.host, state: this.backend.kind, dryRun: this.dryRun, workflows: [...this.manifest.workflows.keys()].join(',') });
+    // The lease is renewed on its own clock, so a slow pass cannot outlive it unnoticed.
+    const renewal = setInterval(() => {
+      this.ensureLeader().catch((error: unknown) => {
+        if (error instanceof OperatorError && error.code === 'LEADER_LOST') { this.log.error('leader lease lost; stopping', { error: errorText(error) }); this.stop(); return; }
+        this.log.warn('renewing the leader lease failed; retrying', { error: errorText(error) });
+      });
+    }, Math.max(1000, this.leaseTtl / 3));
+    renewal.unref();
     try {
       while (!this.stopped) {
         try {
@@ -93,6 +103,7 @@ export class Daemon {
         await sleep(this.manifest.runtime.tickMs);
       }
     } finally {
+      clearInterval(renewal);
       await this.releaseLeader();
       this.log.info('daemon stopped', { project: this.manifest.project });
     }
@@ -102,7 +113,30 @@ export class Daemon {
     this.stopped = true;
   }
 
+  /** One attempt at the leader lease, serialised against other daemons on this host. */
   async acquireLeader(): Promise<boolean> {
+    await mkdir(this.manifest.runtime.stateDir, { recursive: true });
+    const lockPath = join(this.manifest.runtime.stateDir, 'leader.lock');
+    let lock;
+    try {
+      lock = await open(lockPath, 'wx');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const holder = Number((await readJsonFile<{ pid: number }>(lockPath).catch(() => undefined))?.pid);
+      if (Number.isInteger(holder) && processAlive(holder)) return false;
+      await rm(lockPath, { force: true });
+      return false;
+    }
+    try {
+      await lock.writeFile(JSON.stringify({ pid: process.pid }));
+      return await this.acquireLeaderLocked();
+    } finally {
+      await lock.close();
+      await rm(lockPath, { force: true });
+    }
+  }
+
+  private async acquireLeaderLocked(): Promise<boolean> {
     const previous = await readJsonFile<LeaderFile>(this.leaderFile);
     if (previous && previous.host === this.host && previous.pid !== process.pid) {
       if (processAlive(previous.pid)) return false;
@@ -126,9 +160,16 @@ export class Daemon {
     await writeJsonAtomic(this.leaderFile, { token, pid: process.pid, host: this.host, acquiredAt: new Date().toISOString() } satisfies LeaderFile);
   }
 
-  private async renewLeader(): Promise<void> {
-    if (!this.leader) throw new OperatorError('NOT_LEADER', 'tick called without the leader lease');
+  /** Renews the leader lease when a third of it has passed; throws LEADER_LOST when it is gone. */
+  private async ensureLeader(): Promise<void> {
+    if (!this.leader) throw new OperatorError('LEADER_LOST', 'this daemon does not hold the leader lease');
     if (Date.now() - this.leader.renewedAt < this.leaseTtl / 3) return;
+    this.renewing ??= this.renewLeader().finally(() => { this.renewing = undefined; });
+    await this.renewing;
+  }
+
+  private async renewLeader(): Promise<void> {
+    if (!this.leader) throw new OperatorError('LEADER_LOST', 'this daemon does not hold the leader lease');
     const outcome = await this.backend.locks.renew('leader', this.leader.token, this.leaseTtl);
     if (outcome === 'renewed') { this.leader.renewedAt = Date.now(); return; }
     if (outcome === 'lifetime-exceeded') {
@@ -152,7 +193,7 @@ export class Daemon {
   }
 
   async tick(now: Date = new Date()): Promise<void> {
-    await this.renewLeader();
+    await this.ensureLeader();
     await this.fireTimers(now);
     if (now.getTime() - this.lastPoll >= this.manifest.runtime.pollMs) {
       this.lastPoll = now.getTime();
@@ -162,6 +203,7 @@ export class Daemon {
 
   /** One observation pass without the timer and poll cadence; tests drive the daemon with it. */
   async poll(now: Date = new Date()): Promise<void> {
+    await this.ensureLeader();
     for (const job of await this.jobs.list('running')) {
       try { await this.observe(job, now); } catch (error) { this.log.error('observing a running job failed', { job: job.id, error: errorText(error) }); }
     }
@@ -247,10 +289,21 @@ export class Daemon {
       this.log.warn('run lease is held elsewhere; not starting the job twice', { job: job.id });
       return;
     }
+    const pending: JobRun = { attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}) };
+    try {
+      await this.startRun(job, op, pending, cwd, herdrWorkspace);
+    } catch (error) {
+      // Nothing was recorded on the job yet, so nobody else would ever give these back.
+      await this.releaseRun(job.id, pending);
+      throw error;
+    }
+  }
 
+  private async startRun(job: JobRecord, op: OperationSpec, pending: JobRun, cwd: string, herdrWorkspace: string | undefined): Promise<void> {
     const threadId = op.thread === 'per-subject' ? (await this.backend.docs.get<{ threadId: string }>('threads', this.threadKey(job)))?.value.threadId : undefined;
     const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, ...(threadId ? { threadId } : {}) });
-    const placement: JobRun['placement'] = { kind: 'headless' };
+    pending.runDir = prepared.runDir;
+    const placement = pending.placement;
     if (op.placement === 'herdr') {
       if (!herdrWorkspace) placement.degraded = 'no herdr workspace configured';
       else {
@@ -269,7 +322,8 @@ export class Daemon {
         }
       }
     }
-    const run: JobRun = { attempt: job.attempt, host: this.host, runDir: prepared.runDir, startedAt: now.toISOString(), placement, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}) };
+    const run = pending;
+    await this.ensureLeader();
     const started = await this.jobs.update(job.id, (current) => {
       if (current.status !== 'queued' || current.attempt !== job.attempt) return undefined;
       current.status = 'running';
@@ -284,12 +338,17 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return;
     }
-    if (placement.kind === 'herdr' && placement.paneId) await startInHerdr(this.herdr, placement.paneId, prepared.runDir);
-    else startHeadless(prepared.runDir);
+    try {
+      if (placement.kind === 'herdr' && placement.paneId) await startInHerdr(this.herdr, placement.paneId, prepared.runDir);
+      else await startHeadless(prepared.runDir);
+    } catch (error) {
+      await this.interrupt(started, `could not start the wrapper: ${errorText(error)}`);
+      return;
+    }
     this.launches += 1;
     this.deferred.delete(job.id);
     this.renewedAt.set(job.id, Date.now());
-    this.log.info('job started', { job: job.id, workflow: job.workflow, operation: job.operation, subject: job.subject, attempt: job.attempt, placement: placement.kind, pane: placement.paneId, member: hold?.member, degraded: placement.degraded });
+    this.log.info('job started', { job: job.id, workflow: job.workflow, operation: job.operation, subject: job.subject, attempt: job.attempt, placement: placement.kind, pane: placement.paneId, member: run.slot?.member, degraded: placement.degraded });
   }
 
   private threadKey(job: JobRecord): string {
@@ -308,11 +367,13 @@ export class Daemon {
     if (exit) { await this.finish(job, run, exit); return; }
     const wrapper = await readJsonFile<WrapperInfo>(runPath(run.runDir, 'wrapper'));
     const heartbeatAge = await ageMs(runPath(run.runDir, 'heartbeat'));
-    if (wrapper && processAlive(wrapper.pid) && heartbeatAge !== undefined && heartbeatAge < HEARTBEAT_STALE_MS) {
+    const starting = now.getTime() - Date.parse(run.startedAt) < START_GRACE_MS;
+    const beating = heartbeatAge === undefined ? starting : heartbeatAge < HEARTBEAT_STALE_MS;
+    if (wrapper && processAlive(wrapper.pid) && beating) {
       await this.keepAlive(job, run);
       return;
     }
-    if (!wrapper && now.getTime() - Date.parse(run.startedAt) < START_GRACE_MS) return;
+    if (!wrapper && starting) return;
     const lateExit = await readExit(run.runDir);
     if (lateExit) { await this.finish(job, run, lateExit); return; }
     await this.interrupt(job, wrapper ? `wrapper process ${wrapper.pid} is gone` : 'the wrapper never started');
@@ -351,6 +412,13 @@ export class Daemon {
   }
 
   private async finish(job: JobRecord, run: JobRun, exit: ExitInfo): Promise<void> {
+    // Effects below are published only for the attempt the job still records as running.
+    await this.ensureLeader();
+    const current = await this.jobs.get(job.id);
+    if (current?.status !== 'running' || current.attempt !== job.attempt || current.run?.runDir !== run.runDir) {
+      this.log.warn('a finished run is no longer the job\'s current attempt; its result is not applied', { job: job.id, attempt: job.attempt });
+      return;
+    }
     const op = this.operation(job);
     let result: OperationResult;
     if (!op) {
@@ -418,6 +486,14 @@ export class Daemon {
   }
 
   private async interrupt(job: JobRecord, reason: string): Promise<void> {
+    if (job.run?.host === this.host && job.run.runDir) {
+      // The wrapper is gone; whatever its command left running must not overlap the next attempt.
+      const command = await readJsonFile<CommandInfo>(runPath(job.run.runDir, 'command'));
+      if (command && processAlive(command.pid)) {
+        signalGroup(command.pid, 'SIGKILL');
+        this.log.warn('stopped the leftover command of an interrupted run', { job: job.id, pid: command.pid });
+      }
+    }
     if (job.run) await this.releaseRun(job.id, job.run);
     const interruptions = job.history.filter((entry) => entry.event === 'interrupted').length + 1;
     const giveUp = interruptions >= MAX_INTERRUPTIONS;
@@ -452,8 +528,10 @@ export class Daemon {
   private async releaseRun(jobId: string, run: JobRun): Promise<void> {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
-    if (run.lease) steps.push(this.backend.locks.release(run.lease.key));
+    if (run.lease) steps.push(releaseOwnedLease(this.backend, run.lease.key, run.lease.token));
     if (run.placement.tabId) steps.push(this.herdr.closeTab(run.placement.tabId));
+    // A freed slot may be what a deferred job was waiting for.
+    this.deferred.clear();
     for (const outcome of await Promise.allSettled(steps)) {
       if (outcome.status === 'rejected') this.log.warn('releasing part of a run failed; it expires by itself', { job: jobId, error: errorText(outcome.reason) });
     }
@@ -466,4 +544,9 @@ export class Daemon {
       }
     }
   }
+}
+
+/** Releases a Shield lease only while this token still owns it, so a successor's lease survives. */
+export async function releaseOwnedLease(backend: StateBackend, key: string, token: string): Promise<void> {
+  if ((await backend.locks.renew(key, token, 1000)) === 'renewed') await backend.locks.release(key);
 }

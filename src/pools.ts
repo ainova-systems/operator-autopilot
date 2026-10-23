@@ -95,7 +95,8 @@ export class Pools {
 
   async release(jobId: string, hold: SlotHold): Promise<void> {
     this.holds(hold.pool).delete(jobId);
-    if (hold.kind === 'limit') await this.backend.slots.release(hold.key, hold.token, { global: hold.global });
-    else await this.backend.locks.release(hold.key);
+    if (hold.kind === 'limit') { await this.backend.slots.release(hold.key, hold.token, { global: hold.global }); return; }
+    // Shield deletes without a token; give the lease back only while this run still owns it.
+    if ((await this.backend.locks.renew(hold.key, hold.token, 1000)) === 'renewed') await this.backend.locks.release(hold.key);
   }
 }

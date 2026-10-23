@@ -116,7 +116,7 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
       const expiresAt = rawWait['expiresAt'];
       if (typeof on !== 'string' || on === '') errors.push('wait.on: expected a non-empty trigger name');
       if (typeof subject !== 'string') errors.push('wait.subject: expected a string');
-      if (key !== undefined && typeof key !== 'string') errors.push('wait.key: expected a string');
+      if (key !== undefined && (typeof key !== 'string' || key === '')) errors.push('wait.key: expected a non-empty string');
       if (typeof resume !== 'string' || resume === '') errors.push('wait.resume: expected a non-empty operation name');
       if (!isObject(input)) errors.push('wait.input: expected an object');
       if (expiresAt !== undefined && !isIsoDate(expiresAt)) errors.push('wait.expiresAt: expected an ISO 8601 date');

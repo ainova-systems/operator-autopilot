@@ -35,7 +35,7 @@ const PAGE_SIZE = 500;
 
 /** Keys go into URL paths; they are limited to characters that survive routing unencoded. */
 function checkKey(key: string): string {
-  if (!/^[A-Za-z0-9._:-]+$/.test(key)) throw new OperatorError('INVALID_STATE_KEY', `state key ${JSON.stringify(key)} may only use letters, digits, '.', '_', ':' and '-'`);
+  if (!/^[A-Za-z0-9._:-]+$/.test(key) || /^\.+$/.test(key)) throw new OperatorError('INVALID_STATE_KEY', `state key ${JSON.stringify(key)} may only use letters, digits, '.', '_', ':' and '-'`);
   return key;
 }
 
@@ -52,6 +52,10 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
    * other status is returned to the caller, which decides what it means for that endpoint.
    */
   async function call(method: string, path: string, init: { query?: Record<string, string | number | boolean | string[] | undefined>; headers?: Record<string, string>; body?: unknown } = {}): Promise<Response> {
+    // A lost answer to a POST (create, acquire, slot) or a tokenless DELETE leaves its outcome
+    // unknown, and repeating it could take a second slot or delete a successor's lock; only reads
+    // and PUTs are repeated.
+    const attempts = method === 'GET' || method === 'PUT' ? 3 : 1;
     const url = new URL(`${baseUrl}${path}`);
     for (const [name, value] of Object.entries(init.query ?? {})) {
       if (value === undefined) continue;
@@ -60,7 +64,7 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
     const headers: Record<string, string> = { Authorization: `Bearer ${options.apiKey}`, Accept: 'application/json', ...init.headers };
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
     let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (attempt > 0) await sleep(500 * 2 ** attempt);
       try {
         const response = await fetchImpl(url, {
@@ -77,7 +81,7 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
         lastError = error;
       }
     }
-    throw new OperatorError('AINOFLOW_UNREACHABLE', `Ainoflow ${method} ${path} failed after 3 attempts`, { cause: lastError });
+    throw new OperatorError('AINOFLOW_UNREACHABLE', `Ainoflow ${method} ${path} failed after ${attempts} attempt(s)`, { cause: lastError });
   }
 
   const fail = (method: string, path: string, response: Response): never => {

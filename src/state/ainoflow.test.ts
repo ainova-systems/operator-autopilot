@@ -76,5 +76,13 @@ test('keys that would not survive a URL path are refused before any call', async
   const fake = fakeFetch([]);
   const backend = createAinoflowBackend({ apiKey: 'k', namespace: 'op-demo', fetchImpl: fake.fetch });
   await assert.rejects(backend.docs.get('jobs', 'a/b'), /may only use letters/);
+  await assert.rejects(backend.docs.get('jobs', '..'), /may only use letters/);
   assert.equal(fake.calls.length, 0);
+});
+
+test('a lost answer to an acquisition is not repeated', async () => {
+  const fake = fakeFetch([{ status: 503 }]);
+  const backend = createAinoflowBackend({ apiKey: 'k', namespace: 'op-demo', fetchImpl: fake.fetch });
+  await assert.rejects(backend.slots.acquire('pool.p', 1, 60_000), /failed after 1 attempt/);
+  assert.equal(fake.calls.length, 1);
 });

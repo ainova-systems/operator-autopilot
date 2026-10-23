@@ -16,6 +16,7 @@ export interface LaunchSpec {
 }
 
 export interface WrapperInfo { pid: number; host: string; startedAt: string }
+export interface CommandInfo { pid: number }
 export interface ExitInfo { exitCode: number | null; signal: string | null; timedOut: boolean; finishedAt: string; error?: string }
 
 export const RUN_FILES = {
@@ -23,6 +24,7 @@ export const RUN_FILES = {
   input: 'input.json',
   result: 'result.json',
   wrapper: 'wrapper.json',
+  command: 'command.json',
   heartbeat: 'heartbeat',
   exit: 'exit.json',
   output: 'output.log',

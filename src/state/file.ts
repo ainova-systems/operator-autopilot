@@ -15,6 +15,10 @@ function encode(key: string): string {
   return encodeURIComponent(key).replaceAll('.', '%2E');
 }
 
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
     return JSON.parse(await readFile(path, 'utf8')) as T;
@@ -36,18 +40,22 @@ async function writeJson(path: string, value: unknown): Promise<void> {
  */
 export function createFileBackend(dir: string, namespace: string): StateBackend {
   const base = join(dir, encode(namespace));
-  const mutexPath = join(base, '.mutex');
+  const globalBase = join(dir, '_global');
 
-  async function exclusive<T>(work: () => Promise<T>): Promise<T> {
-    await mkdir(base, { recursive: true });
-    const deadline = Date.now() + 10_000;
+  /** A directory mutex owned by a pid; it is taken over only when that process is gone. */
+  async function exclusive<T>(work: () => Promise<T>, root: string = base): Promise<T> {
+    const mutexPath = join(root, '.mutex');
+    const owner = join(mutexPath, 'pid');
+    await mkdir(root, { recursive: true });
     for (;;) {
       try {
         await mkdir(mutexPath);
+        await writeFile(owner, String(process.pid));
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        if (Date.now() > deadline) await rm(mutexPath, { recursive: true, force: true });
+        const holder = Number(await readFile(owner, 'utf8').catch(() => ''));
+        if (Number.isInteger(holder) && holder > 0 && !alive(holder)) await rm(mutexPath, { recursive: true, force: true });
         await sleep(5);
       }
     }
@@ -161,13 +169,14 @@ export function createFileBackend(dir: string, namespace: string): StateBackend 
   };
 
   const slotPath = async (key: string, global: boolean): Promise<string> => {
-    const folder = join(global ? join(dir, '_global') : base, 'slots');
+    const folder = join(global ? globalBase : base, 'slots');
     await mkdir(folder, { recursive: true });
     return join(folder, `${encode(key)}.json`);
   };
 
   const slots: SlotStore = {
     async acquire(key: string, max: number, slotTtlMs: number, options: { global?: boolean } = {}): Promise<SlotGrant> {
+      // Shared slots are shared across namespaces, so they serialise on the shared root.
       return exclusive(async () => {
         const path = await slotPath(key, options.global === true);
         const now = Date.now();
@@ -181,7 +190,7 @@ export function createFileBackend(dir: string, namespace: string): StateBackend 
         leases[token] = now + slotTtlMs;
         await writeJson(path, { leases });
         return { granted: true, token };
-      });
+      }, options.global ? globalBase : base);
     },
     async release(key: string, token: string, options: { global?: boolean } = {}): Promise<void> {
       await exclusive(async () => {
@@ -190,7 +199,7 @@ export function createFileBackend(dir: string, namespace: string): StateBackend 
         if (!file) return;
         delete file.leases[token];
         await writeJson(path, file);
-      });
+      }, options.global ? globalBase : base);
     },
   };
 

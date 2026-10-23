@@ -22,7 +22,14 @@ test('requires a wait descriptor for needs-input and fills its defaults', () => 
 test('requires a reason for failed and reads retryable strictly', () => {
   assert.equal(parseResult({ contract: 1, status: 'failed' }, 's').ok, false);
   const outcome = parseResult({ contract: 1, status: 'failed', failure: { reason: 'CI red', retryable: 'yes' } }, 's');
-  assert.equal(outcome.ok && outcome.value.failure?.retryable, false);
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(outcome.value.failure, { reason: 'CI red', retryable: false });
+});
+
+test('an empty wait key is refused rather than turning into a wait anyone can answer', () => {
+  const outcome = parseResult({ contract: 1, status: 'needs-input', wait: { on: 'answer', key: '', resume: 'plan' } }, 's');
+  assert.equal(outcome.ok, false);
 });
 
 test('reports every problem of a malformed result at once', () => {

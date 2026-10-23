@@ -10,6 +10,8 @@ export interface EngineCommand {
 
 export interface CommandContext {
   root: string;
+  /** Where the run executes; a workspace pool member's checkout, otherwise the manifest root. */
+  cwd: string;
   runDir: string;
   inputPath: string;
   resultPath: string;
@@ -36,7 +38,7 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
     workflow: context.workflow,
     skill: op.skill ?? '',
     agent: op.agent ?? '',
-    agentFile: op.agent ? join(context.root, '.codex', 'agents', `${op.agent}.toml`) : '',
+    agentFile: op.agent ? join(context.cwd, '.codex', 'agents', `${op.agent}.toml`) : '',
   };
   switch (op.engine) {
     case 'command':
