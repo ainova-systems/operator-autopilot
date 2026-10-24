@@ -25,14 +25,14 @@ export interface Herdr {
 export class HerdrRefusal extends OperatorError {
   readonly reason: string;
 
-  constructor(reason: string, message: string) {
-    super('HERDR_REFUSED', message);
+  constructor(reason: string, message: string, options?: { cause?: unknown }) {
+    super('HERDR_REFUSED', message, options);
     this.reason = reason;
   }
 }
 
 /** Reads the reason a failed herdr call prints as JSON on stderr, so "already gone" differs from "not reachable". */
-export function herdrRefusal(error: unknown): HerdrRefusal | undefined {
+export function herdrRefusal(error: unknown, args: string[] = []): HerdrRefusal | undefined {
   const stderr = (error as { stderr?: unknown } | undefined)?.stderr;
   if (typeof stderr !== 'string') return undefined;
   let parsed: { error?: { code?: unknown; message?: unknown } };
@@ -44,7 +44,8 @@ export function herdrRefusal(error: unknown): HerdrRefusal | undefined {
   }
   const reason = parsed.error?.code;
   if (typeof reason !== 'string') return undefined;
-  return new HerdrRefusal(reason, typeof parsed.error?.message === 'string' ? parsed.error.message : reason);
+  const detail = typeof parsed.error?.message === 'string' ? parsed.error.message : reason;
+  return new HerdrRefusal(reason, args.length > 0 ? `herdr ${args.join(' ')}: ${detail}` : detail, { cause: error });
 }
 
 export const defaultHerdrExec: HerdrExec = async (args) => {
@@ -52,7 +53,7 @@ export const defaultHerdrExec: HerdrExec = async (args) => {
     const { stdout } = await run('herdr', args, { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
     return stdout;
   } catch (error) {
-    throw herdrRefusal(error) ?? error;
+    throw herdrRefusal(error, args) ?? error;
   }
 };
 

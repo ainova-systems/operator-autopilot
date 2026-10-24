@@ -47,6 +47,7 @@ test('a failed herdr call is read for the reason it prints', () => {
   const refusal = herdrRefusal({ stdout: '', stderr: '{"error":{"code":"tab_not_found","message":"tab wD:t999 not found"},"id":"cli:tab:close"}\n' });
   assert.equal(refusal?.reason, 'tab_not_found');
   assert.equal(refusal?.message, 'tab wD:t999 not found');
+  assert.equal(herdrRefusal({ stdout: '', stderr: '{"error":{"code":"tab_not_found"}}' }, ['tab', 'close', 'wD:t9'])?.message, 'herdr tab close wD:t9: tab_not_found');
   assert.equal(herdrRefusal({ stdout: '', stderr: 'socket closed' }), undefined);
   assert.equal(herdrRefusal(new Error('spawn herdr ENOENT')), undefined);
 });
