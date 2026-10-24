@@ -8,3 +8,4 @@ fixtures
 .agents
 .intelligence
 *.md
+!README.md
