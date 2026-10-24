@@ -88,3 +88,14 @@ test('kill -9 of the daemon mid-job: the restart adopts the run and launches not
   assert.match(log, /resumed observing a running job/);
   assert.match(log, /daemon stopped/);
 });
+
+test('scripts cannot change the collections the runtime keeps its own records in', async () => {
+  const p = await createTestProject();
+  projects.push(p);
+  const manifest = join(p.root, 'orchestrator.yaml');
+  for (const collection of ['jobs', 'waits', 'threads', 'deliveries', 'tabs']) {
+    const refused = await cli(['state', 'delete', collection, 'x', '--manifest', manifest]);
+    assert.equal(refused.code, 2, collection);
+    assert.match(refused.stderr, /belongs to the runtime/);
+  }
+});
