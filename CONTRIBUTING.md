@@ -11,8 +11,11 @@ npm test            # node:test over src/**/*.test.ts
 npm run test:pack   # the packed tarball installs and runs in an empty directory
 ```
 
-Live Ainoflow tests (`src/state/ainoflow.live.test.ts`) run only when `AINOFLOW_API_KEY` is set;
-everything they write lives in a throwaway namespace and expires by itself.
+Live Ainoflow tests (`src/state/ainoflow.live.test.ts`) run only when `AINOFLOW_API_KEY` is set,
+in the environment or in a gitignored `.env.local` that `npm test` reads (copy
+`.env.local.example`). Everything they write lives in a throwaway namespace and expires by itself.
+CI sets the key from the `AINOFLOW_API_KEY` repository secret; a fork's pull request has no secret
+and skips them.
 
 ## Code
 

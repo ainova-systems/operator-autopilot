@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --test-concurrency=4 \"src/**/*.test.ts\"",
+    "test": "node --env-file-if-exists=.env.local --test --test-concurrency=4 \"src/**/*.test.ts\"",
     "test:pack": "node scripts/pack-smoke.mjs",
     "prepack": "npm run build"
   },

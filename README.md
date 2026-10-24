@@ -64,6 +64,7 @@ question answered through a trigger.
 npm ci
 npm run typecheck
 npm test            # unit and integration tests; live Ainoflow tests run when AINOFLOW_API_KEY is set
+                    # in the environment or in .env.local (see .env.local.example)
 npm run test:pack   # packs the package, installs it into an empty directory and runs the CLI
 ```
 

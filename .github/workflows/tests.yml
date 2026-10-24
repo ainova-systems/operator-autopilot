@@ -30,6 +30,9 @@ jobs:
 
       - name: Tests
         run: npm test
+        env:
+          # Live Ainoflow tests run when the secret is set; a fork's pull request has none and skips them.
+          AINOFLOW_API_KEY: ${{ secrets.AINOFLOW_API_KEY }}
 
       - name: Pack and run the installed CLI
         run: npm run test:pack
