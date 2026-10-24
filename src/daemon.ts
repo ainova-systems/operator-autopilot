@@ -61,6 +61,7 @@ export class Daemon {
   private readonly renewedAt = new Map<string, number>();
   private readonly notified = new Set<string>();
   private tabsPending = true;
+  private readonly tabsWarned = new Set<string>();
   private lastTabRetry = 0;
   private lastPoll = 0;
   private lastWaitSweep = 0;
@@ -560,10 +561,16 @@ export class Daemon {
   private async closeTab(jobId: string, tabId: string): Promise<void> {
     try {
       await this.herdr.closeTab(tabId);
+      return;
     } catch (error) {
       this.log.warn('closing the run\'s herdr tab failed; a later poll retries it', { job: jobId, tab: tabId, error: errorText(error) });
+    }
+    try {
       await this.backend.docs.replace(TABS_COLLECTION, tabId, { tabId, jobId, since: new Date().toISOString() }, { ttlMs: TAB_RECORD_TTL_MS });
       this.tabsPending = true;
+    } catch (error) {
+      // Releasing never fails the run it belongs to; this tab then waits for a person.
+      this.log.error('the open herdr tab could not be recorded for a retry; close it by hand', { job: jobId, tab: tabId, error: errorText(error) });
     }
   }
 
@@ -574,10 +581,16 @@ export class Daemon {
       try {
         const outcome = await this.herdr.closeTab(value.tabId);
         await this.backend.docs.delete(TABS_COLLECTION, key);
+        this.tabsWarned.delete(value.tabId);
         this.log.info('closed a herdr tab an earlier run left open', { job: value.jobId, tab: value.tabId, outcome });
       } catch (error) {
         left += 1;
-        this.log.debug('a herdr tab is still not closed', { job: value.jobId, tab: value.tabId, error: errorText(error) });
+        const fields = { job: value.jobId, tab: value.tabId, error: errorText(error) };
+        if (this.tabsWarned.has(value.tabId)) this.log.debug('a herdr tab is still not closed', fields);
+        else {
+          this.tabsWarned.add(value.tabId);
+          this.log.warn('a herdr tab is still not closed; retrying every minute', fields);
+        }
       }
     }
     this.tabsPending = left > 0;

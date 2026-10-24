@@ -244,7 +244,7 @@ test('a herdr tab that could not be closed is closed on a later poll', async () 
     runInPane: async (_pane, command) => { spawn('sh', ['-c', command], { detached: true, stdio: 'ignore' }).unref(); },
     closeTab: async (tabId) => {
       closes.push(tabId);
-      if (closes.length === 1) throw new Error('herdr did not answer');
+      if (closes.length <= 2) throw new Error('herdr did not answer');
       return 'closed';
     },
   };
@@ -258,5 +258,36 @@ test('a herdr tab that could not be closed is closed on a later poll', async () 
   assert.equal((await p.backend.docs.list('tabs')).length, 1);
   await daemon.poll(new Date(Date.now() + 120_000));
   assert.deepEqual(closes, ['wT:t1', 'wT:t1']);
+  assert.equal((await p.backend.docs.list('tabs')).length, 1);
+  assert.ok(p.lines.some((line) => line.includes(' WARN ') && line.includes('a herdr tab is still not closed')));
+  await daemon.poll(new Date(Date.now() + 240_000));
+  assert.deepEqual(closes, ['wT:t1', 'wT:t1', 'wT:t1']);
   assert.equal((await p.backend.docs.list('tabs')).length, 0);
+});
+
+test('a run still finishes when neither herdr nor the state store can take its tab', async () => {
+  const p = await project();
+  const herdr: Herdr = {
+    ...absentHerdr,
+    available: async () => true,
+    findWorkspace: async () => 'wT',
+    createTab: async () => ({ tabId: 'wT:t1', paneId: 'wT:p1', workspaceId: 'wT' }),
+    runInPane: async (_pane, command) => { spawn('sh', ['-c', command], { detached: true, stdio: 'ignore' }).unref(); },
+    closeTab: async () => { throw new Error('herdr did not answer'); },
+  };
+  const docs = p.backend.docs;
+  const backend = {
+    ...p.backend,
+    docs: {
+      ...docs,
+      replace: (collection: string, key: string, value: unknown, options?: { etag?: string; ttlMs?: number }) =>
+        collection === 'tabs' ? Promise.reject(new Error('storage did not answer')) : docs.replace(collection, key, value, options),
+    },
+  };
+  const daemon = p.daemon({ herdr, backend });
+  await daemon.acquireLeader();
+  await p.drop('item-1.work', '1');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'item-1'))[0]?.status === 'done', 10_000);
+  assert.ok(p.lines.some((line) => line.includes('the open herdr tab could not be recorded')));
 });
