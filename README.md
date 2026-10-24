@@ -54,6 +54,15 @@ operator state get|put|list|delete <collection> [key]   # project state for scri
 `OPERATOR_ENV_FILE` (`envKeys` / `OPERATOR_ENV_KEYS` limit what is taken). The file state provider is
 for tests and dry runs only.
 
+The same CLI ships as an image, `ghcr.io/ainova-systems/operator-autopilot/operator`, for hosts
+that run it in a container. The image carries no agent CLIs, so it suits script operations or a
+base image that adds them; it runs as the `node` user, which must be able to read the mounted
+project:
+
+```bash
+docker run --rm -v "$PWD:/project" ghcr.io/ainova-systems/operator-autopilot/operator validate
+```
+
 `deploy/systemd/operator@.service` runs the daemon as a user service. `fixtures/demo` is a complete
 example project: a discovery script, a stand-in agent placed in a herdr tab, a follow-on step and a
 question answered through a trigger.

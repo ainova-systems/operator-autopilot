@@ -32,3 +32,18 @@ and skips them.
 Branch from `master`, open a pull request, keep one logical change per pull request. Commit
 messages are one line, capitalised, past tense. Add a line under `## [Unreleased]` in
 `CHANGELOG.md` for anything a user of the runtime would notice.
+
+## Releases
+
+A release is a GitHub Release on `master`; `.github/workflows/release.yml` does the rest.
+
+1. In a pull request, set `version` in `package.json` (`npm version --no-git-tag-version X.Y.Z`)
+   and turn `## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z]`.
+2. After it merges, publish a GitHub Release tagged `vX.Y.Z` on `master`, or `vX.Y.Z-rc.N` marked
+   as a prerelease.
+3. The workflow checks that the tag matches `package.json` and sits on `master`, runs the gates,
+   publishes the package to npm (`latest`, or `next` for a release candidate) with provenance, and
+   pushes the image to GHCR (`X.Y.Z`, plus `latest` for a final release).
+
+Publishing needs the `NPM_TOKEN` repository secret: a granular npm token with publish rights on the
+`ainova-systems` organisation.

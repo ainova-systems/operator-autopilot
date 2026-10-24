@@ -1,7 +1,24 @@
 {
   "name": "@ainova-systems/operator",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A small generic runtime that runs a project's workflow operations - scripts and agent CLIs - on timers and triggers, with its state in Ainoflow.",
+  "keywords": [
+    "orchestration",
+    "agents",
+    "workflow",
+    "claude-code",
+    "codex",
+    "ainoflow",
+    "herdr"
+  ],
+  "homepage": "https://github.com/ainova-systems/operator-autopilot#readme",
+  "bugs": {
+    "url": "https://github.com/ainova-systems/operator-autopilot/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ainova-systems/operator-autopilot.git"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -14,6 +31,9 @@
   ],
   "engines": {
     "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
