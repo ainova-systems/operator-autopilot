@@ -22,6 +22,8 @@ Thumbs.db
 CLAUDE.md
 CODEX.md
 .cursorrules
+.agents/
+.codex/
 intelligence/_backup/
 **/.tmp/
 # Intelligence generated state and tool output
@@ -35,8 +37,6 @@ intelligence/skills/*.local/
 .cursor/*
 !.cursor/
 !.cursor/settings.json
-.agents/skills/
-.codex/agents/
 AGENTS.override.md
 
 # Demo fixture run data
