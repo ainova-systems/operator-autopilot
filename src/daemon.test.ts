@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { enqueue } from './jobs.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import type { Herdr } from './herdr.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo } from './runfiles.ts';
-import { createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
+import { absentHerdr, createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
 import { fireTrigger } from './triggers.ts';
 
 const projects: TestProject[] = [];
@@ -229,4 +231,32 @@ test('an exclusive operation never runs twice at once', async () => {
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'discover')).every((job) => job.status === 'done' || job.status === 'noop'));
   // The item was taken once, so exactly one work job exists for it.
   assert.equal((await jobsBy(daemon, 'work', 'one')).length, 1);
+});
+
+test('a herdr tab that could not be closed is closed on a later poll', async () => {
+  const p = await project();
+  const closes: string[] = [];
+  const herdr: Herdr = {
+    ...absentHerdr,
+    available: async () => true,
+    findWorkspace: async () => 'wT',
+    createTab: async () => ({ tabId: 'wT:t1', paneId: 'wT:p1', workspaceId: 'wT' }),
+    runInPane: async (_pane, command) => { spawn('sh', ['-c', command], { detached: true, stdio: 'ignore' }).unref(); },
+    closeTab: async (tabId) => {
+      closes.push(tabId);
+      if (closes.length === 1) throw new Error('herdr did not answer');
+      return 'closed';
+    },
+  };
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await p.drop('item-1.work', '1');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'item-1'))[0]?.status === 'done');
+  assert.equal((await jobsBy(daemon, 'work', 'item-1'))[0]?.run?.placement.kind, 'herdr');
+  assert.deepEqual(closes, ['wT:t1']);
+  assert.equal((await p.backend.docs.list('tabs')).length, 1);
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closes, ['wT:t1', 'wT:t1']);
+  assert.equal((await p.backend.docs.list('tabs')).length, 0);
 });

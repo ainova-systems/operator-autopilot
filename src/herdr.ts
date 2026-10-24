@@ -15,14 +15,45 @@ export interface Herdr {
   createTab(workspaceId: string, cwd: string, label: string): Promise<HerdrTab>;
   runInPane(paneId: string, command: string): Promise<void>;
   setTitle(paneId: string, title: string): Promise<void>;
-  closeTab(tabId: string): Promise<void>;
+  /** `gone` when the tab was already closed, for example by hand. */
+  closeTab(tabId: string): Promise<'closed' | 'gone'>;
   agentStatus(paneId: string): Promise<string | undefined>;
   notify(title: string, body: string): Promise<void>;
 }
 
+/** herdr refused a call and named the reason, for example `tab_not_found`. */
+export class HerdrRefusal extends OperatorError {
+  readonly reason: string;
+
+  constructor(reason: string, message: string) {
+    super('HERDR_REFUSED', message);
+    this.reason = reason;
+  }
+}
+
+/** Reads the reason a failed herdr call prints as JSON on stderr, so "already gone" differs from "not reachable". */
+export function herdrRefusal(error: unknown): HerdrRefusal | undefined {
+  const stderr = (error as { stderr?: unknown } | undefined)?.stderr;
+  if (typeof stderr !== 'string') return undefined;
+  let parsed: { error?: { code?: unknown; message?: unknown } };
+  try {
+    parsed = JSON.parse(stderr) as typeof parsed;
+  } catch {
+    // Not herdr's JSON answer: the caller rethrows the original failure unchanged.
+    return undefined;
+  }
+  const reason = parsed.error?.code;
+  if (typeof reason !== 'string') return undefined;
+  return new HerdrRefusal(reason, typeof parsed.error?.message === 'string' ? parsed.error.message : reason);
+}
+
 export const defaultHerdrExec: HerdrExec = async (args) => {
-  const { stdout } = await run('herdr', args, { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
-  return stdout;
+  try {
+    const { stdout } = await run('herdr', args, { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
+    return stdout;
+  } catch (error) {
+    throw herdrRefusal(error) ?? error;
+  }
 };
 
 function result(stdout: string, command: string): Record<string, unknown> {
@@ -58,8 +89,14 @@ export function createHerdr(exec: HerdrExec = defaultHerdrExec): Herdr {
       // herdr reads the pane id only before the options here.
       await exec(['pane', 'report-metadata', paneId, '--source', 'operator', '--title', title]);
     },
-    async closeTab(tabId: string): Promise<void> {
-      await exec(['tab', 'close', tabId]);
+    async closeTab(tabId: string): Promise<'closed' | 'gone'> {
+      try {
+        await exec(['tab', 'close', tabId]);
+        return 'closed';
+      } catch (error) {
+        if (error instanceof HerdrRefusal && error.reason === 'tab_not_found') return 'gone';
+        throw error;
+      }
     },
     async agentStatus(paneId: string): Promise<string | undefined> {
       const info = result(await exec(['pane', 'get', paneId]), 'pane get');

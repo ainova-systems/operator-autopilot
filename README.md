@@ -35,6 +35,8 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
 - **herdr.** `placement: herdr` opens a tab of the runtime's own in the target workspace and runs the
   wrapper there. Screen state is only a hint; a `blocked` agent raises a notification and is never
   answered by the runtime. Without herdr the run degrades to headless and the job record says so.
+  A tab herdr cannot close when its run ends is closed on a later poll; one closed by hand counts
+  as closed.
 
 ## Use
 

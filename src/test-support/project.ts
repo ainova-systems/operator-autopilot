@@ -20,7 +20,7 @@ export const absentHerdr: Herdr = {
   createTab: async () => { throw new Error('no herdr'); },
   runInPane: async () => { throw new Error('no herdr'); },
   setTitle: async () => undefined,
-  closeTab: async () => undefined,
+  closeTab: async () => 'gone',
   agentStatus: async () => undefined,
   notify: async () => undefined,
 };
@@ -32,7 +32,7 @@ export interface TestProject {
   backend: StateBackend;
   lines: string[];
   log: Logger;
-  daemon(options?: { dryRun?: boolean }): Daemon;
+  daemon(options?: { dryRun?: boolean; herdr?: Herdr }): Daemon;
   drop(name: string, content?: string): Promise<void>;
   launches(): Promise<string[]>;
   cleanup(): Promise<void>;

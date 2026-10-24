@@ -18,7 +18,7 @@ import { validateProject } from './validate.ts';
 import { WaitStore } from './waits.ts';
 
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads']);
+const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'tabs']);
 
 const HELP = `operator ${VERSION} - runs a project's workflow operations on timers and triggers
 
@@ -33,7 +33,7 @@ Commands:
   job <id>                         Show one job record
   waits                            List open waits
   state <get|put|list|delete> <collection> [key]
-                                   Project state for scripts and skills (reserved: jobs, waits, threads)
+                                   Project state for scripts and skills (reserved: jobs, waits, threads, tabs)
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
 
 Options:

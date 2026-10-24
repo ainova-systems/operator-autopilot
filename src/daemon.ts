@@ -32,6 +32,10 @@ const HEARTBEAT_STALE_MS = 30_000;
 const START_GRACE_MS = 60_000;
 const MAX_INTERRUPTIONS = 3;
 const WAIT_SWEEP_MS = 60_000;
+const TAB_RETRY_MS = 60_000;
+const TAB_RECORD_TTL_MS = 7 * 86_400_000;
+/** Herdr tabs a finished run could not close; a tab never expires by itself. */
+export const TABS_COLLECTION = 'tabs';
 
 /**
  * The runtime's single active process per project. It holds the leader lease, fires timers, starts
@@ -56,6 +60,8 @@ export class Daemon {
   private readonly deferred = new Map<string, number>();
   private readonly renewedAt = new Map<string, number>();
   private readonly notified = new Set<string>();
+  private tabsPending = true;
+  private lastTabRetry = 0;
   private lastPoll = 0;
   private lastWaitSweep = 0;
   private stopped = false;
@@ -213,6 +219,10 @@ export class Daemon {
     if (now.getTime() - this.lastWaitSweep >= WAIT_SWEEP_MS) {
       this.lastWaitSweep = now.getTime();
       await this.sweepWaits(now);
+    }
+    if (this.tabsPending && now.getTime() - this.lastTabRetry >= TAB_RETRY_MS) {
+      this.lastTabRetry = now.getTime();
+      await this.retryTabs();
     }
   }
 
@@ -538,12 +548,39 @@ export class Daemon {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
     if (run.lease) steps.push(releaseOwnedLease(this.backend, run.lease.key, run.lease.token));
-    if (run.placement.tabId) steps.push(this.herdr.closeTab(run.placement.tabId));
     // A freed slot may be what a deferred job was waiting for.
     this.deferred.clear();
     for (const outcome of await Promise.allSettled(steps)) {
       if (outcome.status === 'rejected') this.log.warn('releasing part of a run failed; it expires by itself', { job: jobId, error: errorText(outcome.reason) });
     }
+    if (run.placement.tabId) await this.closeTab(jobId, run.placement.tabId);
+  }
+
+  /** Closes a run's tab, or keeps it on record so a later poll closes it once herdr answers again. */
+  private async closeTab(jobId: string, tabId: string): Promise<void> {
+    try {
+      await this.herdr.closeTab(tabId);
+    } catch (error) {
+      this.log.warn('closing the run\'s herdr tab failed; a later poll retries it', { job: jobId, tab: tabId, error: errorText(error) });
+      await this.backend.docs.replace(TABS_COLLECTION, tabId, { tabId, jobId, since: new Date().toISOString() }, { ttlMs: TAB_RECORD_TTL_MS });
+      this.tabsPending = true;
+    }
+  }
+
+  private async retryTabs(): Promise<void> {
+    const pending = await this.backend.docs.list<{ tabId: string; jobId: string }>(TABS_COLLECTION);
+    let left = 0;
+    for (const { key, value } of pending) {
+      try {
+        const outcome = await this.herdr.closeTab(value.tabId);
+        await this.backend.docs.delete(TABS_COLLECTION, key);
+        this.log.info('closed a herdr tab an earlier run left open', { job: value.jobId, tab: value.tabId, outcome });
+      } catch (error) {
+        left += 1;
+        this.log.debug('a herdr tab is still not closed', { job: value.jobId, tab: value.tabId, error: errorText(error) });
+      }
+    }
+    this.tabsPending = left > 0;
   }
 
   private async sweepWaits(now: Date): Promise<void> {

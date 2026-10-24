@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { createHerdr, shellQuote } from './herdr.ts';
+import { createHerdr, herdrRefusal, HerdrRefusal, shellQuote } from './herdr.ts';
 
 test('the herdr adapter opens its own tab and names it, using the CLI\'s JSON answers', async () => {
   const calls: string[][] = [];
@@ -34,4 +34,19 @@ test('pane commands quote arguments for the shell', () => {
   assert.equal(shellQuote('/usr/bin/node'), '/usr/bin/node');
   assert.equal(shellQuote('/tmp/my runs/a1'), "'/tmp/my runs/a1'");
   assert.equal(shellQuote("it's"), "'it'\\''s'");
+});
+
+test('a tab herdr no longer has counts as closed; any other refusal is reported', async () => {
+  const refusing = (reason: string) => createHerdr(async () => { throw new HerdrRefusal(reason, `refused: ${reason}`); });
+  assert.equal(await refusing('tab_not_found').closeTab('wA:t9'), 'gone');
+  await assert.rejects(refusing('server_unavailable').closeTab('wA:t9'), /refused: server_unavailable/);
+  assert.equal(await createHerdr(async () => '{"result":{}}').closeTab('wA:t3'), 'closed');
+});
+
+test('a failed herdr call is read for the reason it prints', () => {
+  const refusal = herdrRefusal({ stdout: '', stderr: '{"error":{"code":"tab_not_found","message":"tab wD:t999 not found"},"id":"cli:tab:close"}\n' });
+  assert.equal(refusal?.reason, 'tab_not_found');
+  assert.equal(refusal?.message, 'tab wD:t999 not found');
+  assert.equal(herdrRefusal({ stdout: '', stderr: 'socket closed' }), undefined);
+  assert.equal(herdrRefusal(new Error('spawn herdr ENOENT')), undefined);
 });
