@@ -56,7 +56,8 @@ operator state get|put|list|delete <collection> [key]   # project state for scri
 ```
 
 `AINOFLOW_API_KEY` comes from the environment, or from the manifest's `envFile` /
-`OPERATOR_ENV_FILE` (`envKeys` / `OPERATOR_ENV_KEYS` limit what is taken). The file state provider is
+`OPERATOR_ENV_FILE` (`envKeys` / `OPERATOR_ENV_KEYS` limit what is taken, and a missing file is fine
+once the environment already holds every one of them). The file state provider is
 for tests and dry runs only.
 
 The same CLI ships as an image, `ghcr.io/ainova-systems/operator-autopilot/operator`, for hosts
