@@ -4,7 +4,7 @@
 #   cp operator@.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #   systemctl --user enable --now operator@<project>.service
 [Unit]
-Description=Operator orchestration runtime for %i
+Description=Operator runtime for %i
 After=network-online.target herdr.service
 Wants=network-online.target
 

@@ -47,12 +47,12 @@ export async function createTestProject(options: { extraOperations?: string; poo
   await cp(FIXTURE, root, { recursive: true, filter: (source) => !source.includes(`${join('demo', 'data')}`) || source.endsWith('data') });
   const data = join(root, 'data');
   await mkdir(join(data, 'inbox'), { recursive: true });
-  const text = (await readFile(join(FIXTURE, 'orchestrator.yaml'), 'utf8'))
+  const text = (await readFile(join(FIXTURE, 'operator.yaml'), 'utf8'))
     .replace(/state:\n {2}provider: ainoflow\n {2}namespace: op-demo/, `state:\n  provider: file\n  dir: ${join(root, '.state')}`)
     .replace(/runtime:\n {2}tick: 2s\n {2}poll: 2s\n {2}leaseTtl: 60s/, `runtime:\n  stateDir: ${join(root, '.runtime')}\n  tick: 100ms\n  poll: 100ms\n  leaseTtl: 6s`)
     .replace('  checks: { limit: 1, slotTtl: 30m }', `  checks: { limit: 1, slotTtl: 30m }\n${options.pools ?? ''}`)
     .replace(/      answered: \{[^\n]*\}/, (line) => `${line}\n${options.extraOperations ?? ''}`);
-  const manifestPath = join(root, 'orchestrator.yaml');
+  const manifestPath = join(root, 'operator.yaml');
   await writeFile(manifestPath, text);
   const { manifest } = parseManifest(text, manifestPath);
   const backend = createFileBackend(join(root, '.state'), manifest.state.namespace);

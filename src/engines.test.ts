@@ -7,10 +7,10 @@ const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args
 const context = { root: '/repo', cwd: '/repo', runDir: '/runs/j1/a1', inputPath: '/runs/j1/a1/input.json', resultPath: '/runs/j1/a1/result.json', workflow: 'development', operation: 'implement', subject: 'pr-7' };
 
 test('a claude operation runs its skill headlessly with a pointer prompt', () => {
-  const { argv } = buildCommand({ ...base, engine: 'claude', skill: 'orchestrator-implement', model: 'opus', args: ['--permission-mode', 'acceptEdits'] }, context);
+  const { argv } = buildCommand({ ...base, engine: 'claude', skill: 'implement-change', model: 'opus', args: ['--permission-mode', 'acceptEdits'] }, context);
   assert.equal(argv[0], 'claude');
   assert.equal(argv[1], '-p');
-  assert.match(argv[2] ?? '', /^Delegated sub-agent: do not orchestrate\. Run the orchestrator-implement skill for subject pr-7\. The operation input file is \/runs\/j1\/a1\/input\.json\. Write the operation result \(contract 1\) to \/runs\/j1\/a1\/result\.json\.$/);
+  assert.match(argv[2] ?? '', /^Run the implement-change skill for subject pr-7\. The operation input file is \/runs\/j1\/a1\/input\.json\. Write the operation result \(contract 1\) to \/runs\/j1\/a1\/result\.json\.$/);
   assert.deepEqual(argv.slice(3), ['--model', 'opus', '--permission-mode', 'acceptEdits']);
 });
 

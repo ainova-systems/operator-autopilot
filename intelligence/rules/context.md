@@ -1,6 +1,6 @@
 # Operator (ainova-systems/operator-autopilot)
 
-A small, generic orchestration runtime: it runs a project's operations - scripts and agent CLIs -
+A small, generic runtime: it runs a project's operations - scripts and agent CLIs -
 on timers and named triggers, with its state in Ainoflow, optionally placing runs in herdr tabs.
 Published as `@ainova-systems/operator` with the `operator` CLI.
 
@@ -15,7 +15,7 @@ project's process is in the wrong repository.
 ```
 src/
   cli.ts          the operator CLI (validate, run, trigger, enqueue, jobs, job, waits, state, job-exec)
-  manifest.ts     orchestrator.yaml: workflows, triggers (every/cron/on), operations, pools; all problems at once
+  manifest.ts     operator.yaml: workflows, triggers (every/cron/on), operations, pools; all problems at once
   contract.ts     contract 1: the input file every run gets, the result file it writes back
   daemon.ts       leader lease, timers, dispatch into pools, observe runs, collect results, restart adoption
   triggers.ts     timer slots and named triggers (resume a wait, else the workflow's `on:` trigger)
@@ -59,5 +59,5 @@ npm ci
 npm run typecheck
 npm test
 npm run test:pack
-node src/cli.ts validate --manifest fixtures/demo/orchestrator.yaml --offline
+node src/cli.ts validate --manifest fixtures/demo/operator.yaml --offline
 ```

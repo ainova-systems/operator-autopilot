@@ -16,16 +16,16 @@ workflows:
       - every: 5m
         run: discover-development
     operations:
-      discover-development: { kind: script, command: node Scripts/orchestrator/discover-development.mjs }
+      discover-development: { kind: script, command: node scripts/discover.mjs }
       review: { kind: agent, engine: codex, agent: code-reviewer, schema: review.json, thread: per-subject, pool: codex-review, placement: herdr, then: review-verdict }
-      review-verdict: { kind: agent, engine: claude, skill: orchestrator-review, pool: claude-slot }
+      review-verdict: { kind: agent, engine: claude, skill: post-review, pool: claude-slot }
   staging:
     enabled: false
     triggers: [{ cron: "0 6 * * 1-5", run: discover-staging }]
 `;
 
 test('reads the plan example: pools, workflows, defaults and a disabled sketch', () => {
-  const { manifest, warnings } = parseManifest(VALID, '/repo/orchestrator.yaml');
+  const { manifest, warnings } = parseManifest(VALID, '/repo/operator.yaml');
   assert.equal(manifest.project, 'tomis');
   assert.equal(manifest.state.namespace, 'op-tomis');
   assert.deepEqual(manifest.pools.get('codex-review'), { kind: 'limit', name: 'codex-review', limit: 3, slotTtlMs: 4 * 3_600_000, shared: true });
@@ -43,7 +43,7 @@ test('reads the plan example: pools, workflows, defaults and a disabled sketch',
 
 test('reports every unresolved reference of an enabled workflow with its path', () => {
   const broken = VALID.replace('pool: codex-review, placement', 'pool: nowhere, placement').replace('run: discover-development', 'run: discover');
-  assert.throws(() => parseManifest(broken, 'orchestrator.yaml'), (error: unknown) => {
+  assert.throws(() => parseManifest(broken, 'operator.yaml'), (error: unknown) => {
     assert.ok(error instanceof ManifestError);
     assert.deepEqual(error.problems, [
       'workflows.development.operations.review.pool: unknown pool "nowhere"',

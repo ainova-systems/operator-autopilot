@@ -3,7 +3,6 @@
   "version": "0.7.0",
   "description": "A small generic runtime that runs a project's workflow operations - scripts and agent CLIs - on timers and triggers, with its state in Ainoflow.",
   "keywords": [
-    "orchestration",
     "agents",
     "workflow",
     "claude-code",

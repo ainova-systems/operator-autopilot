@@ -17,7 +17,7 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
                        next operations / a wait ◀── result file (contract 1)
 ```
 
-- **Manifest** (`orchestrator.yaml`, next to the project's sources) names workflows, their triggers
+- **Manifest** (`operator.yaml`, next to the project's sources) names workflows, their triggers
   (`every`, `cron`, `on`), operations and pools.
 - **Contract 1.** Every run gets an input file (`$OPERATOR_INPUT`) and writes one result file
   (`$OPERATOR_RESULT`): `status` is `done | noop | waiting | needs-input | failed`, with `evidence`,
@@ -47,8 +47,8 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
 
 ```bash
 npm install --global @ainova-systems/operator   # or: npm install && npm run build
-operator validate --manifest orchestrator.yaml  # manifest, scripts (--describe), skills, schemas, state
-operator run --manifest orchestrator.yaml       # the daemon; one active daemon per project
+operator validate --manifest operator.yaml      # manifest, scripts (--describe), skills, schemas, state
+operator run --manifest operator.yaml          # the daemon; one active daemon per project
 operator run --dry-run                          # scripts run, agents are only logged, local state
 operator trigger <workflow> <name> --subject pr-7 --key q-1 --input '{"answer":"yes"}'
 operator jobs [--status queued]  |  operator job <id>  |  operator waits

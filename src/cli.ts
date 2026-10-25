@@ -37,7 +37,7 @@ Commands:
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
 
 Options:
-  --manifest <path>     Manifest file (default: $OPERATOR_MANIFEST or ./orchestrator.yaml)
+  --manifest <path>     Manifest file (default: $OPERATOR_MANIFEST or ./operator.yaml)
   --subject <s>         Subject key for trigger/enqueue (opaque to the runtime)
   --input <json>        Input pointers as a JSON object
   --key <k>             Wait key a trigger answers (e.g. a question id)

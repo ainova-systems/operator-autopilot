@@ -154,7 +154,7 @@ jobs:
             --label "org.opencontainers.image.source=$SOURCE" \
             --label "org.opencontainers.image.version=$VERSION" \
             --label "org.opencontainers.image.licenses=MIT" \
-            --label "org.opencontainers.image.description=Operator orchestration runtime" \
+            --label "org.opencontainers.image.description=Operator runtime" \
             -t "$NAME:$VERSION" .
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 

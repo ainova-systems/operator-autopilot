@@ -25,8 +25,8 @@ export interface CommandContext {
   codexAgent?: CodexAgent;
 }
 
-export const DEFAULT_CLAUDE_PROMPT = 'Delegated sub-agent: do not orchestrate. Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
-export const DEFAULT_CODEX_PROMPT = 'Delegated sub-agent: do not orchestrate. Act as the {agent} agent defined in {agentFile} for subject {subject}. The operation input file is {input}. Answer only with the requested output.';
+export const DEFAULT_CLAUDE_PROMPT = 'Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
+export const DEFAULT_CODEX_PROMPT = 'Act as the {agent} agent defined in {agentFile} for subject {subject}. The operation input file is {input}. Answer only with the requested output.';
 
 export function renderPrompt(template: string, values: Record<string, string>): string {
   return template.replace(/\{([a-zA-Z]+)\}/g, (whole, name: string) => values[name] ?? whole);

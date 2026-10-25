@@ -22,7 +22,7 @@ try {
   const bin = join(app, 'node_modules', '.bin', 'operator');
   const version = run(bin, ['--version'], app).trim();
   run(bin, ['--help'], app);
-  const validated = run(bin, ['validate', '--offline', '--manifest', join(root, 'fixtures', 'demo', 'orchestrator.yaml')], app);
+  const validated = run(bin, ['validate', '--offline', '--manifest', join(root, 'fixtures', 'demo', 'operator.yaml')], app);
   console.log(`pack smoke ok: ${packed[0].filename} (${files.length} files), operator ${version}`);
   console.log(validated.trim().split('\n').at(-1));
 } finally {

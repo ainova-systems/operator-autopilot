@@ -36,7 +36,7 @@ test('help, version and usage errors answer with the right exit codes', async ()
 test('validate and trigger work against a project', async () => {
   const p = await createTestProject();
   projects.push(p);
-  const manifest = join(p.root, 'orchestrator.yaml');
+  const manifest = join(p.root, 'operator.yaml');
   const validated = await cli(['validate', '--manifest', manifest, '--describe']);
   assert.equal(validated.code, 0, validated.stderr + validated.stdout);
   assert.match(validated.stdout, /ok: .* project demo, 1 workflow\(s\), 5 operation\(s\), 2 pool\(s\), state file ready/);
@@ -59,7 +59,7 @@ async function waitFor(store: JobStore, predicate: (jobs: JobRecord[]) => boolea
 test('kill -9 of the daemon mid-job: the restart adopts the run and launches nothing twice', async () => {
   const p = await createTestProject();
   projects.push(p);
-  const manifest = join(p.root, 'orchestrator.yaml');
+  const manifest = join(p.root, 'operator.yaml');
   const store = new JobStore(p.backend.docs, p.manifest.runtime.retentionMs);
   await p.drop('slow.work', '4');
   const output: string[] = [];
@@ -92,7 +92,7 @@ test('kill -9 of the daemon mid-job: the restart adopts the run and launches not
 test('scripts cannot change the collections the runtime keeps its own records in', async () => {
   const p = await createTestProject();
   projects.push(p);
-  const manifest = join(p.root, 'orchestrator.yaml');
+  const manifest = join(p.root, 'operator.yaml');
   for (const collection of ['jobs', 'waits', 'threads', 'deliveries', 'tabs']) {
     const refused = await cli(['state', 'delete', collection, 'x', '--manifest', manifest]);
     assert.equal(refused.code, 2, collection);

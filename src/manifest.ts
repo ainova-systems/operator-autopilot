@@ -384,8 +384,8 @@ export function loadManifest(path: string): LoadedManifest {
   return parseManifest(text, path);
 }
 
-/** Resolves the manifest path from an explicit flag, OPERATOR_MANIFEST, or ./orchestrator.yaml. */
+/** Resolves the manifest path from an explicit flag, OPERATOR_MANIFEST, or ./operator.yaml. */
 export function manifestPath(flag: string | undefined): string {
-  const path = flag ?? process.env['OPERATOR_MANIFEST'] ?? 'orchestrator.yaml';
+  const path = flag ?? process.env['OPERATOR_MANIFEST'] ?? 'operator.yaml';
   return isAbsolute(path) ? path : resolve(process.cwd(), path);
 }
