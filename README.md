@@ -28,6 +28,9 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
 - **Crash safety.** A run's wrapper is detached from the daemon and leaves a heartbeat and
   `exit.json` in its run directory. A restarted daemon adopts running jobs instead of starting them
   again, and re-runs a job whose wrapper died.
+- **Codex agents.** `engine: codex` with `agent: <name>` runs read-only with the model, reasoning
+  effort and instructions of `.codex/agents/<name>.toml` in the run's working directory; `validate`
+  reads the definition and names what it cannot read.
 - **Exclusive operations.** `exclusive: true` keeps an operation - typically discovery - to one run
   at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);

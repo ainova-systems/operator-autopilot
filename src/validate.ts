@@ -2,7 +2,9 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { readCodexAgent } from './codex-agent.ts';
 import type { Herdr } from './herdr.ts';
+import { errorText } from './log.ts';
 import type { Manifest, OperationSpec } from './manifest.ts';
 
 const execFileAsync = promisify(execFile);
@@ -57,7 +59,11 @@ export async function validateProject(manifest: Manifest, warnings: string[], op
         for (const cwd of cwds) if (!existsSync(join(cwd, '.claude', 'skills', op.skill, 'SKILL.md'))) report.problems.push(`${where}: skill ${op.skill} is not installed in ${cwd} (.claude/skills/${op.skill}/SKILL.md)`);
       }
       if (op.agent) {
-        for (const cwd of cwds) if (!existsSync(join(cwd, '.codex', 'agents', `${op.agent}.toml`))) report.problems.push(`${where}: agent ${op.agent} has no .codex/agents/${op.agent}.toml in ${cwd}`);
+        for (const cwd of cwds) {
+          const file = join(cwd, '.codex', 'agents', `${op.agent}.toml`);
+          if (!existsSync(file)) report.problems.push(`${where}: agent ${op.agent} has no .codex/agents/${op.agent}.toml in ${cwd}`);
+          else await readCodexAgent(file).catch((error: unknown) => { report.problems.push(`${where}: ${errorText(error)}`); });
+        }
       }
       if (op.schema && !existsSync(resolve(manifest.root, op.schema))) report.problems.push(`${where}: schema ${op.schema} does not exist`);
       if (op.placement === 'herdr') {

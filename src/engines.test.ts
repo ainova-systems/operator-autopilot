@@ -30,6 +30,19 @@ test('a codex operation is read-only, schema-bound, and resumes its thread', () 
   assert.ok(resumed.argv.includes('sandbox_mode="read-only"'));
 });
 
+test('a codex operation carries its agent definition\'s model and instructions', () => {
+  const op: OperationSpec = { ...base, engine: 'codex', agent: 'code-reviewer' };
+  const agent = { model: 'gpt-6.1-sol', reasoningEffort: 'high', instructions: 'Review "diffs".\nCite file:line.' };
+  const { argv } = buildCommand(op, { ...context, codexAgent: agent });
+  assert.equal(argv[argv.indexOf('-m') + 1], 'gpt-6.1-sol');
+  assert.ok(argv.includes('model_reasoning_effort="high"'));
+  assert.ok(argv.includes('developer_instructions="Review \\"diffs\\".\\nCite file:line."'));
+  const pinned = buildCommand({ ...op, model: 'gpt-other' }, { ...context, codexAgent: agent }).argv;
+  assert.deepEqual(pinned.filter((arg) => arg === 'gpt-6.1-sol' || arg === 'gpt-other'), ['gpt-other']);
+  const resumed = buildCommand(op, { ...context, threadId: 'th-1', codexAgent: agent }).argv;
+  assert.ok(resumed.includes('developer_instructions="Review \\"diffs\\".\\nCite file:line."'));
+});
+
 test('a command operation runs through the shell', () => {
   assert.deepEqual(buildCommand({ ...base, command: 'node scripts/x.mjs --flag' }, context).argv, ['/bin/sh', '-c', 'node scripts/x.mjs --flag']);
 });

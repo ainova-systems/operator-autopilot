@@ -3,6 +3,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { CONTRACT_VERSION, type OperationInput } from './contract.ts';
+import { readCodexAgent } from './codex-agent.ts';
 import { buildCommand, type EngineCommand } from './engines.ts';
 import { shellQuote, type Herdr, type HerdrTab } from './herdr.ts';
 import type { JobRecord } from './jobs.ts';
@@ -30,6 +31,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
   await mkdir(runDir, { recursive: true });
   const inputPath = runPath(runDir, 'input');
   const resultPath = runPath(runDir, 'result');
+  const codexAgent = op.engine === 'codex' && op.agent ? await readCodexAgent(join(options.cwd, '.codex', 'agents', `${op.agent}.toml`)) : undefined;
   const command = buildCommand(op, {
     root: manifest.root,
     cwd: options.cwd,
@@ -40,6 +42,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     operation: job.operation,
     subject: job.subject,
     ...(options.threadId ? { threadId: options.threadId } : {}),
+    ...(codexAgent ? { codexAgent } : {}),
   });
   const input: OperationInput = {
     contract: CONTRACT_VERSION,

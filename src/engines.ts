@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path';
+import type { CodexAgent } from './codex-agent.ts';
 import type { OperationSpec } from './manifest.ts';
 
 /** The command a run executes, assembled from the operation's configuration. */
@@ -20,6 +21,8 @@ export interface CommandContext {
   subject: string;
   /** A Codex thread to resume, when the operation keeps one per subject. */
   threadId?: string;
+  /** The operation's Codex agent definition, read from the run's working directory. */
+  codexAgent?: CodexAgent;
 }
 
 export const DEFAULT_CLAUDE_PROMPT = 'Delegated sub-agent: do not orchestrate. Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
@@ -50,7 +53,14 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
     case 'codex': {
       const outputPath = join(context.runDir, 'output.json');
       const prompt = renderPrompt(op.prompt ?? DEFAULT_CODEX_PROMPT, { ...values, output: outputPath });
-      const shared = ['--json', '-o', outputPath, ...(op.schema ? ['--output-schema', resolve(context.root, op.schema)] : []), ...(op.model ? ['-m', op.model] : []), ...op.args];
+      const agent = context.codexAgent;
+      const model = op.model ?? agent?.model;
+      // The definition is the one source of the reviewer's model and instructions; -c takes TOML values.
+      const fromAgent = [
+        ...(agent?.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(agent.reasoningEffort)}`] : []),
+        ...(agent?.instructions ? ['-c', `developer_instructions=${JSON.stringify(agent.instructions)}`] : []),
+      ];
+      const shared = ['--json', '-o', outputPath, ...(op.schema ? ['--output-schema', resolve(context.root, op.schema)] : []), ...(model ? ['-m', model] : []), ...fromAgent, ...op.args];
       // `exec resume` takes no --sandbox flag, so the read-only sandbox is set through config there.
       const argv = context.threadId
         ? ['codex', 'exec', 'resume', context.threadId, ...shared, '-c', 'sandbox_mode="read-only"', prompt]
