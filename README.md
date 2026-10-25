@@ -24,7 +24,9 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
   `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Exit 0
   without a valid result is a failure.
 - **Dedupe, not exactly-once.** A job's id is derived from (workflow, operation, subject, trigger
-  id); the same trigger twice is one job. Operations re-read live state before acting.
+  id); the same trigger twice is one job. A `next` request may carry a `key`: requests with the
+  same operation, subject and key are one job while its record is kept, so a discovery that runs
+  every few minutes can ask for the same work each time. Operations re-read live state before acting.
 - **Crash safety.** A run's wrapper is detached from the daemon and leaves a heartbeat and
   `exit.json` in its run directory. A restarted daemon adopts running jobs instead of starting them
   again, and re-runs a job whose wrapper died.

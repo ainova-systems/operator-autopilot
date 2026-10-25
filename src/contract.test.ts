@@ -40,3 +40,13 @@ test('reports every problem of a malformed result at once', () => {
   assert.match(outcome.errors.join('\n'), /contract: expected 1/);
   assert.match(outcome.errors.join('\n'), /next\[0\]\.notBefore/);
 });
+
+test('a next request may carry the key that makes repeating it one job', () => {
+  const outcome = parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', key: 'head:abc1234' }] }, 'pr-1');
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(outcome.value.next, [{ operation: 'review', subject: 'pr-1', input: {}, key: 'head:abc1234' }]);
+  assert.equal(parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', key: '' }] }, 'pr-1').ok, false);
+  assert.equal(parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', key: 7 }] }, 'pr-1').ok, false);
+  assert.equal(parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', key: 'x'.repeat(201) }] }, 'pr-1').ok, false);
+});

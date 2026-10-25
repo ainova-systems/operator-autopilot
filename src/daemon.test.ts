@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { enqueue } from './jobs.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -290,4 +290,30 @@ test('a run still finishes when neither herdr nor the state store can take its t
   await discover(p, 't1');
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'work', 'item-1'))[0]?.status === 'done', 10_000);
   assert.ok(p.lines.some((line) => line.includes('the open herdr tab could not be recorded')));
+});
+
+test('two results requesting the same operation, subject and key start one job', async () => {
+  const p = await project({ extraOperations: [
+    '      emit: { kind: script, command: node scripts/emit-keyed.mjs }',
+    '      sink: { kind: script, command: node scripts/sink.mjs }',
+  ].join('\n') });
+  await writeFile(join(p.root, 'scripts', 'emit-keyed.mjs'), [
+    "import { writeFileSync } from 'node:fs';",
+    "if (process.argv.includes('--describe')) { console.log(JSON.stringify({ contract: 1 })); process.exit(0); }",
+    "writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({ contract: 1, status: 'done', next: [{ operation: 'sink', subject: 'pr-7', key: 'head:abc' }] }));",
+  ].join('\n'));
+  await writeFile(join(p.root, 'scripts', 'sink.mjs'), [
+    "import { writeFileSync } from 'node:fs';",
+    "if (process.argv.includes('--describe')) { console.log(JSON.stringify({ contract: 1 })); process.exit(0); }",
+    "writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({ contract: 1, status: 'done' }));",
+  ].join('\n'));
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  for (const id of ['poll-1', 'poll-2']) {
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'emit', subject: '', input: {}, trigger: { id, name: 'test', kind: 'manual' } });
+  }
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'emit')).every((job) => job.status === 'done') && (await jobsBy(daemon, 'sink', 'pr-7')).every((job) => job.status === 'done'));
+  const sinks = await jobsBy(daemon, 'sink', 'pr-7');
+  assert.equal(sinks.length, 1);
+  assert.deepEqual((await jobsBy(daemon, 'emit')).map((job) => job.outcome?.next), [[sinks[0]?.id], [sinks[0]?.id]]);
 });

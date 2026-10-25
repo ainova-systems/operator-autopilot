@@ -464,7 +464,9 @@ export class Daemon {
         operation: request.operation,
         subject: request.subject,
         input: request.input,
-        trigger: { id: `next:${job.id}:${job.attempt}:${index}`, name: job.operation, kind: 'next' },
+        // A keyed request is the same job whichever result asks for it, so a repeating discovery
+        // asks once per key; an unkeyed one belongs to the result that sent it.
+        trigger: { id: request.key ? `key:${request.key}` : `next:${job.id}:${job.attempt}:${index}`, name: job.operation, kind: 'next' },
         ...(request.notBefore ? { notBefore: request.notBefore } : {}),
       });
       nextIds.push(queued.id);

@@ -16,6 +16,8 @@ export interface NextRequest {
   subject: string;
   input: JsonObject;
   notBefore?: string;
+  /** Requests with the same operation, subject and key are one job, whichever result sent them. */
+  key?: string;
 }
 
 /** What a later trigger must look like to resume a waiting operation, and what it resumes. */
@@ -93,12 +95,14 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
       const subject = item['subject'] ?? defaultSubject;
       const input = item['input'] ?? {};
       const notBefore = item['notBefore'];
+      const key = item['key'];
       if (typeof operation !== 'string' || operation === '') errors.push(`${path}.operation: expected a non-empty string`);
       if (typeof subject !== 'string') errors.push(`${path}.subject: expected a string`);
       if (!isObject(input)) errors.push(`${path}.input: expected an object`);
       if (notBefore !== undefined && !isIsoDate(notBefore)) errors.push(`${path}.notBefore: expected an ISO 8601 date`);
+      if (key !== undefined && (typeof key !== 'string' || key === '' || key.length > 200)) errors.push(`${path}.key: expected a string of 1 to 200 characters`);
       if (typeof operation === 'string' && operation !== '' && typeof subject === 'string' && isObject(input)) {
-        next.push({ operation, subject, input, ...(typeof notBefore === 'string' ? { notBefore } : {}) });
+        next.push({ operation, subject, input, ...(typeof notBefore === 'string' ? { notBefore } : {}), ...(typeof key === 'string' && key !== '' ? { key } : {}) });
       }
     });
   }
