@@ -8,7 +8,7 @@ readInput();
 const dir = dataDir();
 const next = [];
 for (const name of readdirSync(join(dir, 'inbox')).sort()) {
-  const match = /^(.+)\.(work|ask)$/.exec(name);
+  const match = /^(.+)\.(work|ask|plan)$/.exec(name);
   if (!match) continue;
   next.push({ operation: match[2], subject: match[1], input: { item: name } });
   if (process.env.OPERATOR_DRY_RUN !== '1') renameSync(join(dir, 'inbox', name), join(dir, 'taken', name));

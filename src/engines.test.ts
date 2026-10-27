@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { buildCommand, findCodexThread } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
-const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {} };
+const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [] };
 const context = { root: '/repo', cwd: '/repo', runDir: '/runs/j1/a1', inputPath: '/runs/j1/a1/input.json', resultPath: '/runs/j1/a1/result.json', workflow: 'development', operation: 'implement', subject: 'pr-7' };
 
 test('a claude operation runs its skill headlessly with a pointer prompt', () => {
@@ -51,4 +51,14 @@ test('the codex thread id is read from the JSON event stream', () => {
   const output = 'operator: job j1\n{"type":"thread.started","thread_id":"0199-abc"}\n{"type":"turn.completed"}\nplain text\n';
   assert.equal(findCodexThread(output), '0199-abc');
   assert.equal(findCodexThread('no events here'), undefined);
+});
+
+test('an attended claude run starts a session with the same prompt; without its terminal it runs -p', () => {
+  const op: OperationSpec = { ...base, kind: 'interactive', engine: 'claude', skill: 'plan-change', placement: 'herdr', args: ['--permission-mode', 'auto'] };
+  const session = buildCommand(op, { ...context, attended: true }).argv;
+  assert.equal(session[0], 'claude');
+  assert.ok(!session.includes('-p'));
+  assert.match(session[1] ?? '', /^Run the plan-change skill for subject pr-7\./);
+  assert.deepEqual(session.slice(2), ['--permission-mode', 'auto']);
+  assert.deepEqual(buildCommand(op, context).argv.slice(0, 2), ['claude', '-p']);
 });

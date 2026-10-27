@@ -2,8 +2,8 @@
 
 A small, generic runtime that runs a project's workflow operations - deterministic scripts and
 agent CLIs (Claude Code, Codex) - on timers and named triggers, keeps its state in
-[Ainoflow](https://ainoflow.io), and can place agent runs in [herdr](https://herdr.dev) tabs so a
-person sees them working.
+[Ainoflow](https://ainoflow.io), and can place runs in [herdr](https://herdr.dev) tabs so a person
+sees them working, or attends an interactive session there.
 
 The runtime knows operations, triggers, pools, state and delivery. It does not know milestones,
 labels, pull requests or merge rules: those live in the project's own scripts and skills, which
@@ -12,7 +12,7 @@ return a small versioned result and may request the next operation.
 ## How it works
 
 ```text
-timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agent, headless or in a herdr tab
+timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent or interactive, headless or in a herdr tab
                                                      │
                        next operations / a wait ◀── result file (contract 1)
 ```
@@ -37,6 +37,15 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script or agen
   at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
+- **Three kinds.** `script` is a deterministic program; `agent` is an agent CLI that answers and
+  exits (`claude -p`, `codex exec`); `interactive` is a session a person can attend in a terminal
+  (`claude` without `-p`, or a command). An interactive run needs a terminal placement: the
+  wrapper hands it the terminal and ends it a few seconds after its result file is written, because
+  the slot it holds goes to the next run. Without a reachable terminal it runs as an agent, and the
+  job record says so. The command learns it has a terminal from `OPERATOR_ATTENDED=1`.
+- **Notifications.** `notify` lists the final result statuses that raise an owner notification
+  (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
+  scheduled retry is not final.
 - **herdr.** `placement: herdr` opens a tab of the runtime's own in the target workspace and runs the
   wrapper there. Screen state is only a hint; a `blocked` agent raises a notification and is never
   answered by the runtime. Without herdr the run degrades to headless and the job record says so.

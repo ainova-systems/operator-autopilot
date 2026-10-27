@@ -23,6 +23,8 @@ export interface CommandContext {
   threadId?: string;
   /** The operation's Codex agent definition, read from the run's working directory. */
   codexAgent?: CodexAgent;
+  /** An interactive run that got its terminal: claude starts a session instead of `-p`. */
+  attended?: boolean;
 }
 
 export const DEFAULT_CLAUDE_PROMPT = 'Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
@@ -48,7 +50,8 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
       return { argv: ['/bin/sh', '-c', op.command ?? 'false'] };
     case 'claude': {
       const prompt = renderPrompt(op.prompt ?? DEFAULT_CLAUDE_PROMPT, values);
-      return { argv: ['claude', '-p', prompt, ...(op.model ? ['--model', op.model] : []), ...op.args] };
+      // A session takes the prompt as its first message and stays open; -p answers once and exits.
+      return { argv: ['claude', ...(context.attended ? [] : ['-p']), prompt, ...(op.model ? ['--model', op.model] : []), ...op.args] };
     }
     case 'codex': {
       const outputPath = join(context.runDir, 'output.json');

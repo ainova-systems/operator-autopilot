@@ -24,8 +24,14 @@ export function jobTitle(job: JobRecord): string {
   return `${job.subject ? `${job.subject} ` : ''}op:${job.operation}`;
 }
 
-/** Writes the run directory: the contract input file and the wrapper's launch spec. */
-export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean }): Promise<PreparedRun> {
+/** How long an attended session keeps its terminal after the result file appears, to finish its last message. */
+export const ATTENDED_CLOSE_GRACE_MS = 5_000;
+
+/**
+ * Writes the run directory: the contract input file and the wrapper's launch spec. `attended` is
+ * an interactive operation that got its terminal; one that did not runs as an agent.
+ */
+export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean; attended?: boolean }): Promise<PreparedRun> {
   const runDir = join(manifest.runtime.stateDir, 'runs', job.id, `a${job.attempt}`);
   await rm(runDir, { recursive: true, force: true });
   await mkdir(runDir, { recursive: true });
@@ -43,6 +49,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     subject: job.subject,
     ...(options.threadId ? { threadId: options.threadId } : {}),
     ...(codexAgent ? { codexAgent } : {}),
+    ...(options.attended ? { attended: true } : {}),
   });
   const input: OperationInput = {
     contract: CONTRACT_VERSION,
@@ -52,7 +59,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     trigger: job.trigger,
     resultPath,
     dryRun: options.dryRun,
-    ...(op.kind === 'agent' ? { agent: { engine: op.engine, ...(op.skill ? { skill: op.skill } : {}), ...(op.agent ? { agent: op.agent } : {}), ...(command.outputPath ? { outputPath: command.outputPath } : {}) } } : {}),
+    ...(op.kind !== 'script' ? { agent: { engine: op.engine, ...(op.skill ? { skill: op.skill } : {}), ...(op.agent ? { agent: op.agent } : {}), ...(command.outputPath ? { outputPath: command.outputPath } : {}) } } : {}),
   };
   const launch: LaunchSpec = {
     jobId: job.id,
@@ -67,8 +74,11 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
       OPERATOR_RUN_ID: input.run.id,
       OPERATOR_MANIFEST: manifest.path,
       ...(options.dryRun ? { OPERATOR_DRY_RUN: '1' } : {}),
+      // A command run as an interactive operation learns it owns a terminal a person may attend.
+      ...(options.attended ? { OPERATOR_ATTENDED: '1' } : {}),
     },
     timeoutMs: op.timeoutMs,
+    ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS } } : {}),
     ...(manifest.envFile ? { envFile: manifest.envFile } : {}),
     ...(manifest.envKeys ? { envKeys: manifest.envKeys } : {}),
   };

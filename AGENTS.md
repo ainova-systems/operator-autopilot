@@ -89,7 +89,7 @@ src/
   pools.ts        limit pools on Guard, workspace pools on renewable Shield leases
   launch.ts job-exec.ts runfiles.ts   run directory, detached wrapper, heartbeat and exit.json
   collect.ts      exit + result file -> contract result (Codex output -> result via `then`)
-  engines.ts      argv for command / claude -p / codex exec (resume per subject)
+  engines.ts      argv for command / claude -p, or a claude session when attended / codex exec (resume per subject)
   herdr.ts        the herdr CLI calls: own tab, metadata, run, close, status, notification
   state/          one interface; ainoflow.ts (HTTP) and file.ts (tests and dry runs only)
 fixtures/demo/    a complete example project used by tests and the live demo
@@ -104,6 +104,9 @@ deploy/systemd/   operator@<project>.service
 - A run is collected from its run directory, never from screen state. A restarted daemon adopts a
   live run and re-runs one whose wrapper died; it never starts the same attempt twice.
 - The runtime never answers an agent prompt; a `blocked` pane raises a notification.
+- An interactive run is collected like any other: its result file is the proof. The wrapper ends the
+  session after that file is written, because the slot goes to the next run; the terminal is where
+  it runs, never how its end is decided.
 - The file state driver is for tests and dry runs; a live daemon refuses it unless told explicitly.
 - Every Ainoflow feature the runtime relies on is checked through `/api/v1/capabilities` at start.
 

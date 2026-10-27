@@ -39,7 +39,7 @@ test('validate and trigger work against a project', async () => {
   const manifest = join(p.root, 'operator.yaml');
   const validated = await cli(['validate', '--manifest', manifest, '--describe']);
   assert.equal(validated.code, 0, validated.stderr + validated.stdout);
-  assert.match(validated.stdout, /ok: .* project demo, 1 workflow\(s\), 5 operation\(s\), 2 pool\(s\), state file ready/);
+  assert.match(validated.stdout, /ok: .* project demo, 1 workflow\(s\), 6 operation\(s\), 2 pool\(s\), state file ready/);
   const first = await cli(['trigger', 'demo', 'poke', '--manifest', manifest, '--id', 'hook-1']);
   const second = await cli(['trigger', 'demo', 'poke', '--manifest', manifest, '--id', 'hook-1']);
   assert.match(first.stdout, /^queued job j/);

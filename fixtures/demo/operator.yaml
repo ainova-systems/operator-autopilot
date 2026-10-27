@@ -1,6 +1,7 @@
 # Demo project for the runtime itself: a discovery script, a stand-in agent placed in a herdr tab,
-# a follow-on step, and a question answered through a trigger. Drop a file into data/inbox:
-#   <name>.work (content: seconds to work)  or  <name>.ask
+# a follow-on step, a question answered through a trigger, and an interactive session the wrapper
+# closes after its result. Drop a file into data/inbox:
+#   <name>.work (content: seconds to work), <name>.ask  or  <name>.plan
 contract: 1
 project: demo
 state:
@@ -30,3 +31,4 @@ workflows:
       finish:   { kind: script, command: node scripts/finish.mjs, pool: checks }
       ask:      { kind: agent, engine: command, command: node scripts/ask.mjs, pool: agent-slot, placement: herdr }
       answered: { kind: script, command: node scripts/answered.mjs }
+      plan:     { kind: interactive, engine: command, command: node scripts/session.mjs, pool: agent-slot, placement: herdr, timeout: 30m }

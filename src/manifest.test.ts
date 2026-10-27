@@ -99,3 +99,47 @@ test('an operation that can outlive its Guard slot is refused', () => {
   const text = VALID.replace('{ limit: 3, shared: true }', '{ limit: 3, slotTtl: 1h, shared: true }');
   assert.throws(() => parseManifest(text, 'm.yaml'), /operations\.review\.timeout: 14400s exceeds pool codex-review slotTtl 3600s/);
 });
+
+test('an interactive operation needs a terminal placement and runs claude or a command', () => {
+  const text = `
+contract: 1
+project: demo
+workflows:
+  w:
+    operations:
+      plan: { kind: interactive, engine: claude, skill: plan-change }
+      review: { kind: interactive, engine: codex, agent: reviewer, placement: herdr }
+      mode: { kind: session, command: x }
+`;
+  assert.throws(() => parseManifest(text, 'm.yaml'), (error: unknown) => {
+    assert.ok(error instanceof ManifestError);
+    const all = error.problems.join('\n');
+    assert.match(all, /operations\.plan\.placement: an interactive operation needs a terminal placement/);
+    assert.match(all, /operations\.review\.engine: an interactive operation runs claude or a command/);
+    assert.match(all, /operations\.mode\.kind: expected one of script, agent, interactive/);
+    return true;
+  });
+});
+
+test('notify defaults to an agent\'s questions and failures, and takes only result statuses', () => {
+  const text = (notify: string): string => `
+contract: 1
+project: demo
+workflows:
+  w:
+    operations:
+      scan: { kind: script, command: x }
+      plan: { kind: interactive, engine: claude, skill: plan-change, placement: herdr, timeout: 2h }
+      verify: { kind: agent, engine: claude, skill: verify-change${notify} }
+`;
+  const operations = parseManifest(text(''), 'm.yaml').manifest.workflows.get('w')?.operations;
+  assert.deepEqual(operations?.get('scan')?.notify, []);
+  assert.deepEqual(operations?.get('plan')?.notify, ['needs-input', 'failed']);
+  assert.equal(operations?.get('plan')?.kind, 'interactive');
+  assert.equal(operations?.get('plan')?.timeoutMs, 2 * 3_600_000);
+  assert.deepEqual(operations?.get('verify')?.notify, ['needs-input', 'failed']);
+  const chosen = parseManifest(text(', notify: [done, failed]'), 'm.yaml').manifest.workflows.get('w')?.operations;
+  assert.deepEqual(chosen?.get('verify')?.notify, ['done', 'failed']);
+  assert.deepEqual(parseManifest(text(', notify: []'), 'm.yaml').manifest.workflows.get('w')?.operations.get('verify')?.notify, []);
+  assert.throws(() => parseManifest(text(', notify: [blocked]'), 'm.yaml'), /operations\.verify\.notify: expected a list of result statuses/);
+});

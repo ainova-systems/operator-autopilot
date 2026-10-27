@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { CONTRACT_VERSION, type JsonObject } from './contract.ts';
+import { CONTRACT_VERSION, RESULT_STATUSES, type JsonObject, type ResultStatus } from './contract.ts';
 import { parseCron, type CronSchedule } from './cron.ts';
 import { parseDuration } from './duration.ts';
 import { OperatorError } from './errors.ts';
@@ -20,9 +20,16 @@ export type TriggerSpec =
   | { kind: 'cron'; index: number; schedule: CronSchedule; run: string; subject: string; input: JsonObject }
   | { kind: 'on'; index: number; name: string; run: string };
 
+/**
+ * What runs and how its end is proven. A script and an agent end on their own; an interactive run
+ * is an agent session a person can attend in a terminal, and its wrapper ends it once the result
+ * file is written.
+ */
+export type OperationKind = 'script' | 'agent' | 'interactive';
+
 export interface OperationSpec {
   name: string;
-  kind: 'script' | 'agent';
+  kind: OperationKind;
   engine: Engine;
   command?: string;
   skill?: string;
@@ -41,6 +48,8 @@ export interface OperationSpec {
   /** At most one run of this operation at a time in its workflow, e.g. a discovery script. */
   exclusive: boolean;
   env: Record<string, string>;
+  /** Final result statuses that raise an owner notification. */
+  notify: ResultStatus[];
 }
 
 export interface WorkflowSpec {
@@ -88,7 +97,10 @@ export class ManifestError extends OperatorError {
 
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 const ENGINES: readonly Engine[] = ['claude', 'codex', 'command'];
-const DEFAULT_TIMEOUT_MS = { script: 15 * 60_000, agent: 4 * 3_600_000 };
+const KINDS: readonly OperationKind[] = ['script', 'agent', 'interactive'];
+const DEFAULT_TIMEOUT_MS: Record<OperationKind, number> = { script: 15 * 60_000, agent: 4 * 3_600_000, interactive: 4 * 3_600_000 };
+/** An agent's question or failure is the owner's to see; a script's result is routine. */
+const DEFAULT_NOTIFY: Record<OperationKind, ResultStatus[]> = { script: [], agent: ['needs-input', 'failed'], interactive: ['needs-input', 'failed'] };
 const DAY = 86_400_000;
 
 function isObject(value: unknown): value is JsonObject {
@@ -182,13 +194,14 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
 function readOperation(reader: Reader, name: string, value: unknown, path: string): OperationSpec | undefined {
   if (!NAME.test(name)) { reader.problem(path, 'operation names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
-  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env'], path);
-  const kind = value['kind'];
-  if (kind !== 'script' && kind !== 'agent') { reader.problem(`${path}.kind`, 'expected script or agent'); return undefined; }
+  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify'], path);
+  const kind = value['kind'] as OperationKind;
+  if (!KINDS.includes(kind)) { reader.problem(`${path}.kind`, `expected one of ${KINDS.join(', ')}`); return undefined; }
   const engineValue = value['engine'] ?? (kind === 'script' ? 'command' : undefined);
   if (typeof engineValue !== 'string' || !ENGINES.includes(engineValue as Engine)) { reader.problem(`${path}.engine`, `expected one of ${ENGINES.join(', ')}`); return undefined; }
   const engine = engineValue as Engine;
   if (kind === 'script' && engine !== 'command') reader.problem(`${path}.engine`, 'a script runs its command; engines are for agents');
+  if (kind === 'interactive' && engine === 'codex') reader.problem(`${path}.engine`, 'an interactive operation runs claude or a command; codex runs as an agent');
 
   const command = reader.string(value, 'command', path, { required: engine === 'command' });
   const skill = reader.string(value, 'skill', path);
@@ -209,6 +222,9 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
   if (thread !== 'per-subject' && thread !== 'none') reader.problem(`${path}.thread`, 'expected per-subject or none');
   const placement = value['placement'] ?? 'headless';
   if (placement !== 'headless' && placement !== 'herdr') reader.problem(`${path}.placement`, 'expected headless or herdr');
+  if (kind === 'interactive' && placement === 'headless') reader.problem(`${path}.placement`, 'an interactive operation needs a terminal placement (herdr); without one reachable it runs as an agent');
+  const notify = value['notify'] ?? DEFAULT_NOTIFY[kind];
+  if (!Array.isArray(notify) || notify.some((status) => !RESULT_STATUSES.includes(status as ResultStatus))) reader.problem(`${path}.notify`, `expected a list of result statuses (${RESULT_STATUSES.join(', ')})`);
   const env = reader.object(value, 'env', path);
   for (const [key, envValue] of Object.entries(env)) if (typeof envValue !== 'string') reader.problem(`${path}.env.${key}`, 'expected a string');
   if (value['exclusive'] !== undefined && typeof value['exclusive'] !== 'boolean') reader.problem(`${path}.exclusive`, 'expected true or false');
@@ -225,6 +241,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     retryDelayMs: reader.duration(value, 'retryDelay', path, 60_000),
     exclusive: value['exclusive'] === true,
     env: env as Record<string, string>,
+    notify: Array.isArray(notify) ? notify.filter((status): status is ResultStatus => RESULT_STATUSES.includes(status as ResultStatus)) : [],
     ...(command ? { command } : {}),
     ...(skill ? { skill } : {}),
     ...(agent ? { agent } : {}),

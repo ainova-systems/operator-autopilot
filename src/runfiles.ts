@@ -13,11 +13,18 @@ export interface LaunchSpec {
   envFile?: string;
   envKeys?: string[];
   timeoutMs: number;
+  /**
+   * An interactive run: the command owns the terminal, and the wrapper ends it `graceMs` after
+   * a result file appears at `resultPath`.
+   */
+  attended?: { resultPath: string; graceMs: number };
 }
 
 export interface WrapperInfo { pid: number; host: string; startedAt: string }
-export interface CommandInfo { pid: number }
-export interface ExitInfo { exitCode: number | null; signal: string | null; timedOut: boolean; finishedAt: string; error?: string }
+/** `group: false` when the command shares the wrapper's process group, as an attended session does. */
+export interface CommandInfo { pid: number; group?: boolean }
+/** `closedAfterResult`: the wrapper ended an attended session because its result file was written. */
+export interface ExitInfo { exitCode: number | null; signal: string | null; timedOut: boolean; finishedAt: string; error?: string; closedAfterResult?: boolean }
 
 export const RUN_FILES = {
   launch: 'launch.json',

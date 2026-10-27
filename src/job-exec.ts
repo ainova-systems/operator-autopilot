@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
@@ -8,6 +8,7 @@ import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo
 
 const HEARTBEAT_MS = 5_000;
 const KILL_GRACE_MS = 10_000;
+const RESULT_POLL_MS = 1_000;
 
 /** Signals the command's whole process group, so a shell's children end with it. */
 export function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -18,12 +19,42 @@ export function signalGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** Signals a command: its whole process group when it leads one, otherwise the process alone. */
+export function signalCommand(command: CommandInfo, signal: NodeJS.Signals): void {
+  if (command.group !== false) { signalGroup(command.pid, signal); return; }
+  try {
+    process.kill(command.pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+}
+
+/** True once the result file holds a complete JSON object with a status; a half-written file is not yet. */
+export async function resultWritten(path: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(text) as { status?: unknown } | null;
+    return typeof parsed?.status === 'string';
+  } catch {
+    // Still being written: the next poll reads it again.
+    return false;
+  }
+}
+
 /**
  * The job wrapper. It runs where the job is placed - a detached child of the daemon or a herdr
  * pane - executes the engine command in a process group of its own, and leaves the proof of
  * completion in the run directory: a heartbeat while it lives and `exit.json` when the command
  * ends. It never talks to the state backend, so a pane needs no credentials beyond what the
- * command itself loads.
+ * command itself loads. An attended command owns the terminal instead and stays in the wrapper's
+ * process group, so the terminal's keys and resizes reach it; the wrapper ends it once its result
+ * file is written, because the slot it holds goes to the next run.
  */
 export async function runJobExec(runDir: string): Promise<number> {
   const launch = await readJsonFile<LaunchSpec>(runPath(runDir, 'launch'));
@@ -46,37 +77,53 @@ export async function runJobExec(runDir: string): Promise<number> {
   output.write(banner);
 
   const [command, ...args] = launch.argv;
+  const attended = launch.attended;
   let timedOut = false;
+  let closedAfterResult = false;
   const exit = await new Promise<ExitInfo>((resolveExit) => {
-    const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-    const pid = child.pid;
-    if (pid !== undefined) void writeJsonAtomic(runPath(runDir, 'command'), { pid } satisfies CommandInfo).catch(() => undefined);
-    child.stdout.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); });
-    child.stderr.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      if (pid === undefined) return;
-      signalGroup(pid, 'SIGTERM');
-      setTimeout(() => signalGroup(pid, 'SIGKILL'), KILL_GRACE_MS).unref();
-    }, launch.timeoutMs);
-    const forward = (signal: NodeJS.Signals): void => { if (pid !== undefined) signalGroup(pid, signal); };
+    const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: attended ? 'inherit' : ['ignore', 'pipe', 'pipe'], detached: !attended });
+    const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
+    if (info) void writeJsonAtomic(runPath(runDir, 'command'), info).catch(() => undefined);
+    child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); });
+    child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); });
+    const end = (): void => {
+      if (!info) return;
+      signalCommand(info, 'SIGTERM');
+      setTimeout(() => signalCommand(info, 'SIGKILL'), KILL_GRACE_MS).unref();
+    };
+    const timer = setTimeout(() => { timedOut = true; end(); }, launch.timeoutMs);
+    let closing = false;
+    const watcher = attended ? setInterval(() => {
+      resultWritten(attended.resultPath).then((written) => {
+        if (!written || closing) return;
+        closing = true;
+        const note = `\noperator: result written - closing the session in ${Math.round(attended.graceMs / 1000)}s\n`;
+        process.stdout.write(note);
+        output.write(note);
+        setTimeout(() => { closedAfterResult = true; end(); }, attended.graceMs).unref();
+      }, (error: unknown) => process.stderr.write(`operator: result check failed: ${(error as Error).message}\n`));
+    }, RESULT_POLL_MS) : undefined;
+    const forward = (signal: NodeJS.Signals): void => { if (info) signalCommand(info, signal); };
     process.on('SIGTERM', forward);
     process.on('SIGHUP', forward);
-    process.on('SIGINT', forward);
+    // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
+    process.on('SIGINT', attended ? () => undefined : forward);
     child.on('error', (error) => {
       clearTimeout(timer);
+      clearInterval(watcher);
       resolveExit({ exitCode: 127, signal: null, timedOut: false, finishedAt: new Date().toISOString(), error: error.message });
     });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
-      // Whatever the command left behind in its group ends with it.
-      if (pid !== undefined) signalGroup(pid, 'SIGKILL');
-      resolveExit({ exitCode: code, signal, timedOut, finishedAt: new Date().toISOString() });
+      clearInterval(watcher);
+      // Whatever the command left behind in its own group ends with it; an attended one has none.
+      if (info?.group !== false && info) signalGroup(info.pid, 'SIGKILL');
+      resolveExit({ exitCode: code, signal, timedOut, finishedAt: new Date().toISOString(), ...(closedAfterResult ? { closedAfterResult: true } : {}) });
     });
   });
 
   clearInterval(heartbeat);
-  const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and closes this tab\n`;
+  const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and closes this tab\n`;
   process.stdout.write(footer);
   output.write(footer);
   await new Promise<void>((resolveEnd) => output.end(resolveEnd));

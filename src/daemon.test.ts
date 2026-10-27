@@ -317,3 +317,59 @@ test('two results requesting the same operation, subject and key start one job',
   assert.equal(sinks.length, 1);
   assert.deepEqual((await jobsBy(daemon, 'emit')).map((job) => job.outcome?.next), [[sinks[0]?.id], [sinks[0]?.id]]);
 });
+
+/** A herdr that hosts tabs: its pane runs the wrapper as a detached shell, as `herdr pane run` would. */
+function hostingHerdr(notes: string[] = []): Herdr {
+  return {
+    ...absentHerdr,
+    available: async () => true,
+    findWorkspace: async () => 'wT',
+    createTab: async () => ({ tabId: 'wT:t1', paneId: 'wT:p1', workspaceId: 'wT' }),
+    runInPane: async (_pane, command) => { spawn('sh', ['-c', command], { detached: true, stdio: 'ignore' }).unref(); },
+    closeTab: async () => 'closed',
+    notify: async (title, body) => { notes.push(`${title} | ${body}`); },
+  };
+}
+
+test('an interactive operation runs attended in its tab and is closed after its result', async () => {
+  const p = await project();
+  const daemon = p.daemon({ herdr: hostingHerdr() });
+  await daemon.acquireLeader();
+  await p.drop('item-3.plan');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'plan', 'item-3'))[0]?.status === 'done');
+  const [plan] = await jobsBy(daemon, 'plan', 'item-3');
+  assert.equal(plan?.run?.placement.kind, 'herdr');
+  assert.equal(plan?.run?.placement.degraded, undefined);
+  assert.equal(plan?.outcome?.message, 'planned item-3');
+  const exit = await readJsonFile<{ closedAfterResult?: boolean }>(runPath(plan?.run?.runDir ?? '', 'exit'));
+  assert.equal(exit?.closedAfterResult, true);
+});
+
+test('an interactive operation without a terminal runs as an agent and says so', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await p.drop('item-3.plan');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'plan', 'item-3'))[0]?.status === 'done');
+  const [plan] = await jobsBy(daemon, 'plan', 'item-3');
+  assert.equal(plan?.run?.placement.kind, 'headless');
+  assert.equal(plan?.run?.placement.degraded, 'herdr is not reachable; runs as an agent');
+  const exit = await readJsonFile<{ closedAfterResult?: boolean; exitCode: number }>(runPath(plan?.run?.runDir ?? '', 'exit'));
+  assert.equal(exit?.exitCode, 0);
+  assert.equal(exit?.closedAfterResult, undefined);
+});
+
+test('the owner is notified of a question, and not of a status the operation does not name', async () => {
+  const p = await project();
+  const notes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...absentHerdr, notify: async (title, body) => { notes.push(`${title} | ${body}`); } } });
+  await daemon.acquireLeader();
+  await p.drop('item-2.ask');
+  await p.drop('item-1.work', '1');
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'ask', 'item-2'))[0]?.status === 'needs-input' && (await jobsBy(daemon, 'finish', 'item-1'))[0]?.status === 'done');
+  assert.deepEqual(notes, ['operator: item-2 op:ask needs-input | asked q1']);
+  assert.ok(p.lines.some((line) => line.includes('owner notified') && line.includes('status=needs-input')));
+});

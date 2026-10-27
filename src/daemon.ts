@@ -7,7 +7,7 @@ import type { OperationResult } from './contract.ts';
 import { OperatorError } from './errors.ts';
 import type { Herdr } from './herdr.ts';
 import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
-import { signalGroup } from './job-exec.ts';
+import { signalCommand } from './job-exec.ts';
 import { jobTitle, openHerdrTab, prepareRun, startHeadless, startInHerdr } from './launch.ts';
 import { errorText, type Logger } from './log.ts';
 import type { Manifest, OperationSpec } from './manifest.ts';
@@ -262,9 +262,9 @@ export class Daemon {
       await this.finishWithoutRun(job, 'failed', `operation ${job.workflow}/${job.operation} is not configured or its workflow is disabled`);
       return;
     }
-    if (this.dryRun && op.kind === 'agent') {
-      const prepared = await prepareRun(this.manifest, job, op, { cwd: this.manifest.root, dryRun: true });
-      this.log.info('dry run: would start agent', { job: job.id, operation: job.operation, subject: job.subject, placement: op.placement, pool: op.pool, argv: JSON.stringify(prepared.command.argv) });
+    if (this.dryRun && op.kind !== 'script') {
+      const prepared = await prepareRun(this.manifest, job, op, { cwd: this.manifest.root, dryRun: true, attended: op.kind === 'interactive' });
+      this.log.info('dry run: would start agent', { job: job.id, operation: job.operation, subject: job.subject, kind: op.kind, placement: op.placement, pool: op.pool, argv: JSON.stringify(prepared.command.argv) });
       await this.finishWithoutRun(job, 'noop', 'dry run: agent not started');
       return;
     }
@@ -321,8 +321,6 @@ export class Daemon {
 
   private async startRun(job: JobRecord, op: OperationSpec, pending: JobRun, cwd: string, herdrWorkspace: string | undefined): Promise<void> {
     const threadId = op.thread === 'per-subject' ? (await this.backend.docs.get<{ threadId: string }>('threads', this.threadKey(job)))?.value.threadId : undefined;
-    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, ...(threadId ? { threadId } : {}) });
-    pending.runDir = prepared.runDir;
     const placement = pending.placement;
     if (op.placement === 'herdr') {
       if (!herdrWorkspace) placement.degraded = 'no herdr workspace configured';
@@ -342,6 +340,11 @@ export class Daemon {
         }
       }
     }
+    // The command depends on the placement: an interactive run without its terminal runs as an agent.
+    const attended = op.kind === 'interactive' && placement.kind === 'herdr';
+    if (op.kind === 'interactive' && !attended) placement.degraded = `${placement.degraded ?? 'no terminal'}; runs as an agent`;
+    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, attended, ...(threadId ? { threadId } : {}) });
+    pending.runDir = prepared.runDir;
     const run = pending;
     await this.ensureLeader();
     const started = await this.jobs.update(job.id, (current) => {
@@ -505,6 +508,19 @@ export class Daemon {
     const fields = { job: job.id, operation: job.operation, subject: job.subject, status: result.status, seconds, next: nextIds.length, message: result.message, reason: result.failure?.reason, wait: result.wait ? `${result.wait.on}${result.wait.key ? `:${result.wait.key}` : ''}` : undefined };
     if (result.status === 'failed') this.log.warn(retry ? 'job failed; retry scheduled' : 'job failed', fields);
     else this.log.info('job finished', fields);
+    // A scheduled retry is not an end the owner has to act on; its last attempt is.
+    if (op && !retry && op.notify.includes(result.status)) await this.notifyOwner(job, result);
+  }
+
+  /** Tells the owner a run ended in a status its operation names under `notify`; delivery is best effort. */
+  private async notifyOwner(job: JobRecord, result: OperationResult): Promise<void> {
+    const body = result.message ?? result.failure?.reason ?? result.status;
+    try {
+      await this.herdr.notify(`operator: ${jobTitle(job)} ${result.status}`, body);
+      this.log.info('owner notified', { job: job.id, operation: job.operation, subject: job.subject, status: result.status });
+    } catch (error) {
+      this.log.warn('the owner notification was not delivered', { job: job.id, status: result.status, error: errorText(error) });
+    }
   }
 
   private async interrupt(job: JobRecord, reason: string): Promise<void> {
@@ -512,7 +528,7 @@ export class Daemon {
       // The wrapper is gone; whatever its command left running must not overlap the next attempt.
       const command = await readJsonFile<CommandInfo>(runPath(job.run.runDir, 'command'));
       if (command && processAlive(command.pid)) {
-        signalGroup(command.pid, 'SIGKILL');
+        signalCommand(command, 'SIGKILL');
         this.log.warn('stopped the leftover command of an interrupted run', { job: job.id, pid: command.pid });
       }
     }
