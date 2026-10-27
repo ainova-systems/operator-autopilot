@@ -354,7 +354,7 @@ export class Daemon {
     // The command depends on the placement: an interactive run without its terminal runs as an agent.
     const attended = op.kind === 'interactive' && placement.kind === 'herdr';
     if (op.kind === 'interactive' && !attended) placement.degraded = `${placement.degraded ?? 'no terminal'}; runs as an agent`;
-    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, attended, ...(threadId ? { threadId } : {}) });
+    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, attended, ...(threadId ? { threadId } : {}), ...(pending.slot?.member ? { member: pending.slot.member } : {}) });
     pending.runDir = prepared.runDir;
     const run = pending;
     await this.ensureLeader();
@@ -472,7 +472,14 @@ export class Daemon {
     }
 
     const nextIds: string[] = [];
+    // Follow-on work of a subject stays where it ran: an operation in the same workspace pool keeps
+    // this run's member unless the request names another.
+    const stay = (operation: string): string | undefined => {
+      if (!run.slot?.member || !workflow) return undefined;
+      return workflow.operations.get(operation)?.pool === run.slot.pool ? run.slot.member : undefined;
+    };
     for (const [index, request] of result.next.entries()) {
+      const member = request.member ?? stay(request.operation);
       const queued = await enqueue(this.jobs, {
         project: this.manifest.project,
         workflow: job.workflow,
@@ -483,11 +490,14 @@ export class Daemon {
         // asks once per key; an unkeyed one belongs to the result that sent it.
         trigger: { id: request.key ? `key:${request.key}` : `next:${job.id}:${job.attempt}:${index}`, name: job.operation, kind: 'next' },
         ...(request.notBefore ? { notBefore: request.notBefore } : {}),
-        ...(request.member ? { member: request.member } : {}),
+        ...(member ? { member } : {}),
       });
       nextIds.push(queued.id);
     }
-    if (result.wait) await this.waits.open(this.manifest.project, job.workflow, job.id, job.attempt, result.wait);
+    if (result.wait) {
+      const member = result.wait.member ?? stay(result.wait.resume);
+      await this.waits.open(this.manifest.project, job.workflow, job.id, job.attempt, { ...result.wait, ...(member ? { member } : {}) });
+    }
 
     const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt <= op.retries;
     await this.releaseRun(job.id, run);

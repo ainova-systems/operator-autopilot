@@ -39,7 +39,8 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
   A `next` request (or a `wait`, for the operation it resumes) may name the `member` to run in -
   for example the workspace that holds its subject - and the job waits for that member rather than
-  taking another. An operation may hold a `limit` pool alongside its `pool`, and `access: read`
+  taking another. A follow-on in the same workspace pool stays in the member its run held unless its
+  request names another, and the input file tells each run its `member`. An operation may hold a `limit` pool alongside its `pool`, and `access: read`
   places a run in its named member without holding it, so read-only runs share a workspace.
 - **Three kinds.** `script` is a deterministic program; `agent` is an agent CLI that answers and
   exits (`claude -p`, `codex exec`); `interactive` is a session a person can attend in a terminal

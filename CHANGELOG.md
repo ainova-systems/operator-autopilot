@@ -12,6 +12,7 @@
   owner notification.
 - A `next` request or a `wait` may name the workspace `member` its operation runs in; an operation
   may hold a `limit` pool alongside its `pool`, and `access: read` shares a member without holding it.
+  A follow-on in the same workspace pool stays in its run's member, which the input file names.
 - Published as the npm package `@ainova-systems/operator` and the image
   `ghcr.io/ainova-systems/operator-autopilot/operator`.
 

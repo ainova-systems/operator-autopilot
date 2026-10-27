@@ -414,3 +414,19 @@ test('a read job shares the member a write job holds, and holds its limit pool',
   assert.equal(peek?.run?.limitSlot?.pool, 'checks');
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-1'))[0]?.status === 'done');
 });
+
+test('a follow-on in the same workspace pool stays in the member its request came from, and the run is told which', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS.replace("command: node scripts/fake-agent.mjs, pool: slots", "command: node scripts/relay.mjs, pool: slots") });
+  await writeFile(join(p.root, 'scripts', 'relay.mjs'), [
+    "import { readInput, writeResult } from './lib.mjs';",
+    'const input = readInput();',
+    "if (input.input.step === 2) writeResult({ status: 'done', message: `step 2 in ${input.member}` });",
+    "else writeResult({ status: 'done', message: `step 1 in ${input.member}`, next: [{ operation: 'hold', input: { step: 2 } }] });",
+  ].join('\n'));
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await inSlot(p, 'hold', 'pr-1', 's2');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-1')).filter((job) => job.status === 'done').length === 2);
+  const messages = (await jobsBy(daemon, 'hold', 'pr-1')).map((job) => job.outcome?.message).sort();
+  assert.deepEqual(messages, ['step 1 in s2', 'step 2 in s2']);
+});

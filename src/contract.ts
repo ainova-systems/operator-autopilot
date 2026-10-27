@@ -56,6 +56,8 @@ export interface OperationInput {
   trigger: { id: string; name: string; kind: TriggerKind };
   resultPath: string;
   dryRun: boolean;
+  /** The workspace member the run holds or reads; follow-ons in its pool stay there unless they name another. */
+  member?: string;
   agent?: { engine: string; skill?: string; agent?: string; outputPath?: string };
 }
 
