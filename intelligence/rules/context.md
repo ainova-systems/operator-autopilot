@@ -20,7 +20,7 @@ src/
   daemon.ts       leader lease, timers, dispatch into pools, observe runs, collect results, restart adoption
   triggers.ts     timer slots and named triggers (resume a wait, else the workflow's `on:` trigger)
   jobs.ts waits.ts job and wait records; job ids are dedupe keys (workflow, operation, subject, trigger id)
-  pools.ts        limit pools on Guard, workspace pools on renewable Shield leases
+  pools.ts        limit pools on Guard, workspace pools on renewable Shield leases; a named member, read placement
   launch.ts job-exec.ts runfiles.ts   run directory, detached wrapper, heartbeat and exit.json
   collect.ts      exit + result file -> contract result (Codex output -> result via `then`)
   engines.ts      argv for command / claude -p, or a claude session when attended / codex exec (resume per subject)

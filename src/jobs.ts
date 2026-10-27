@@ -15,6 +15,8 @@ export interface SlotHold {
   token: string;
   global: boolean;
   member?: string;
+  /** A read placement: the member's directory without its lease, so nothing is renewed or released. */
+  read?: boolean;
 }
 
 export interface JobRun {
@@ -23,6 +25,8 @@ export interface JobRun {
   runDir: string;
   startedAt: string;
   placement: { kind: 'headless' | 'herdr'; workspace?: string; tabId?: string; paneId?: string; degraded?: string };
+  /** A limit pool held alongside the operation's main pool, e.g. an engine's concurrency. */
+  limitSlot?: SlotHold;
   slot?: SlotHold;
   lease?: { key: string; token: string };
 }
@@ -53,6 +57,8 @@ export interface JobRecord {
   notBefore?: string;
   /** Why a queued job has not started yet, e.g. a full pool. */
   waitingFor?: string;
+  /** The workspace member the job runs in, when its request named one. */
+  member?: string;
   run?: JobRun;
   outcome?: JobOutcome;
   history: { at: string; event: string; detail?: string }[];
@@ -135,6 +141,7 @@ export interface EnqueueRequest {
   input: JsonObject;
   trigger: { id: string; name: string; kind: TriggerKind };
   notBefore?: string;
+  member?: string;
 }
 
 /** Creates the job unless one with the same dedupe key exists; answers which happened. */
@@ -155,6 +162,7 @@ export async function enqueue(store: JobStore, request: EnqueueRequest): Promise
     updatedAt: now,
     history: [{ at: now, event: 'queued', detail: `${request.trigger.kind} ${request.trigger.name}` }],
     ...(request.notBefore ? { notBefore: request.notBefore } : {}),
+    ...(request.member ? { member: request.member } : {}),
   };
   return { id, created: (await store.create(job)) === 'created' };
 }

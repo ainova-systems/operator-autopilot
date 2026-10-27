@@ -18,6 +18,8 @@ export interface NextRequest {
   notBefore?: string;
   /** Requests with the same operation, subject and key are one job, whichever result sent them. */
   key?: string;
+  /** A member of the operation's workspace pool to run in, e.g. the slot that holds the subject. */
+  member?: string;
 }
 
 /** What a later trigger must look like to resume a waiting operation, and what it resumes. */
@@ -32,6 +34,8 @@ export interface WaitDescriptor {
   /** Pointers handed to the resumed operation, merged under the trigger's own input. */
   input: JsonObject;
   expiresAt?: string;
+  /** A member of the operation's workspace pool to run in, e.g. the slot that holds the subject. */
+  member?: string;
 }
 
 export interface OperationResult {
@@ -56,6 +60,11 @@ export interface OperationInput {
 }
 
 export type TriggerKind = 'timer' | 'cli' | 'next' | 'resume' | 'manual';
+
+/** Workspace member names follow the manifest's name rule. */
+export function isMemberName(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,62}$/.test(value);
+}
 
 export type ParseOutcome<T> = { ok: true; value: T } | { ok: false; errors: string[] };
 
@@ -96,13 +105,15 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
       const input = item['input'] ?? {};
       const notBefore = item['notBefore'];
       const key = item['key'];
+      const member = item['member'];
       if (typeof operation !== 'string' || operation === '') errors.push(`${path}.operation: expected a non-empty string`);
       if (typeof subject !== 'string') errors.push(`${path}.subject: expected a string`);
       if (!isObject(input)) errors.push(`${path}.input: expected an object`);
       if (notBefore !== undefined && !isIsoDate(notBefore)) errors.push(`${path}.notBefore: expected an ISO 8601 date`);
       if (key !== undefined && (typeof key !== 'string' || key === '' || key.length > 200)) errors.push(`${path}.key: expected a string of 1 to 200 characters`);
+      if (member !== undefined && !isMemberName(member)) errors.push(`${path}.member: expected a workspace member name`);
       if (typeof operation === 'string' && operation !== '' && typeof subject === 'string' && isObject(input)) {
-        next.push({ operation, subject, input, ...(typeof notBefore === 'string' ? { notBefore } : {}), ...(typeof key === 'string' && key !== '' ? { key } : {}) });
+        next.push({ operation, subject, input, ...(typeof notBefore === 'string' ? { notBefore } : {}), ...(typeof key === 'string' && key !== '' ? { key } : {}), ...(isMemberName(member) ? { member } : {}) });
       }
     });
   }
@@ -118,14 +129,16 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
       const resume = rawWait['resume'];
       const input = rawWait['input'] ?? {};
       const expiresAt = rawWait['expiresAt'];
+      const member = rawWait['member'];
       if (typeof on !== 'string' || on === '') errors.push('wait.on: expected a non-empty trigger name');
+      if (member !== undefined && !isMemberName(member)) errors.push('wait.member: expected a workspace member name');
       if (typeof subject !== 'string') errors.push('wait.subject: expected a string');
       if (key !== undefined && (typeof key !== 'string' || key === '')) errors.push('wait.key: expected a non-empty string');
       if (typeof resume !== 'string' || resume === '') errors.push('wait.resume: expected a non-empty operation name');
       if (!isObject(input)) errors.push('wait.input: expected an object');
       if (expiresAt !== undefined && !isIsoDate(expiresAt)) errors.push('wait.expiresAt: expected an ISO 8601 date');
       if (typeof on === 'string' && typeof subject === 'string' && typeof resume === 'string' && isObject(input)) {
-        wait = { on, subject, resume, input, ...(typeof key === 'string' ? { key } : {}), ...(typeof expiresAt === 'string' ? { expiresAt } : {}) };
+        wait = { on, subject, resume, input, ...(typeof key === 'string' ? { key } : {}), ...(typeof expiresAt === 'string' ? { expiresAt } : {}), ...(isMemberName(member) ? { member } : {}) };
       }
     }
   }

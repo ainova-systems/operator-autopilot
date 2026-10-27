@@ -42,12 +42,34 @@ export class Pools {
     this.holds(hold.pool).set(jobId, hold);
   }
 
-  async acquire(poolName: string, jobId: string): Promise<PoolDecision> {
+  /**
+   * `member` asks for that workspace member only, e.g. the slot holding the job's subject; a job
+   * waits for it rather than taking another. `read` places the job in the member without its lease.
+   */
+  async acquire(poolName: string, jobId: string, options: { member?: string; read?: boolean } = {}): Promise<PoolDecision> {
     const pool = this.manifest.pools.get(poolName);
     if (!pool) return { granted: false, waitingFor: `pool ${poolName} is not configured`, retryAfterMs: LOCAL_RETRY_MS };
     const holds = this.holds(poolName);
     const existing = holds.get(jobId);
     if (existing) return { granted: true, hold: existing };
+    if (pool.kind === 'workspaces' && (options.member !== undefined || options.read)) {
+      const member = pool.members.find((m) => m.name === options.member);
+      if (!member) return { granted: false, waitingFor: options.member === undefined ? `read access to pool ${poolName} needs a member named by the request` : `pool ${poolName} has no member ${options.member}`, retryAfterMs: LOCAL_RETRY_MS };
+      const key = memberLockKey(poolName, member.name);
+      if (options.read) {
+        const hold: SlotHold = { pool: poolName, kind: 'workspaces', key, token: '', global: false, member: member.name, read: true };
+        holds.set(jobId, hold);
+        return { granted: true, hold, member };
+      }
+      if ([...holds.values()].some((hold) => hold.member === member.name && !hold.read) || await this.backend.locks.exists(key)) {
+        return { granted: false, waitingFor: `workspace ${member.name} of pool ${poolName} is busy`, retryAfterMs: LOCAL_RETRY_MS };
+      }
+      const lease = await this.backend.locks.acquire(key, this.manifest.runtime.leaseTtlMs, jobId);
+      if (!lease.acquired) return { granted: false, waitingFor: `workspace ${member.name} of pool ${poolName} is busy`, retryAfterMs: LOCAL_RETRY_MS };
+      const hold: SlotHold = { pool: poolName, kind: 'workspaces', key, token: lease.token, global: false, member: member.name };
+      holds.set(jobId, hold);
+      return { granted: true, hold, member };
+    }
     if (pool.kind === 'limit') {
       if (holds.size >= pool.limit) return { granted: false, waitingFor: `pool ${poolName} full (${holds.size}/${pool.limit} held by this host)`, retryAfterMs: LOCAL_RETRY_MS };
       const key = `pool.${poolName}`;
@@ -57,7 +79,7 @@ export class Pools {
       holds.set(jobId, hold);
       return { granted: true, hold };
     }
-    const busy = new Set([...holds.values()].map((hold) => hold.member));
+    const busy = new Set([...holds.values()].filter((hold) => !hold.read).map((hold) => hold.member));
     for (const member of pool.members) {
       if (busy.has(member.name)) continue;
       const key = memberLockKey(poolName, member.name);
@@ -79,7 +101,7 @@ export class Pools {
 
   /** Keeps a workspace lease alive; a lease that expired meanwhile is taken again if it is free. */
   async renew(jobId: string, hold: SlotHold): Promise<SlotHold> {
-    if (hold.kind !== 'workspaces') return hold;
+    if (hold.kind !== 'workspaces' || hold.read) return hold;
     const outcome = await this.backend.locks.renew(hold.key, hold.token, this.manifest.runtime.leaseTtlMs);
     if (outcome === 'renewed') return hold;
     if (outcome === 'lifetime-exceeded') await this.backend.locks.release(hold.key);
@@ -96,6 +118,7 @@ export class Pools {
   async release(jobId: string, hold: SlotHold): Promise<void> {
     this.holds(hold.pool).delete(jobId);
     if (hold.kind === 'limit') { await this.backend.slots.release(hold.key, hold.token, { global: hold.global }); return; }
+    if (hold.read) return;
     // Shield deletes without a token; give the lease back only while this run still owns it.
     if ((await this.backend.locks.renew(hold.key, hold.token, 1000)) === 'renewed') await this.backend.locks.release(hold.key);
   }

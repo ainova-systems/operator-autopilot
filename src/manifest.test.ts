@@ -143,3 +143,30 @@ workflows:
   assert.deepEqual(parseManifest(text(', notify: []'), 'm.yaml').manifest.workflows.get('w')?.operations.get('verify')?.notify, []);
   assert.throws(() => parseManifest(text(', notify: [blocked]'), 'm.yaml'), /operations\.verify\.notify: expected a list of result statuses/);
 });
+
+test('limit names a limit pool, and read access needs a workspaces pool', () => {
+  const text = (review: string): string => `
+contract: 1
+project: demo
+pools:
+  slots: { workspaces: [d1, d2] }
+  codex: { limit: 2, slotTtl: 1h }
+workflows:
+  w:
+    operations:
+      review: ${review}
+`;
+  const review = parseManifest(text('{ kind: agent, engine: command, command: x, pool: slots, access: read, limit: codex, timeout: 45m }'), 'm.yaml').manifest.workflows.get('w')?.operations.get('review');
+  assert.equal(review?.access, 'read');
+  assert.equal(review?.limit, 'codex');
+  assert.equal(parseManifest(text('{ kind: script, command: x }'), 'm.yaml').manifest.workflows.get('w')?.operations.get('review')?.access, 'write');
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: command, command: x, pool: codex, access: read, limit: slots, timeout: 2h }'), 'm.yaml'), (error: unknown) => {
+    assert.ok(error instanceof ManifestError);
+    const all = error.problems.join('\n');
+    assert.match(all, /operations\.review\.limit: pool slots is a workspaces pool/);
+    assert.match(all, /operations\.review\.access: read access places a run in a workspace member/);
+    assert.match(all, /operations\.review\.timeout: 7200s exceeds pool codex slotTtl 3600s/);
+    return true;
+  });
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: command, command: x, pool: slots, access: write-ish }'), 'm.yaml'), /operations\.review\.access: expected write or read/);
+});

@@ -50,3 +50,15 @@ test('a next request may carry the key that makes repeating it one job', () => {
   assert.equal(parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', key: 7 }] }, 'pr-1').ok, false);
   assert.equal(parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', key: 'x'.repeat(201) }] }, 'pr-1').ok, false);
 });
+
+test('a next request and a wait may name the workspace member their operation runs in', () => {
+  const outcome = parseResult({ contract: 1, status: 'needs-input', next: [{ operation: 'review', member: 'd1' }], wait: { on: 'answer', resume: 'plan', member: 'd1' } }, 'pr-1');
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.value.next[0]?.member, 'd1');
+  assert.equal(outcome.value.wait?.member, 'd1');
+  const bad = parseResult({ contract: 1, status: 'done', next: [{ operation: 'review', member: 'D 1' }] }, 'pr-1');
+  assert.equal(bad.ok, false);
+  if (bad.ok) return;
+  assert.match(bad.errors.join('\n'), /next\[0\]\.member: expected a workspace member name/);
+});

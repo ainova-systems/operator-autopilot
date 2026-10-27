@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import type { JsonObject } from './contract.ts';
+import { isMemberName, type JsonObject } from './contract.ts';
 import { Daemon } from './daemon.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
@@ -42,6 +42,7 @@ Options:
   --input <json>        Input pointers as a JSON object
   --key <k>             Wait key a trigger answers (e.g. a question id)
   --id <id>             Trigger id; the same id twice is one job
+  --member <m>          enqueue: the workspace member the job runs in
   --status <s>          jobs: only this status
   --dry-run             run: start scripts, never agents, on a separate file state
   --describe            validate: run each script with --describe
@@ -62,6 +63,7 @@ const options = {
   input: { type: 'string' },
   key: { type: 'string' },
   id: { type: 'string' },
+  member: { type: 'string' },
   status: { type: 'string' },
   'dry-run': { type: 'boolean' },
   describe: { type: 'boolean' },
@@ -183,7 +185,8 @@ async function commandTrigger(values: Values, positionals: string[]): Promise<nu
 
 async function commandEnqueue(values: Values, positionals: string[]): Promise<number> {
   const [workflow, operation] = positionals;
-  if (!workflow || !operation) throw new UsageError('usage: operator enqueue <workflow> <operation> [--subject s] [--input json] [--id id]');
+  if (!workflow || !operation) throw new UsageError('usage: operator enqueue <workflow> <operation> [--subject s] [--input json] [--id id] [--member m]');
+  if (values.member !== undefined && !isMemberName(values.member)) throw new UsageError(`--member expects a workspace member name, got ${JSON.stringify(values.member)}`);
   const manifest = load(values);
   if (!manifest.workflows.get(workflow)?.operations.has(operation)) throw new OperatorError('UNKNOWN_OPERATION', `workflow ${workflow} has no operation ${operation}`);
   const backend = openForCommand(manifest);
@@ -194,6 +197,7 @@ async function commandEnqueue(values: Values, positionals: string[]): Promise<nu
     subject: values.subject ?? '',
     input: parseInput(values.input),
     trigger: { id: values.id ?? `manual:${new Date().toISOString()}`, name: 'enqueue', kind: 'manual' },
+    ...(values.member ? { member: values.member } : {}),
   });
   print(values, result, () => `${result.created ? 'queued' : 'duplicate, dropped:'} job ${result.id}`);
   return 0;

@@ -10,6 +10,8 @@
   can attend in a herdr tab, ended by its wrapper once its result file is written, and run as an
   agent when no terminal is reachable. `notify` names the final result statuses that raise an
   owner notification.
+- A `next` request or a `wait` may name the workspace `member` its operation runs in; an operation
+  may hold a `limit` pool alongside its `pool`, and `access: read` shares a member without holding it.
 - Published as the npm package `@ainova-systems/operator` and the image
   `ghcr.io/ainova-systems/operator-autopilot/operator`.
 

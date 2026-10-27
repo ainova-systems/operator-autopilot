@@ -37,6 +37,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
+  A `next` request (or a `wait`, for the operation it resumes) may name the `member` to run in -
+  for example the workspace that holds its subject - and the job waits for that member rather than
+  taking another. An operation may hold a `limit` pool alongside its `pool`, and `access: read`
+  places a run in its named member without holding it, so read-only runs share a workspace.
 - **Three kinds.** `script` is a deterministic program; `agent` is an agent CLI that answers and
   exits (`claude -p`, `codex exec`); `interactive` is a session a person can attend in a terminal
   (`claude` without `-p`, or a command). An interactive run needs a terminal placement: the

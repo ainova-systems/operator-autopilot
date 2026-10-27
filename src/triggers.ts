@@ -90,6 +90,7 @@ async function deliver(manifest: Manifest, workflow: WorkflowSpec, jobs: JobStor
       subject: wait.subject,
       input: { ...wait.input, ...request.input },
       trigger: { id: `wait:${wait.id}`, name: request.name, kind: 'resume' },
+      ...(wait.member ? { member: wait.member } : {}),
     });
     await waits.close(wait.id, 'resolved', job.id);
     result.resumed.push({ waitId: wait.id, jobId: job.id, created: job.created });

@@ -373,3 +373,44 @@ test('the owner is notified of a question, and not of a status the operation doe
   assert.deepEqual(notes, ['operator: item-2 op:ask needs-input | asked q1']);
   assert.ok(p.lines.some((line) => line.includes('owner notified') && line.includes('status=needs-input')));
 });
+
+const SLOT_POOL = '  slots:\n    workspaces:\n      s1: { cwd: . }\n      s2: { cwd: . }';
+const SLOT_OPERATIONS = [
+  '      hold:     { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: slots, timeout: 5m }',
+  '      peek:     { kind: agent, engine: command, command: node scripts/session.mjs, pool: slots, access: read, limit: checks, timeout: 5m }',
+].join('\n');
+
+function inSlot(p: TestProject, operation: string, subject: string, member: string, input: Record<string, unknown> = {}) {
+  return enqueue(p.daemon().jobs, { project: 'demo', workflow: 'demo', operation, subject, input, trigger: { id: `${operation}-${subject}`, name: 'test', kind: 'manual' }, member });
+}
+
+test('a job that names its workspace member runs there, and waits for it rather than taking another', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await inSlot(p, 'hold', 'pr-1', 's2', { seconds: 3 });
+  await inSlot(p, 'hold', 'pr-2', 's2', { seconds: 1 });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-1'))[0]?.status === 'running');
+  await daemon.poll();
+  const [waiting] = await jobsBy(daemon, 'hold', 'pr-2');
+  assert.equal(waiting?.status, 'queued');
+  assert.equal(waiting?.waitingFor, 'workspace s2 of pool slots is busy');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-2'))[0]?.status === 'done');
+  for (const subject of ['pr-1', 'pr-2']) assert.equal((await jobsBy(daemon, 'hold', subject))[0]?.run?.slot?.member, 's2');
+});
+
+test('a read job shares the member a write job holds, and holds its limit pool', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await inSlot(p, 'hold', 'pr-1', 's1', { seconds: 4 });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-1'))[0]?.status === 'running');
+  await inSlot(p, 'peek', 'pr-1', 's1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'peek', 'pr-1'))[0]?.status === 'done');
+  assert.equal((await jobsBy(daemon, 'hold', 'pr-1'))[0]?.status, 'running');
+  const [peek] = await jobsBy(daemon, 'peek', 'pr-1');
+  assert.equal(peek?.run?.slot?.member, 's1');
+  assert.equal(peek?.run?.slot?.read, true);
+  assert.equal(peek?.run?.limitSlot?.pool, 'checks');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-1'))[0]?.status === 'done');
+});

@@ -18,6 +18,8 @@ export interface WaitRecord {
   attempt: number;
   createdAt: string;
   expiresAt?: string;
+  /** The workspace member the resumed operation runs in. */
+  member?: string;
   status: WaitStatus;
   resolvedBy?: string;
   resolvedAt?: string;
@@ -48,6 +50,7 @@ export class WaitStore {
       createdAt: new Date().toISOString(),
       status: 'open',
       ...(wait.key ? { key: wait.key } : {}),
+      ...(wait.member ? { member: wait.member } : {}),
       ...(wait.expiresAt ? { expiresAt: wait.expiresAt } : {}),
     };
     // Re-collecting the same run after a crash finds the wait already stored, which is fine.

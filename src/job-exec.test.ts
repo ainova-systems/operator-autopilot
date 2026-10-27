@@ -13,7 +13,7 @@ const dirs: string[] = [];
 after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
 
 const job = { id: 'j1', subject: 'pr-7', input: {} } as unknown as JobRecord;
-const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [] };
+const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write' };
 
 /** A run directory whose command is a node script; `attended` hands it the terminal. */
 async function runDir(script: string, attended: boolean): Promise<{ dir: string; resultPath: string }> {

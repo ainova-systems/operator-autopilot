@@ -281,35 +281,46 @@ export class Daemon {
     let hold: SlotHold | undefined;
     let cwd = this.manifest.root;
     let herdrWorkspace = this.manifest.herdr.workspace;
-    if (op.pool) {
-      const decision = await this.pools.acquire(op.pool, job.id);
-      if (!decision.granted) {
-        this.deferred.set(job.id, now.getTime() + decision.retryAfterMs);
-        if (job.waitingFor !== decision.waitingFor) {
-          this.log.info('job queued', { job: job.id, operation: job.operation, subject: job.subject, reason: decision.waitingFor });
-          await this.jobs.update(job.id, (current) => {
-            if (current.status !== 'queued') return undefined;
-            current.waitingFor = decision.waitingFor;
-            addHistory(current, 'waiting', decision.waitingFor);
-            return current;
-          });
-        }
-        return;
+    let limitHold: SlotHold | undefined;
+    const queue = async (waitingFor: string, retryAfterMs: number): Promise<void> => {
+      this.deferred.set(job.id, now.getTime() + retryAfterMs);
+      if (job.waitingFor !== waitingFor) {
+        this.log.info('job queued', { job: job.id, operation: job.operation, subject: job.subject, reason: waitingFor });
+        await this.jobs.update(job.id, (current) => {
+          if (current.status !== 'queued') return undefined;
+          current.waitingFor = waitingFor;
+          addHistory(current, 'waiting', waitingFor);
+          return current;
+        });
       }
+    };
+    if (op.pool) {
+      const decision = await this.pools.acquire(op.pool, job.id, { ...(job.member ? { member: job.member } : {}), read: op.access === 'read' });
+      if (!decision.granted) { await queue(decision.waitingFor, decision.retryAfterMs); return; }
       hold = decision.hold;
       const member = decision.member ?? this.pools.member(hold);
       if (member) { cwd = member.cwd; herdrWorkspace = member.herdr; }
+    }
+    if (op.limit) {
+      const decision = await this.pools.acquire(op.limit, job.id);
+      if (!decision.granted) {
+        if (hold) await this.pools.release(job.id, hold);
+        await queue(decision.waitingFor, decision.retryAfterMs);
+        return;
+      }
+      limitHold = decision.hold;
     }
 
     const leaseKey = `run.${job.id}`;
     const lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
     if (!lease.acquired) {
       if (hold) await this.pools.release(job.id, hold);
+      if (limitHold) await this.pools.release(job.id, limitHold);
       this.deferred.set(job.id, now.getTime() + this.leaseTtl);
       this.log.warn('run lease is held elsewhere; not starting the job twice', { job: job.id });
       return;
     }
-    const pending: JobRun = { attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}) };
+    const pending: JobRun = { attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}), ...(limitHold ? { limitSlot: limitHold } : {}) };
     try {
       await this.startRun(job, op, pending, cwd, herdrWorkspace);
     } catch (error) {
@@ -403,6 +414,7 @@ export class Daemon {
   }
 
   private async keepAlive(job: JobRecord, run: JobRun): Promise<void> {
+    if (run.limitSlot && !this.pools.held.get(run.limitSlot.pool)?.has(job.id)) this.pools.adopt(job.id, run.limitSlot);
     if (run.slot && !this.pools.held.get(run.slot.pool)?.has(job.id)) {
       this.pools.adopt(job.id, run.slot);
       this.log.info('resumed observing a running job', { job: job.id, operation: job.operation, subject: job.subject, pane: run.placement.paneId });
@@ -471,6 +483,7 @@ export class Daemon {
         // asks once per key; an unkeyed one belongs to the result that sent it.
         trigger: { id: request.key ? `key:${request.key}` : `next:${job.id}:${job.attempt}:${index}`, name: job.operation, kind: 'next' },
         ...(request.notBefore ? { notBefore: request.notBefore } : {}),
+        ...(request.member ? { member: request.member } : {}),
       });
       nextIds.push(queued.id);
     }
@@ -566,6 +579,7 @@ export class Daemon {
   private async releaseRun(jobId: string, run: JobRun): Promise<void> {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
+    if (run.limitSlot) steps.push(this.pools.release(jobId, run.limitSlot));
     if (run.lease) steps.push(releaseOwnedLease(this.backend, run.lease.key, run.lease.token));
     // A freed slot may be what a deferred job was waiting for.
     this.deferred.clear();

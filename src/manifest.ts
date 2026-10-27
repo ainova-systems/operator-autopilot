@@ -40,6 +40,13 @@ export interface OperationSpec {
   schema?: string;
   thread: 'per-subject' | 'none';
   pool?: string;
+  /** A limit pool held alongside `pool`, e.g. an engine's concurrency while the run sits in a workspace. */
+  limit?: string;
+  /**
+   * `read` places the run in a workspace member without holding it, so read-only runs may share a
+   * member with each other and with the work they judge; it needs a member named by the request.
+   */
+  access: 'write' | 'read';
   placement: Placement;
   timeoutMs: number;
   retries: number;
@@ -194,7 +201,7 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
 function readOperation(reader: Reader, name: string, value: unknown, path: string): OperationSpec | undefined {
   if (!NAME.test(name)) { reader.problem(path, 'operation names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
-  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify'], path);
+  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access'], path);
   const kind = value['kind'] as OperationKind;
   if (!KINDS.includes(kind)) { reader.problem(`${path}.kind`, `expected one of ${KINDS.join(', ')}`); return undefined; }
   const engineValue = value['engine'] ?? (kind === 'script' ? 'command' : undefined);
@@ -210,6 +217,9 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
   const model = reader.string(value, 'model', path);
   const schema = reader.string(value, 'schema', path);
   const pool = reader.string(value, 'pool', path);
+  const limit = reader.string(value, 'limit', path);
+  const access = value['access'] ?? 'write';
+  if (access !== 'write' && access !== 'read') reader.problem(`${path}.access`, 'expected write or read');
   const then = reader.string(value, 'then', path);
   if (engine === 'claude' && !skill && !prompt) reader.problem(path, 'a claude operation needs skill or prompt');
   if (engine === 'codex' && !agent && !prompt) reader.problem(path, 'a codex operation needs agent or prompt');
@@ -249,6 +259,8 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     ...(model ? { model } : {}),
     ...(schema ? { schema } : {}),
     ...(pool ? { pool } : {}),
+    ...(limit ? { limit } : {}),
+    access: access === 'read' ? 'read' : 'write',
     ...(then ? { then } : {}),
   };
 }
@@ -277,9 +289,15 @@ function readWorkflow(reader: Reader, name: string, value: unknown, pools: Map<s
     if (op.pool && !pools.has(op.pool)) reference(`${opPath}.pool`, `unknown pool ${JSON.stringify(op.pool)}`);
     if (op.then && !operations.has(op.then)) reference(`${opPath}.then`, `unknown operation ${JSON.stringify(op.then)}`);
     const pool = op.pool ? pools.get(op.pool) : undefined;
+    if (op.limit && !pools.has(op.limit)) reference(`${opPath}.limit`, `unknown pool ${JSON.stringify(op.limit)}`);
+    const limitPool = op.limit ? pools.get(op.limit) : undefined;
+    if (limitPool && limitPool.kind !== 'limit') reference(`${opPath}.limit`, `pool ${limitPool.name} is a workspaces pool; limit names a limit pool`);
+    if (op.access === 'read' && pool?.kind !== 'workspaces') reference(`${opPath}.access`, 'read access places a run in a workspace member; pool must name a workspaces pool');
     // Guard slots cannot be renewed: the run must end (the wrapper kills it at its timeout) before its slot expires.
-    if (pool?.kind === 'limit' && op.timeoutMs > pool.slotTtlMs) {
-      reference(`${opPath}.timeout`, `${op.timeoutMs / 1000}s exceeds pool ${pool.name} slotTtl ${pool.slotTtlMs / 1000}s; a run could outlive its slot`);
+    for (const held of [pool, limitPool]) {
+      if (held?.kind === 'limit' && op.timeoutMs > held.slotTtlMs) {
+        reference(`${opPath}.timeout`, `${op.timeoutMs / 1000}s exceeds pool ${held.name} slotTtl ${held.slotTtlMs / 1000}s; a run could outlive its slot`);
+      }
     }
   }
 
