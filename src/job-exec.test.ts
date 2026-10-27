@@ -13,17 +13,17 @@ const dirs: string[] = [];
 after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
 
 const job = { id: 'j1', subject: 'pr-7', input: {} } as unknown as JobRecord;
-const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write' };
+const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0 };
 
 /** A run directory whose command is a node script; `attended` hands it the terminal. */
-async function runDir(script: string, attended: boolean): Promise<{ dir: string; resultPath: string }> {
+async function runDir(script: string, attended: boolean, keepMs = 0): Promise<{ dir: string; resultPath: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'operator-exec-'));
   dirs.push(dir);
   const resultPath = runPath(dir, 'result');
   const launch: LaunchSpec = {
     jobId: 'j1', attempt: 1, title: 'pr-7 op:plan', argv: [process.execPath, '-e', script], cwd: dir,
     env: { OPERATOR_RESULT: resultPath }, timeoutMs: 30_000,
-    ...(attended ? { attended: { resultPath, graceMs: 200 } } : {}),
+    ...(attended ? { attended: { resultPath, graceMs: 200, ...(keepMs > 0 ? { keepMs } : {}) } } : {}),
   };
   await writeJsonAtomic(runPath(dir, 'launch'), launch);
   return { dir, resultPath };
@@ -78,4 +78,22 @@ test('a result file counts as written only once it is complete JSON with a statu
   assert.equal(await resultWritten(path), false);
   await writeFile(path, '{"contract": 1, "status": "done"}');
   assert.equal(await resultWritten(path), true);
+});
+
+test('a kept session hands its result over at once and stays open for its keepTab time', async () => {
+  const { dir } = await runDir(`${WRITE_RESULT} setInterval(() => {}, 1000);`, true, 2500);
+  const running = runJobExec(dir);
+  let handedOver: ExitInfo | undefined;
+  for (let i = 0; i < 40 && !handedOver; i += 1) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    handedOver = await readJsonFile<ExitInfo>(runPath(dir, 'exit'));
+  }
+  const command = await readJsonFile<CommandInfo>(runPath(dir, 'command'));
+  assert.equal(handedOver?.released, true);
+  // The pipeline collects now, while the session is still there for questions.
+  assert.equal(processAlive(command?.pid ?? 0), true);
+  assert.equal((await collectRun(job, op, dir, handedOver as ExitInfo)).result.status, 'done');
+  await running;
+  assert.equal(processAlive(command?.pid ?? 0), false);
+  assert.equal((await readJsonFile<ExitInfo>(runPath(dir, 'exit')))?.released, true);
 });

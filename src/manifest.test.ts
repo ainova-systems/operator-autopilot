@@ -170,3 +170,17 @@ workflows:
   });
   assert.throws(() => parseManifest(text('{ kind: agent, engine: command, command: x, pool: slots, access: write-ish }'), 'm.yaml'), /operations\.review\.access: expected write or read/);
 });
+
+test('keepTab keeps a herdr tab open after its run, and needs a herdr placement', () => {
+  const text = (op: string): string => `
+contract: 1
+project: demo
+workflows:
+  w:
+    operations:
+      plan: ${op}
+`;
+  assert.equal(parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr, keepTab: 30m }'), 'm.yaml').manifest.workflows.get('w')?.operations.get('plan')?.keepTabMs, 30 * 60_000);
+  assert.equal(parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr }'), 'm.yaml').manifest.workflows.get('w')?.operations.get('plan')?.keepTabMs, 0);
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: claude, skill: plan-change, keepTab: 30m }'), 'm.yaml'), /operations\.plan\.keepTab: keepTab keeps a herdr tab open; the placement is headless/);
+});

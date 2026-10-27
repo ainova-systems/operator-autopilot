@@ -223,7 +223,7 @@ export class Daemon {
     }
     if (this.tabsPending && now.getTime() - this.lastTabRetry >= TAB_RETRY_MS) {
       this.lastTabRetry = now.getTime();
-      await this.retryTabs();
+      await this.retryTabs(now);
     }
   }
 
@@ -500,7 +500,7 @@ export class Daemon {
     }
 
     const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt <= op.retries;
-    await this.releaseRun(job.id, run);
+    await this.releaseRun(job.id, run, op?.keepTabMs ?? 0);
     const finishedAt = new Date().toISOString();
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
@@ -586,7 +586,8 @@ export class Daemon {
   }
 
   /** Gives back what a run held: its pool slot, its run lease and its herdr tab. */
-  private async releaseRun(jobId: string, run: JobRun): Promise<void> {
+  /** `keepTabMs` leaves a finished run's tab open that long for a person; everything else is released now. */
+  private async releaseRun(jobId: string, run: JobRun, keepTabMs = 0): Promise<void> {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
     if (run.limitSlot) steps.push(this.pools.release(jobId, run.limitSlot));
@@ -596,7 +597,9 @@ export class Daemon {
     for (const outcome of await Promise.allSettled(steps)) {
       if (outcome.status === 'rejected') this.log.warn('releasing part of a run failed; it expires by itself', { job: jobId, error: errorText(outcome.reason) });
     }
-    if (run.placement.tabId) await this.closeTab(jobId, run.placement.tabId);
+    if (!run.placement.tabId) return;
+    if (keepTabMs > 0) await this.closeTabLater(jobId, run.placement.tabId, new Date(Date.now() + keepTabMs));
+    else await this.closeTab(jobId, run.placement.tabId);
   }
 
   /** Closes a run's tab, or keeps it on record so a later poll closes it once herdr answers again. */
@@ -607,8 +610,14 @@ export class Daemon {
     } catch (error) {
       this.log.warn('closing the run\'s herdr tab failed; a later poll retries it', { job: jobId, tab: tabId, error: errorText(error) });
     }
+    await this.closeTabLater(jobId, tabId);
+  }
+
+  /** Records a tab a later poll closes: one kept open on purpose until `closeAt`, or one herdr refused to close. */
+  private async closeTabLater(jobId: string, tabId: string, closeAt?: Date): Promise<void> {
     try {
-      await this.backend.docs.replace(TABS_COLLECTION, tabId, { tabId, jobId, since: new Date().toISOString() }, { ttlMs: TAB_RECORD_TTL_MS });
+      await this.backend.docs.replace(TABS_COLLECTION, tabId, { tabId, jobId, since: new Date().toISOString(), ...(closeAt ? { closeAt: closeAt.toISOString() } : {}) }, { ttlMs: TAB_RECORD_TTL_MS });
+      if (closeAt) this.log.info('the run\'s herdr tab stays open for a person', { job: jobId, tab: tabId, until: closeAt.toISOString() });
       this.tabsPending = true;
     } catch (error) {
       // Releasing never fails the run it belongs to; this tab then waits for a person.
@@ -616,10 +625,11 @@ export class Daemon {
     }
   }
 
-  private async retryTabs(): Promise<void> {
-    const pending = await this.backend.docs.list<{ tabId: string; jobId: string }>(TABS_COLLECTION);
+  private async retryTabs(now: Date): Promise<void> {
+    const pending = await this.backend.docs.list<{ tabId: string; jobId: string; closeAt?: string }>(TABS_COLLECTION);
     let left = 0;
     for (const { key, value } of pending) {
+      if (value.closeAt && Date.parse(value.closeAt) > now.getTime()) { left += 1; continue; }
       try {
         const outcome = await this.herdr.closeTab(value.tabId);
         await this.backend.docs.delete(TABS_COLLECTION, key);

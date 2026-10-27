@@ -48,6 +48,8 @@ export interface OperationSpec {
    */
   access: 'write' | 'read';
   placement: Placement;
+  /** How long a herdr tab stays open after its run ends, so a person can read it; 0 closes it at once. */
+  keepTabMs: number;
   timeoutMs: number;
   retries: number;
   retryDelayMs: number;
@@ -201,7 +203,7 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
 function readOperation(reader: Reader, name: string, value: unknown, path: string): OperationSpec | undefined {
   if (!NAME.test(name)) { reader.problem(path, 'operation names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
-  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access'], path);
+  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access', 'keepTab'], path);
   const kind = value['kind'] as OperationKind;
   if (!KINDS.includes(kind)) { reader.problem(`${path}.kind`, `expected one of ${KINDS.join(', ')}`); return undefined; }
   const engineValue = value['engine'] ?? (kind === 'script' ? 'command' : undefined);
@@ -232,6 +234,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
   if (thread !== 'per-subject' && thread !== 'none') reader.problem(`${path}.thread`, 'expected per-subject or none');
   const placement = value['placement'] ?? 'headless';
   if (placement !== 'headless' && placement !== 'herdr') reader.problem(`${path}.placement`, 'expected headless or herdr');
+  if (value['keepTab'] !== undefined && placement === 'headless') reader.problem(`${path}.keepTab`, 'keepTab keeps a herdr tab open; the placement is headless');
   if (kind === 'interactive' && placement === 'headless') reader.problem(`${path}.placement`, 'an interactive operation needs a terminal placement (herdr); without one reachable it runs as an agent');
   const notify = value['notify'] ?? DEFAULT_NOTIFY[kind];
   if (!Array.isArray(notify) || notify.some((status) => !RESULT_STATUSES.includes(status as ResultStatus))) reader.problem(`${path}.notify`, `expected a list of result statuses (${RESULT_STATUSES.join(', ')})`);
@@ -246,6 +249,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     args: Array.isArray(args) ? args.map(String) : [],
     thread: thread === 'per-subject' ? 'per-subject' : 'none',
     placement: placement === 'herdr' ? 'herdr' : 'headless',
+    keepTabMs: reader.duration(value, 'keepTab', path, 0),
     timeoutMs: reader.duration(value, 'timeout', path, DEFAULT_TIMEOUT_MS[kind]),
     retries: reader.integer(value, 'retries', path, 0, 0),
     retryDelayMs: reader.duration(value, 'retryDelay', path, 60_000),

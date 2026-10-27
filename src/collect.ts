@@ -56,8 +56,8 @@ export async function collectRun(job: JobRecord, op: OperationSpec, runDir: stri
   try { parsed = JSON.parse(raw); } catch { return { exit, result: failed('result file is not valid JSON', false) }; }
   const outcome = parseResult(parsed, job.subject);
   if (!outcome.ok) return { exit, result: failed(`invalid result: ${outcome.errors.join('; ')}`, false) };
-  // An attended session the wrapper ended after its result ended as intended, whatever signal it took.
-  if (exit.exitCode !== 0 && !exit.closedAfterResult && outcome.value.status !== 'failed') {
+  // An attended session ended or released after its result ended as intended, whatever signal it took.
+  if (exit.exitCode !== 0 && !exit.closedAfterResult && !exit.released && outcome.value.status !== 'failed') {
     return { exit, result: failed(`exited ${exit.exitCode ?? exit.signal} although the result says ${outcome.value.status}`, false, outcome.value.message) };
   }
   return { exit, result: outcome.value };

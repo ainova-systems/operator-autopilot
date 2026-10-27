@@ -80,6 +80,7 @@ export async function runJobExec(runDir: string): Promise<number> {
   const attended = launch.attended;
   let timedOut = false;
   let closedAfterResult = false;
+  let released = false;
   const exit = await new Promise<ExitInfo>((resolveExit) => {
     const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: attended ? 'inherit' : ['ignore', 'pipe', 'pipe'], detached: !attended });
     const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
@@ -97,6 +98,20 @@ export async function runJobExec(runDir: string): Promise<number> {
       resultWritten(attended.resultPath).then((written) => {
         if (!written || closing) return;
         closing = true;
+        const keepMs = attended.keepMs ?? 0;
+        if (keepMs > 0) {
+          // The pipeline goes on now; the session stays for questions until keepTab runs out.
+          setTimeout(() => {
+            released = true;
+            const exit: ExitInfo = { exitCode: null, signal: null, timedOut: false, finishedAt: new Date().toISOString(), released: true };
+            void writeJsonAtomic(runPath(runDir, 'exit'), exit).catch((error: unknown) => process.stderr.write(`operator: exit.json write failed: ${(error as Error).message}\n`));
+            const kept = `\noperator: result handed over - the pipeline continues; this session stays open ${Math.round(keepMs / 60_000)} min for questions\n`;
+            process.stdout.write(kept);
+            output.write(kept);
+            setTimeout(end, keepMs).unref();
+          }, attended.graceMs).unref();
+          return;
+        }
         const note = `\noperator: result written - closing the session in ${Math.round(attended.graceMs / 1000)}s\n`;
         process.stdout.write(note);
         output.write(note);
@@ -127,6 +142,7 @@ export async function runJobExec(runDir: string): Promise<number> {
   process.stdout.write(footer);
   output.write(footer);
   await new Promise<void>((resolveEnd) => output.end(resolveEnd));
-  await writeJsonAtomic(runPath(runDir, 'exit'), exit);
+  // A released run was collected already; its exit.json stays the one the daemon read.
+  if (!released) await writeJsonAtomic(runPath(runDir, 'exit'), exit);
   return exit.exitCode ?? 1;
 }

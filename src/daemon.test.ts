@@ -430,3 +430,16 @@ test('a follow-on in the same workspace pool stays in the member its request cam
   const messages = (await jobsBy(daemon, 'hold', 'pr-1')).map((job) => job.outcome?.message).sort();
   assert.deepEqual(messages, ['step 1 in s2', 'step 2 in s2']);
 });
+
+test('a kept tab outlives its finished run, which hands its result over at once, and closes when keepTab runs out', async () => {
+  const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'look', subject: 'pr-3', input: {}, trigger: { id: 'look-1', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'look', 'pr-3'))[0]?.status === 'done');
+  assert.deepEqual(closes, []);
+  assert.ok(p.lines.some((line) => line.includes('stays open for a person')));
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closes, ['wT:t1']);
+});

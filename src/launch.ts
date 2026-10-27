@@ -79,7 +79,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
       ...(options.attended ? { OPERATOR_ATTENDED: '1' } : {}),
     },
     timeoutMs: op.timeoutMs,
-    ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS } } : {}),
+    ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS, ...(op.keepTabMs > 0 ? { keepMs: op.keepTabMs } : {}) } } : {}),
     ...(manifest.envFile ? { envFile: manifest.envFile } : {}),
     ...(manifest.envKeys ? { envKeys: manifest.envKeys } : {}),
   };

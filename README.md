@@ -48,6 +48,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   wrapper hands it the terminal and ends it a few seconds after its result file is written, because
   the slot it holds goes to the next run. Without a reachable terminal it runs as an agent, and the
   job record says so. The command learns it has a terminal from `OPERATOR_ATTENDED=1`.
+- **Kept tabs.** `keepTab: 30m` leaves a herdr run's tab open that long after its result: the
+  result is collected and the follow-on starts at once, while an interactive session stays live in
+  the tab for a person's questions and any other run's output stays readable; then the session ends
+  and the tab closes, after a daemon restart too.
 - **Notifications.** `notify` lists the final result statuses that raise an owner notification
   (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
   scheduled retry is not final.
