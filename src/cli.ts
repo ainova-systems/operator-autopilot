@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { hostname, userInfo } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { isMemberName, type JsonObject } from './contract.ts';
 import { Daemon } from './daemon.ts';
+import { parseDuration } from './duration.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
 import { createHerdr } from './herdr.ts';
@@ -11,6 +14,7 @@ import { runJobExec } from './job-exec.ts';
 import { enqueue, JobStore, type JobStatus } from './jobs.ts';
 import { createLogger, errorText, type LogLevel } from './log.ts';
 import { loadManifest, manifestPath, type Manifest } from './manifest.ts';
+import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
 import { capabilityProblems, checkCapabilities, openState } from './state/open.ts';
 import type { StateBackend } from './state/types.ts';
 import { fireTrigger } from './triggers.ts';
@@ -18,7 +22,8 @@ import { validateProject } from './validate.ts';
 import { WaitStore } from './waits.ts';
 
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs']);
+const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', CONTROL_COLLECTION]);
+const PAUSE_POLL_MS = 5_000;
 
 const HELP = `operator ${VERSION} - runs a project's workflow operations on timers and triggers
 
@@ -32,8 +37,11 @@ Commands:
   jobs                             List jobs (newest last)
   job <id>                         Show one job record
   waits                            List open waits
+  pause                            Start no new job while running ones finish; --wait until none runs.
+                                   The service resumes by itself when it starts again
+  resume                           End a pause
   state <get|put|list|delete> <collection> [key]
-                                   Project state for scripts and skills (reserved: jobs, waits, threads, deliveries, tabs)
+                                   Project state for scripts and skills (reserved: jobs, waits, threads, deliveries, tabs, control)
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
 
 Options:
@@ -51,6 +59,9 @@ Options:
   --if-match <etag>     state put: write only if unchanged
   --prefix <p>          state list: key prefix
   --where <k=v>         state list: top-level equality filter (repeatable)
+  --reason <text>       pause: why, for the log and the owner
+  --wait                pause: return once no job runs
+  --timeout <duration>  pause --wait: give up after this long (default: wait as long as it takes)
   --json                Machine-readable output
   --log-level <level>   debug, info, warn or error (default info)
   -h, --help            This help
@@ -72,6 +83,9 @@ const options = {
   'if-match': { type: 'string' },
   prefix: { type: 'string' },
   where: { type: 'string', multiple: true },
+  reason: { type: 'string' },
+  wait: { type: 'boolean' },
+  timeout: { type: 'string' },
   json: { type: 'boolean' },
   'log-level': { type: 'string' },
   help: { type: 'boolean', short: 'h' },
@@ -229,6 +243,33 @@ async function commandWaits(values: Values): Promise<number> {
   return 0;
 }
 
+/** Pauses the project; with --wait returns once no job runs (0), or after --timeout (3). */
+async function commandPause(values: Values): Promise<number> {
+  const manifest = load(values);
+  const docs = openForCommand(manifest).docs;
+  const store = new JobStore(docs, manifest.runtime.retentionMs);
+  const timeoutMs = values.timeout === undefined ? undefined : parseDuration(values.timeout, '--timeout');
+  const { pause, created } = await requestPause(docs, `${userInfo().username}@${hostname()}`, values.reason);
+  const running = async (): Promise<number> => (await store.list('running')).length;
+  const count = await running();
+  print(values, { pause, created, running: count }, () => `${created ? 'pausing' : `already paused since ${pause.since} by ${pause.by}`}: no new job starts; ${count} running job(s) finish first`);
+  if (!values.wait) return 0;
+  const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+  for (let left = count; ; left = await running()) {
+    if (!(await readPause(docs))) { process.stderr.write('the pause was ended while waiting\n'); return 1; }
+    if (left === 0) { process.stdout.write('paused: no job running\n'); return 0; }
+    if (Date.now() >= deadline) { process.stdout.write(`still ${left} job(s) running\n`); return 3; }
+    await sleep(PAUSE_POLL_MS);
+  }
+}
+
+async function commandResume(values: Values): Promise<number> {
+  const manifest = load(values);
+  const ended = await clearPause(openForCommand(manifest).docs);
+  print(values, { resumed: ended }, () => (ended ? 'resumed: queued jobs start on the next poll' : 'not paused'));
+  return 0;
+}
+
 async function commandState(values: Values, positionals: string[]): Promise<number> {
   const [action, collection, key] = positionals;
   if (!action || !collection) throw new UsageError('usage: operator state <get|put|list|delete> <collection> [key]');
@@ -292,6 +333,8 @@ export async function main(argv: string[]): Promise<number> {
       case 'jobs': return await commandJobs(values, rest, false);
       case 'job': return await commandJobs(values, rest, true);
       case 'waits': return await commandWaits(values);
+      case 'pause': return await commandPause(values);
+      case 'resume': return await commandResume(values);
       case 'state': return await commandState(values, rest);
       case 'job-exec': {
         if (!rest[0]) throw new UsageError('usage: operator job-exec <run-dir>');

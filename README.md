@@ -71,6 +71,8 @@ operator run --dry-run                          # scripts run, agents are only l
 operator trigger <workflow> <name> --subject pr-7 --key q-1 --input '{"answer":"yes"}'
 operator jobs [--status queued]  |  operator job <id>  |  operator waits
 operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
+operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart
+operator resume                                 # also happens by itself when the service starts again
 ```
 
 `AINOFLOW_API_KEY` comes from the environment, or from the manifest's `envFile` /

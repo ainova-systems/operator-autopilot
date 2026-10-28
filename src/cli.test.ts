@@ -93,9 +93,22 @@ test('scripts cannot change the collections the runtime keeps its own records in
   const p = await createTestProject();
   projects.push(p);
   const manifest = join(p.root, 'operator.yaml');
-  for (const collection of ['jobs', 'waits', 'threads', 'deliveries', 'tabs']) {
+  for (const collection of ['jobs', 'waits', 'threads', 'deliveries', 'tabs', 'control']) {
     const refused = await cli(['state', 'delete', collection, 'x', '--manifest', manifest]);
     assert.equal(refused.code, 2, collection);
     assert.match(refused.stderr, /belongs to the runtime/);
   }
+});
+
+test('pause waits until no job runs, says so, and resume ends it', async () => {
+  const p = await createTestProject();
+  projects.push(p);
+  const manifest = join(p.root, 'operator.yaml');
+  const paused = await cli(['pause', '--manifest', manifest, '--reason', 'host restart', '--wait', '--timeout', '30s']);
+  assert.equal(paused.code, 0);
+  assert.match(paused.stdout, /pausing: no new job starts; 0 running job\(s\) finish first/);
+  assert.match(paused.stdout, /paused: no job running/);
+  assert.match((await cli(['pause', '--manifest', manifest])).stdout, /already paused since .* by /);
+  assert.match((await cli(['resume', '--manifest', manifest])).stdout, /resumed/);
+  assert.match((await cli(['resume', '--manifest', manifest])).stdout, /not paused/);
 });

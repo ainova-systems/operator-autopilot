@@ -15,6 +15,9 @@
   A follow-on in the same workspace pool stays in its run's member, which the input file names.
 - `keepTab` keeps a herdr run's tab, and an interactive session in it, open for a set time after its
   result, without holding the pipeline back; a `noop` run keeps none.
+- `operator pause` starts no new job and fires no timer while running jobs finish; `--wait` returns,
+  and the daemon logs and notifies the owner, once none runs. `operator resume` ends it, and so does
+  the service starting again.
 - Published as the npm package `@ainova-systems/operator` and the image
   `ghcr.io/ainova-systems/operator-autopilot/operator`.
 

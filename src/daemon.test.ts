@@ -10,6 +10,7 @@ import type { Herdr } from './herdr.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo } from './runfiles.ts';
 import { absentHerdr, createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
 import { fireTrigger } from './triggers.ts';
+import { clearPause, readPause, requestPause } from './pause.ts';
 
 const projects: TestProject[] = [];
 async function project(options?: Parameters<typeof createTestProject>[0]): Promise<TestProject> {
@@ -454,4 +455,42 @@ test('a kept tab outlives its finished run, which hands its result over at once,
   await daemon.poll(new Date(Date.now() + 120_000));
   assert.deepEqual(closes, ['wT:t1']);
   assert.ok(p.lines.some((line) => line.includes('kept open for a person')));
+});
+
+test('a pause lets the running job finish, starts nothing new, and says once when it is quiet', async () => {
+  const p = await project();
+  const notes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...absentHerdr, notify: async (title) => { notes.push(title); } } });
+  await daemon.acquireLeader();
+  await p.drop('item-1.work', '1');
+  await discover(p, 't1');
+  await daemon.poll();
+  assert.equal((await jobsBy(daemon, 'discover'))[0]?.status, 'running');
+  await requestPause(daemon.backend.docs, 'tester', 'host restart');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'discover'))[0]?.status === 'done');
+  await daemon.poll();
+  await daemon.poll();
+  // The follow-on waits; nothing starts while the pause stands, and the quiet moment is said once.
+  assert.equal((await jobsBy(daemon, 'work', 'item-1'))[0]?.status, 'queued');
+  assert.equal(p.lines.filter((line) => line.includes('fully paused')).length, 1);
+  assert.deepEqual(notes, ['operator: fully paused']);
+  assert.ok((await readPause(daemon.backend.docs))?.quietAt);
+  // No timer fires while paused either.
+  await daemon.tick(new Date(Date.now() + 120_000));
+  assert.equal((await jobsBy(daemon, 'discover')).length, 1);
+  await clearPause(daemon.backend.docs);
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'finish', 'item-1'))[0]?.status === 'done');
+  assert.ok(p.lines.some((line) => line.includes(' resumed ')));
+});
+
+test('a pause ends when the service starts again', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await requestPause(daemon.backend.docs, 'tester');
+  await daemon.resumeAfterRestart();
+  assert.equal(await readPause(daemon.backend.docs), undefined);
+  assert.ok(p.lines.some((line) => line.includes('a pause ends when the service starts')));
+  await discover(p, 't1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'discover'))[0]?.status === 'noop');
 });

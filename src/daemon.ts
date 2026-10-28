@@ -11,6 +11,7 @@ import { signalCommand } from './job-exec.ts';
 import { jobTitle, openHerdrTab, prepareRun, startHeadless, startInHerdr } from './launch.ts';
 import { errorText, type Logger } from './log.ts';
 import type { Manifest, OperationSpec } from './manifest.ts';
+import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
 import { Pools } from './pools.ts';
 import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
 import type { StateBackend } from './state/types.ts';
@@ -66,6 +67,8 @@ export class Daemon {
   private lastPoll = 0;
   private lastWaitSweep = 0;
   private stopped = false;
+  /** The pause in force at the last check; undefined while running normally. */
+  private paused: PauseRecord | undefined;
 
   constructor(options: DaemonOptions) {
     this.manifest = options.manifest;
@@ -91,6 +94,7 @@ export class Daemon {
     }
     if (this.stopped) return;
     this.log.info('daemon started', { project: this.manifest.project, host: this.host, state: this.backend.kind, dryRun: this.dryRun, workflows: [...this.manifest.workflows.keys()].join(',') });
+    await this.resumeAfterRestart();
     // The lease is renewed on its own clock, so a slow pass cannot outlive it unnoticed.
     const renewal = setInterval(() => {
       this.ensureLeader().catch((error: unknown) => {
@@ -199,9 +203,32 @@ export class Daemon {
     this.leader = undefined;
   }
 
+  /**
+   * A pause ends when the service starts again: it exists to let running jobs finish before the
+   * service or its host goes down, and a restart is that moment passing.
+   */
+  async resumeAfterRestart(): Promise<void> {
+    const pause = await readPause(this.backend.docs);
+    if (pause && (await clearPause(this.backend.docs))) this.log.info('resumed: a pause ends when the service starts', { pausedSince: pause.since, by: pause.by });
+    this.paused = undefined;
+  }
+
+  /** Reads the pause switch, logging each change of it. */
+  private async refreshPause(): Promise<void> {
+    const pause = await readPause(this.backend.docs);
+    if (pause && pause.since !== this.paused?.since) {
+      const running = (await this.jobs.list('running')).length;
+      this.log.info('paused: no timer fires and no queued job starts; running jobs finish first', { by: pause.by, reason: pause.reason ?? '', running });
+    } else if (!pause && this.paused) {
+      this.log.info('resumed', { pausedSince: this.paused.since });
+    }
+    this.paused = pause;
+  }
+
   async tick(now: Date = new Date()): Promise<void> {
     await this.ensureLeader();
-    await this.fireTimers(now);
+    await this.refreshPause();
+    if (!this.paused) await this.fireTimers(now);
     if (now.getTime() - this.lastPoll >= this.manifest.runtime.pollMs) {
       this.lastPoll = now.getTime();
       await this.poll(now);
@@ -211,11 +238,15 @@ export class Daemon {
   /** One observation pass without the timer and poll cadence; tests drive the daemon with it. */
   async poll(now: Date = new Date()): Promise<void> {
     await this.ensureLeader();
+    await this.refreshPause();
     for (const job of await this.jobs.list('running')) {
       try { await this.observe(job, now); } catch (error) { this.log.error('observing a running job failed', { job: job.id, error: errorText(error) }); }
     }
-    for (const job of await this.jobs.list('queued')) {
-      try { await this.dispatch(job, now); } catch (error) { this.log.error('starting a queued job failed', { job: job.id, error: errorText(error) }); }
+    if (this.paused) await this.reportQuiet(this.paused, now);
+    else {
+      for (const job of await this.jobs.list('queued')) {
+        try { await this.dispatch(job, now); } catch (error) { this.log.error('starting a queued job failed', { job: job.id, error: errorText(error) }); }
+      }
     }
     if (now.getTime() - this.lastWaitSweep >= WAIT_SWEEP_MS) {
       this.lastWaitSweep = now.getTime();
@@ -225,6 +256,16 @@ export class Daemon {
       this.lastTabRetry = now.getTime();
       await this.retryTabs(now);
     }
+  }
+
+  /** Says once per pause that no job runs any more, in the log and to the owner. */
+  private async reportQuiet(pause: PauseRecord, now: Date): Promise<void> {
+    if (pause.quietAt || (await this.jobs.list('running')).length > 0) return;
+    await markQuiet(this.backend.docs, pause, now);
+    this.paused = { ...pause, quietAt: now.toISOString() };
+    const queued = (await this.jobs.list('queued')).length;
+    this.log.info('fully paused: no job running; the service or its host can stop now', { queued });
+    await this.herdr.notify('operator: fully paused', `no job running, ${queued} queued; the service starts them again when it restarts or on operator resume`).catch(() => undefined);
   }
 
   private async fireTimers(now: Date): Promise<void> {
