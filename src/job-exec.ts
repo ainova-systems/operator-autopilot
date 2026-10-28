@@ -31,19 +31,24 @@ export function signalCommand(command: CommandInfo, signal: NodeJS.Signals): voi
 
 /** True once the result file holds a complete JSON object with a status; a half-written file is not yet. */
 export async function resultWritten(path: string): Promise<boolean> {
+  return (await resultStatus(path)) !== null;
+}
+
+/** The status of a complete result file, or null while there is none. */
+export async function resultStatus(path: string): Promise<string | null> {
   let text: string;
   try {
     text = await readFile(path, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
   try {
     const parsed = JSON.parse(text) as { status?: unknown } | null;
-    return typeof parsed?.status === 'string';
+    return typeof parsed?.status === 'string' ? parsed.status : null;
   } catch {
     // Still being written: the next poll reads it again.
-    return false;
+    return null;
   }
 }
 
@@ -95,10 +100,11 @@ export async function runJobExec(runDir: string): Promise<number> {
     const timer = setTimeout(() => { timedOut = true; end(); }, launch.timeoutMs);
     let closing = false;
     const watcher = attended ? setInterval(() => {
-      resultWritten(attended.resultPath).then((written) => {
-        if (!written || closing) return;
+      resultStatus(attended.resultPath).then((status) => {
+        if (status === null || closing) return;
         closing = true;
-        const keepMs = attended.keepMs ?? 0;
+        // A noop run did nothing a person could ask about, so its session closes like any other.
+        const keepMs = status === 'noop' ? 0 : attended.keepMs ?? 0;
         if (keepMs > 0) {
           // The pipeline goes on now; the session stays for questions until keepTab runs out.
           setTimeout(() => {

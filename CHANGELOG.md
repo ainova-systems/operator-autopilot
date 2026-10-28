@@ -14,7 +14,7 @@
   may hold a `limit` pool alongside its `pool`, and `access: read` shares a member without holding it.
   A follow-on in the same workspace pool stays in its run's member, which the input file names.
 - `keepTab` keeps a herdr run's tab, and an interactive session in it, open for a set time after its
-  result, without holding the pipeline back.
+  result, without holding the pipeline back; a `noop` run keeps none.
 - Published as the npm package `@ainova-systems/operator` and the image
   `ghcr.io/ainova-systems/operator-autopilot/operator`.
 

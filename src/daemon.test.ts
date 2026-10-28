@@ -431,6 +431,17 @@ test('a follow-on in the same workspace pool stays in the member its request cam
   assert.deepEqual(messages, ['step 1 in s2', 'step 2 in s2']);
 });
 
+test('a noop run keeps no tab open, whatever its keepTab', async () => {
+  const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'look', subject: 'pr-3', input: { status: 'noop' }, trigger: { id: 'look-noop', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'look', 'pr-3'))[0]?.status === 'noop');
+  assert.deepEqual(closes, ['wT:t1']);
+  assert.ok(!p.lines.some((line) => line.includes('stays open for a person')));
+});
+
 test('a kept tab outlives its finished run, which hands its result over at once, and closes when keepTab runs out', async () => {
   const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
   const closes: string[] = [];
@@ -442,4 +453,5 @@ test('a kept tab outlives its finished run, which hands its result over at once,
   assert.ok(p.lines.some((line) => line.includes('stays open for a person')));
   await daemon.poll(new Date(Date.now() + 120_000));
   assert.deepEqual(closes, ['wT:t1']);
+  assert.ok(p.lines.some((line) => line.includes('kept open for a person')));
 });

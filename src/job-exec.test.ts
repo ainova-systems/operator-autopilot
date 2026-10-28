@@ -80,6 +80,15 @@ test('a result file counts as written only once it is complete JSON with a statu
   assert.equal(await resultWritten(path), true);
 });
 
+test('a noop session closes after its result even when keepTab is set: nothing happened there to ask about', async () => {
+  const noop = `require('node:fs').writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({ contract: 1, status: 'noop', evidence: [], next: [], message: 'nothing to do' })); setInterval(() => {}, 1000);`;
+  const { dir } = await runDir(noop, true, 60_000);
+  await runJobExec(dir);
+  const exit = await readJsonFile<ExitInfo>(runPath(dir, 'exit'));
+  assert.equal(exit?.closedAfterResult, true);
+  assert.equal(exit?.released, undefined);
+});
+
 test('a kept session hands its result over at once and stays open for its keepTab time', async () => {
   const { dir } = await runDir(`${WRITE_RESULT} setInterval(() => {}, 1000);`, true, 2500);
   const running = runJobExec(dir);

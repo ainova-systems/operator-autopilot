@@ -500,7 +500,7 @@ export class Daemon {
     }
 
     const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt <= op.retries;
-    await this.releaseRun(job.id, run, op?.keepTabMs ?? 0);
+    await this.releaseRun(job.id, run, result.status === 'noop' ? 0 : op?.keepTabMs ?? 0);
     const finishedAt = new Date().toISOString();
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
@@ -634,7 +634,8 @@ export class Daemon {
         const outcome = await this.herdr.closeTab(value.tabId);
         await this.backend.docs.delete(TABS_COLLECTION, key);
         this.tabsWarned.delete(value.tabId);
-        this.log.info('closed a herdr tab an earlier run left open', { job: value.jobId, tab: value.tabId, outcome });
+        if (value.closeAt) this.log.info('closed a run\'s herdr tab kept open for a person', { job: value.jobId, tab: value.tabId, outcome });
+        else this.log.info('closed a herdr tab an earlier run left open', { job: value.jobId, tab: value.tabId, outcome });
       } catch (error) {
         left += 1;
         const fields = { job: value.jobId, tab: value.tabId, error: errorText(error) };

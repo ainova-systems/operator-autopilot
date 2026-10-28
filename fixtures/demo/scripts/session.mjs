@@ -6,5 +6,6 @@ import { describeIfAsked, readInput, writeResult } from './lib.mjs';
 describeIfAsked();
 const input = readInput();
 console.log(`session: planning ${input.subject}`);
-writeResult({ status: 'done', message: `planned ${input.subject}` });
+// A test may ask for another status, such as a noop that keeps no tab open.
+writeResult({ status: input.input?.status ?? 'done', message: `planned ${input.subject}` });
 if (process.env.OPERATOR_ATTENDED === '1') setInterval(() => {}, 1000);
