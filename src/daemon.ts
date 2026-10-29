@@ -35,6 +35,13 @@ const MAX_INTERRUPTIONS = 3;
 const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
 const TAB_RECORD_TTL_MS = 7 * 86_400_000;
+/** Nudges an idle interactive session gets before the owner is told. */
+const IDLE_NUDGES = 2;
+
+/** What an idle session is asked; it is typed into the session as the operator's next message. */
+export function idleNudgeText(minutes: number): string {
+  return `operator: this run has been idle for ${minutes} min without a result. If the work is finished, write your result now. If you are waiting on a subagent or a background task, reply in one line with what you wait for and keep waiting.`;
+}
 /** Herdr tabs a finished run could not close; a tab never expires by itself. */
 export const TABS_COLLECTION = 'tabs';
 
@@ -61,6 +68,8 @@ export class Daemon {
   private readonly deferred = new Map<string, number>();
   private readonly renewedAt = new Map<string, number>();
   private readonly notified = new Set<string>();
+  /** Interactive sessions seen idle without a result: since when, and how often they were nudged. */
+  private readonly idle = new Map<string, { since?: number; nudges: number; warned: boolean }>();
   private tabsPending = true;
   private readonly tabsWarned = new Set<string>();
   private lastTabRetry = 0;
@@ -477,14 +486,44 @@ export class Daemon {
     if (Object.keys(changes).length > 0) {
       await this.jobs.update(job.id, (current) => (current.status === 'running' && current.run ? { ...current, run: { ...current.run, ...changes } } : undefined));
     }
-    if (run.placement.paneId && !this.notified.has(job.id)) {
-      const status = await this.herdr.agentStatus(run.placement.paneId).catch(() => undefined);
-      if (status === 'blocked') {
-        this.notified.add(job.id);
-        this.log.warn('agent pane is blocked; the runtime never answers it', { job: job.id, pane: run.placement.paneId });
-        await this.herdr.notify(`operator: ${jobTitle(job)} is blocked`, `pane ${run.placement.paneId} needs the owner`).catch(() => undefined);
-      }
+    if (run.placement.paneId) await this.watchPane(job, run.placement.paneId);
+  }
+
+  /**
+   * A blocked pane is the owner's to answer. An interactive session that ended its turn without a
+   * result reads the same from outside whether it waits on its own background work or stopped
+   * short, so after `idleNudge` it is asked to write its result or say what it waits for; a second
+   * silence nudges again, and a third tells the owner. Waiting is fine; stopping short is not.
+   */
+  private async watchPane(job: JobRecord, paneId: string): Promise<void> {
+    const status = await this.herdr.agentStatus(paneId).catch(() => undefined);
+    if (status === 'blocked' && !this.notified.has(job.id)) {
+      this.notified.add(job.id);
+      this.log.warn('agent pane is blocked; the runtime never answers it', { job: job.id, pane: paneId });
+      await this.herdr.notify(`operator: ${jobTitle(job)} is blocked`, `pane ${paneId} needs the owner`).catch(() => undefined);
     }
+    const limit = this.manifest.runtime.idleNudgeMs;
+    if (limit <= 0 || this.operation(job)?.kind !== 'interactive') return;
+    const state = this.idle.get(job.id) ?? { nudges: 0, warned: false };
+    this.idle.set(job.id, state);
+    if (status !== 'done' && status !== 'idle') { delete state.since; return; }
+    const now = Date.now();
+    if (state.since === undefined) { state.since = now; return; }
+    if (now - state.since < limit) return;
+    const minutes = Math.round((now - state.since) / 60_000);
+    if (state.nudges < IDLE_NUDGES) {
+      state.nudges += 1;
+      state.since = now;
+      this.log.info('nudged an idle session that has no result yet', { job: job.id, pane: paneId, idleMinutes: minutes, nudge: state.nudges });
+      await this.herdr.runInPane(paneId, idleNudgeText(minutes)).catch((error: unknown) => {
+        this.log.warn('could not nudge an idle session', { job: job.id, pane: paneId, error: errorText(error) });
+      });
+      return;
+    }
+    if (state.warned) return;
+    state.warned = true;
+    this.log.warn('an idle session still has no result after being nudged', { job: job.id, pane: paneId, nudges: state.nudges });
+    await this.herdr.notify(`operator: ${jobTitle(job)} is idle`, `pane ${paneId} has no result after ${state.nudges} nudges`).catch(() => undefined);
   }
 
   private async finish(job: JobRecord, run: JobRun, exit: ExitInfo): Promise<void> {
@@ -568,6 +607,7 @@ export class Daemon {
     });
     this.renewedAt.delete(job.id);
     this.notified.delete(job.id);
+    this.idle.delete(job.id);
     const seconds = Math.round((Date.parse(finishedAt) - Date.parse(run.startedAt)) / 1000);
     const fields = { job: job.id, operation: job.operation, subject: job.subject, status: result.status, seconds, next: nextIds.length, message: result.message, reason: result.failure?.reason, wait: result.wait ? `${result.wait.on}${result.wait.key ? `:${result.wait.key}` : ''}` : undefined };
     if (result.status === 'failed') this.log.warn(retry ? 'job failed; retry scheduled' : 'job failed', fields);

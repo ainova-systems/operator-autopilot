@@ -21,6 +21,8 @@
 - `operator service install|uninstall|status <project>` runs the daemon as the systemd user service
   `operator@<project>`: install writes the unit and a private env file and enables it, uninstall
   stops it and keeps the env file. A host without systemd is refused before anything is written.
+- An interactive session idle in herdr for `runtime.idleNudge` (default 20m) without a result is asked
+  to write its result or say what it waits for; after two nudges the owner is notified once.
 - Published as the npm package `@ainova-systems/operator` and the image
   `ghcr.io/ainova-systems/operator-autopilot/operator`.
 
