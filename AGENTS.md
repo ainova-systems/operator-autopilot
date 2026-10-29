@@ -11,10 +11,6 @@ Source of truth: `intelligence/` | Sync: `intelligence sync`
 
 | Agent | Tier | Access | Description |
 |-------|------|--------|-------------|
-| [operator-code-reviewer](intelligence/agents/operator-code-reviewer.md) | standard | readonly | Code review specialist for Operator v5 rebuild. Validates TypeScript patterns, migration correctness, layer dependencies, primitives boundary, dead code. Read-only. |
-| [operator-migration](intelligence/agents/operator-migration.md) | heavy | full | Strict migration agent for v5 rebuild. Executes the internal migration plan one step at a time, implementing one PR at a time with no dead code and full verification. |
-| [operator-pr-architect](intelligence/agents/operator-pr-architect.md) | heavy | readonly | Product chief-software-architect review of a single operator PR (ainova-systems/operator-autopilot). Read-only long-term reviewer that fact-checks the change against the code, judges its value and its long-term damage against the project's hard rules, and returns a PASS / CHANGES_REQUESTED verdict — plus a confidence level and an owner_decision flag — with precise, line-anchored [AI-REVIEWER] comments the caller posts as review threads. A PASS authorises the caller to squash-merge, so clear a change only when you would stake the codebase on it. Never merges, relabels, resolves a thread, or edits source — it only judges. Use per-PR from /operator-review-open-prs. |
-| [operator-ts-developer](intelligence/agents/operator-ts-developer.md) | heavy | full | TypeScript developer for Operator v5 engine. Use for implementing engine/, packages/core/src/, packages/adapters/src/, app/src/ modules following architecture-v5.md. |
 | [dev-code-reviewer](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents/dev-code-reviewer.md) | standard | readonly | Reviews pending changes and pull requests for correctness, conventions, boundaries, tests, and security. Read-only. |
 | [dev-qa-verifier](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents/dev-qa-verifier.md) | standard | readonly | Executes a change's declared verification steps against the running software and reports what was observed. Read-only. |
 | [dev-test-engineer](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents/dev-test-engineer.md) | standard | full | Test strategy and coverage across unit, integration, contract, and end-to-end levels. Builds the net that makes AI-paced change safe. |
@@ -25,11 +21,6 @@ Source of truth: `intelligence/` | Sync: `intelligence sync`
 
 | Skill | Description |
 |-------|-------------|
-| [operator-commit-push](intelligence/skills/operator-commit-push/SKILL.md) | Verify build, review changes, commit and push with a clean single-line message |
-| [operator-migrate-next](intelligence/skills/operator-migrate-next/SKILL.md) | Identify and execute the next uncompleted step from the internal migration plan |
-| [operator-review-open-prs](intelligence/skills/operator-review-open-prs/SKILL.md) | Long-term architect merge gate over the operator's own PRs on ainova-systems/operator-autopilot. Sweeps every open ai:ready-to-merge PR (or one by number/URL), fact-checks each change against the code, judges value and long-term damage, then squash-merges the ones that are clearly correct and safe — holding the rest by relabelling ai:in-review (operator can fix) or ai:manual (needs an owner decision). Never merges a protected surface, a change it cannot verify, or one carrying an unanswered review thread. Designed to run unattended under /loop or a schedule. |
-| [operator-review-pending-changes](intelligence/skills/operator-review-pending-changes/SKILL.md) | Read-only review of pending git changes against Operator v5 rules (layer deps, primitives boundary, dead code, commit hygiene) |
-| [operator-run-tests](intelligence/skills/operator-run-tests/SKILL.md) | Run the correct test suites (vitest across workspaces) based on the scope of pending changes |
 | [intelligence-learn-from-repository](.intelligence/packages/@ainova-systems/sync/skills/intelligence-learn-from-repository/SKILL.md) | Recover and complete first-time Intelligence repository onboarding |
 | [intelligence-learn-from-session](.intelligence/packages/@ainova-systems/sync/skills/intelligence-learn-from-session/SKILL.md) | Capture session lessons and workflows in project context |
 | [intelligence-manage-adapters](.intelligence/packages/@ainova-systems/sync/skills/intelligence-manage-adapters/SKILL.md) | Enable, disable, or remove adapters and assess generated-output cleanup |
@@ -57,10 +48,8 @@ Source of truth: `intelligence/` | Sync: `intelligence sync`
 
 - [context](intelligence/rules/context.md) (global)
 - [dev-project-profile](intelligence/rules/dev-project-profile.md) (global)
-- [migration](intelligence/rules/migration.md) (scoped)
 - [source-language-english](intelligence/rules/source-language-english.md) (global)
 - [test-project-names](intelligence/rules/test-project-names.md) (global)
-- [typescript](intelligence/rules/typescript.md) (scoped)
 - [dev-context-engineering](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-context-engineering.md) (global)
 - [dev-rollback-safety](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-rollback-safety.md) (global)
 - [dev-skill-first](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-skill-first.md) (global)
@@ -77,165 +66,70 @@ Source of truth: `intelligence/` | Sync: `intelligence sync`
 
 # Operator (ainova-systems/operator-autopilot)
 
-Closed-loop SDLC engine: discovers issues, plans fixes, implements code, verifies, delivers, observes, learns.
+A small, generic runtime: it runs a project's operations - scripts and agent CLIs -
+on timers and named triggers, with its state in Ainoflow, optionally placing runs in herdr tabs.
+Published as `@ainova-systems/operator` with the `operator` CLI.
 
-**Architecture principle**: orchestrator, not agent. Schedules work and invokes external agent CLIs. Never reimplements tool execution.
+**The boundary is the design.** The runtime knows operations, triggers, pools, state and delivery.
+It does not know milestones, labels, pull requests, review, merge or release: a project's own
+scripts and skills decide those and return a contract result. Adding a workflow is a manifest
+change in that project, never a runtime change. A feature that needs the runtime to understand a
+project's process is in the wrong repository.
 
-**Current state**: the v5 rebuild is complete. The earlier v4 migration failed because duplicate stage plumbing and dead code accumulated — v5 does not repeat those mistakes.
-
-## Repository Structure (monorepo)
-
-Layout refactor is done. Code lives in `engine/` (flat, no `src/` subdirectory). Packages and app are workspaces under npm workspaces config at root.
+## Layout
 
 ```
-git-operator-autopilot/
-├── package.json             @operator/engine — root workspace (owns engine/ tree)
-├── tsconfig.json            root tsconfig, rootDir = engine
-├── vitest.config.ts         vitest config, covers engine/ + packages/ + app/
-├── engine/                  daemon source + bundled content
-│   ├── entry.ts             composition root
-│   ├── pipeline/, agents/, config/, infra/, state/, …   TypeScript sources (flat, no src/)
-│   └── content/             non-code engine assets — bundled with the engine
-│       ├── prompts/
-│       │   ├── agents/      role prompts (analyst.md, creator.md, ...)
-│       │   │   ├── context/ bundled base / state context
-│       │   │   └── reviewer/ stage-scoped reviewer criteria
-│       │   ├── stages.yaml  MVP stage definitions (seeded into KV in Step 5)
-│       │   └── kinds.yaml   work-item kind registry (seeded into KV in Step 5)
-│       ├── templates/       PR body + format templates
-│       └── defaults/        defaults.yaml + agents.yaml (engine defaults)
-├── app/                     @operator/app — Next.js observability UI
-│   ├── package.json
-│   ├── next.config.ts
-│   └── src/
-├── packages/
-│   ├── core/                @operator/core — shared types, interfaces, Zod schemas, error classes
-│   │                        (runtime: no I/O, no cross-workspace imports; zod only)
-│   │   ├── package.json
-│   │   └── src/
-│   └── adapters/            @operator/adapters — KVStore / Guard / RateLimiter / VCS impls
-│       ├── package.json
-│       └── src/
-├── config/                  instance config — ONLY repos.yaml (seed-mirror source)
-│   ├── repos.yaml           managed repos (committed during MVP testing window)
-│   └── repos.yaml.example   documented template
-├── intelligence/            this framework (rules, agents, skills)
-├── docs/                    architecture, migration, workflow, vision
-├── dev/                     repo tooling
-└── state/                   gitignored runtime workspace (user-configurable path)
+src/
+  cli.ts          the operator CLI (validate, run, trigger, enqueue, jobs, job, waits, state, job-exec)
+  manifest.ts     operator.yaml: workflows, triggers (every/cron/on), operations, pools; all problems at once
+  contract.ts     contract 1: the input file every run gets, the result file it writes back
+  daemon.ts       leader lease, timers, dispatch into pools, observe runs, collect results, restart adoption
+  triggers.ts     timer slots and named triggers (resume a wait, else the workflow's `on:` trigger)
+  jobs.ts waits.ts job and wait records; job ids are dedupe keys (workflow, operation, subject, trigger id)
+  pools.ts        limit pools on Guard, workspace pools on renewable Shield leases; a named member, read placement
+  launch.ts job-exec.ts runfiles.ts   run directory, detached wrapper, heartbeat and exit.json
+  collect.ts      exit + result file -> contract result (Codex output -> result via `then`)
+  engines.ts      argv for command / claude -p, or a claude session when attended / codex exec (resume per subject)
+  herdr.ts        the herdr CLI calls: own tab, metadata, run, close, status, notification
+  state/          one interface; ainoflow.ts (HTTP) and file.ts (tests and dry runs only)
+fixtures/demo/    a complete example project used by tests and the live demo
+deploy/systemd/   operator@<project>.service
 ```
 
-Legacy v1 bash code no longer lives in this repo — it was extracted to the sibling `git-legacy-operator` repository. No TypeScript, doc, config, or CI pipeline here references it.
+## Invariants
 
-## Canonical Documentation
+- A duplicate trigger is one job: the create-only write of a deterministic job id is the dedupe.
+- Exit 0 without a valid result file is a failure. Business success is the operation's evidence,
+  never the runtime's inference.
+- A run is collected from its run directory, never from screen state. A restarted daemon adopts a
+  live run and re-runs one whose wrapper died; it never starts the same attempt twice.
+- The runtime never answers an agent prompt; a `blocked` pane raises a notification.
+- An interactive run is collected like any other: its result file is the proof. The wrapper ends the
+  session after that file is written, because the slot goes to the next run; the terminal is where
+  it runs, never how its end is decided.
+- The file state driver is for tests and dry runs; a live daemon refuses it unless told explicitly.
+- Every Ainoflow feature the runtime relies on is checked through `/api/v1/capabilities` at start.
 
-| Doc | Purpose |
-|-----|---------|
-| `docs/workflow.md` | Target behavior: 8-step run loop, persistence modes, verdicts, MVP stage list |
-| `docs/vision.md` | Product direction, invariants, non-goals, four tenets |
-| `docs/architecture-v5.md` | Target shape: monorepo layout, primitives, KV model, package boundaries |
+## Conventions
 
-## Build / Test / Dev
+- TypeScript with erasable syntax only (`erasableSyntaxOnly`): Node runs `src/*.ts` directly in
+  tests, `npm run build` emits `dist/`. Relative imports carry the `.ts` extension.
+- Named exports and imports only. Errors are `OperatorError` with a stable `code`.
+- Log lines are `<iso> <LEVEL> <message> key=value ...`; every externally visible action and every
+  decision (queued, started, interrupted, finished, why) has an INFO line.
+- Tests are colocated `*.test.ts` on `node:test`; integration tests use the file driver, real
+  temporary directories and real processes (a crash test kills a real daemon).
+- Dependencies stay minimal: `yaml` at runtime; `typescript` and `@types/node` for development.
+
+## Commands
 
 ```bash
-npm install                                  # workspace root
-npm run typecheck                             # tsc --noEmit
-npm test                                      # vitest
-npm test -- --coverage                        # coverage (>=90% required)
-npm run lint                                  # eslint + ts-prune (dead code check)
-npm run dev --workspace @operator/app         # Next.js UI on localhost
-npx tsx --env-file=.env.local engine/entry.ts --once   # one manual cycle
-npm run exec                                  # alias for above
+npm ci
+npm run typecheck
+npm test
+npm run test:pack
+node src/cli.ts validate --manifest fixtures/demo/operator.yaml --offline
 ```
-
-## Global Rules (enforced every PR)
-
-- **🚨 OPERATOR NEVER PUSHES `master` / `main` / `develop`. PR feature branches only.**
-- **🚨 PR closed / rejected / cancelled / duplicate → work item TERMINAL. Selectors skip unconditionally. ALL kinds.** Only the retrospective stage reads terminal items (as analysis input) and only Phase 6 P-505 retrospective recovery flow may spawn replacement work-items.
-- **NO DEAD CODE.** Every file and exported symbol must be reachable from `entry.ts` import closure or a colocated test. `ts-prune` in CI. Dead code is a migration blocker — v4 died from exactly this pattern.
-- **NO FORCE-PUSH.** Every commit-push sequence is fast-forward-safe. `WorkspaceScope` primitive is the only place that manages branches. Non-negotiable after 2026-04-13 incident.
-- **One PR per migration step.** Never combine two steps. Rollback must always be a single revert.
-- **Platform-neutral vocabulary** in core: `CodeReview`, `WorkItem`. Forbidden: `PullRequest`, `Issue`, `MergeRequest` outside `platforms/github/`.
-- **Composition root is `engine/entry.ts` only.** No other file instantiates cross-layer classes with `new`.
-- **OperationContext** threaded through every I/O function (traceId, repoId, action, budget, signal).
-- **Named exports only.** No default exports.
-- **LF line endings** on all `.ts`, `.md`, `.yaml`, `.yml`, `.sh`, `.bats`.
-- **TypeScript strict**: `strict: true`, no `any`, no `@ts-ignore`.
-- **Max 200 lines** per file in `engine/pipeline/**`. Max 300 elsewhere. `entry.ts` must stay under 200.
-- **Git commits**: exactly one line, capital letter, past tense, no prefixes (no `feat:`, `fix:`, `chore:`). No `Co-authored-by`, no `Signed-off-by`.
-
-## Merge Authority (who may land a PR on `master`)
-
-`master` is protected for human and assistant development too, not only for the engine: code reaches
-it through a feature branch and a PR. The single exception — a change whose diff is entirely
-documentation or `intelligence/` content — and the required PR sequence are recorded once in
-`dev-project-profile.md` (`protected_branches`, `direct_push_paths`, `pr_flow`). This section covers
-only who is allowed to press merge.
-
-The engine daemon never merges and never pushes a protected branch — the first Global Rule above is
-unchanged and applies to every stage the operator runs.
-
-Landing a PR on `master` is a separate authority, held by exactly two actors:
-
-- **The owner**, at any time.
-- **The `operator-review-open-prs` merge gate**, run under the owner's account, and only for a PR that
-  clears every deterministic gate *and* that `operator-pr-architect` returned `verdict: PASS` for at the
-  PR's current head SHA. It squash-merges and deletes the branch.
-
-The gate **never** auto-merges, and instead relabels `ai:manual` for the owner, when the change touches a
-**protected surface** — `.github/**`, Docker/compose/deploy manifests, `package.json` /
-`package-lock.json`, `engine/entry.ts`, or `config/repos.yaml` — or when the architect reports
-`owner_decision: yes` or `confidence: low`, or when a **human** raised a review thread on it.
-
-This is a deliberate, owner-granted exception to the dev-pack rule *"autonomous runs never merge
-themselves"* (`git-workflow`). It is scoped to this repository's own PR queue and to that one skill.
-Nothing else — no engine stage, no other skill, no agent — may merge.
-
-### Outcome labels
-
-- `ai:ready-to-merge` — cleared the operator's own verifier; awaiting the merge gate.
-- `ai:in-review` — blocking findings the **operator's supervisor** fixes, then re-promotes.
-- `ai:manual` — needs an **owner** decision. Only the owner clears it.
-
-## Deployment
-
-Primary runtimes: VM/systemd, plain Docker/Compose, Kubernetes. Docker AI Sandbox is optional quick-start only, never the sole path. Local-first: SQLite + filesystem + one agent API key is enough.
-
-## Shared Files (consumed by engine and app)
-
-**Engine-bundled content** (under `engine/content/`, resolved via `resolveContentPath` from `engine/infra/content-path.ts`):
-
-- `engine/content/defaults/defaults.yaml` — schedules, labels, conventions (engine defaults).
-- `engine/content/defaults/agents.yaml` — agent role + provider config (engine defaults).
-- `engine/content/prompts/agents/*.md` — runtime agent prompts. Seeded into KV category `prompts/*` in Step 5.
-- `engine/content/prompts/agents/context/*.md` — bundled base + state context.
-- `engine/content/prompts/agents/reviewer/{stage}.md` — stage-scoped reviewer criteria.
-- `engine/content/prompts/stages.yaml` — MVP stage definitions, seeded into `workflow-stages/*` in Step 5.
-- `engine/content/prompts/kinds.yaml` — work-item kind registry, seeded into `work-item-kinds/*` in Step 5.
-- `engine/content/templates/*.md` + `formats/*.txt` — PR body and format templates.
-
-**Instance config** (under `config/` at repo root):
-
-- `config/repos.yaml` — managed repos. Seed-mirror source for `kv:repos/*` (Step 5).
-- `config/repos.yaml.example` — documented template.
-
-## Sync Contract
-
-- **Agents write only to workspace files.** Never to KV.
-- **Orchestrator writes only to KV** via primitives inside `run-stage.ts`.
-- **`syncFromFiles`** runs once at cycle start and is the only reconciler from file state to KV work items.
-- **Seed** never overwrites existing KV entries except on explicit `--reseed {category}`.
-- **Three layers of truth**: work item content → git; runtime config → KV (seeded from repo); execution state → KV only.
-
-## AI Prompt Framework
-
-Rules, agents, skills for this project live in `intelligence/`:
-
-- `intelligence/rules/` — coding standards (path-scoped or always-loaded)
-- `intelligence/agents/` — specialized AI personas for development tasks
-- `intelligence/skills/` — reusable command sequences
-
-Sync with `intelligence sync`. Generated outputs (`.claude/`, `.cursor/`) are gitignored.
 
 
 # Project Profile
@@ -245,10 +139,8 @@ Sync with `intelligence sync`. Generated outputs (`.claude/`, `.cursor/`) are gi
 > `TODO(owner)` could not be detected and are left for the owner to set. Plain `key: value`
 > lines only.
 >
-> Scope note: this profile describes how a developer works on THIS repository. It does NOT
-> govern the engine's behavior on managed repos — that product rule (operator never pushes
-> `master`/`main`/`develop`, authors `ai/<kind>/<id>` feature branches + PRs only) lives in
-> `context.md`, `migration.md`, and `typescript.md` and is unaffected by this pack.
+> Scope note: this profile describes how a developer works on THIS repository. What the runtime
+> does in a managed project is that project's own scripts and skills, not this profile.
 
 ## Branching
 
@@ -257,7 +149,7 @@ Sync with `intelligence sync`. Generated outputs (`.claude/`, `.cursor/`) are gi
 - branch_prefixes: feature/, bugfix/, hotfix/   <!-- pack defaults; existing remote branches use no slash (e.g. fix-agent-lock-ttl) -->
 - update_strategy: merge
 - protected_branches: master        <!-- owner decision 2026-08-10, resolving the earlier CONFLICT note in favour of the git-workflow pack rule: master is protected. Code lands through a feature branch + PR only. Supersedes the previous direct-to-master practice. -->
-- direct_push_paths: docs/**, intelligence/**, *.md   <!-- LOCAL key, not a pack key: the one exception to protected_branches. A change whose diff is ENTIRELY within these paths may be committed and pushed straight to master. Anything else — engine/, packages/, app/, config/, deployment/, .github/, scripts/, dev/ — goes through the PR flow, and a change that touches both a source file and a doc is NOT an exception: the whole change goes through the PR. -->
+- direct_push_paths: docs/**, intelligence/**, *.md   <!-- LOCAL key, not a pack key: the one exception to protected_branches. A change whose diff is ENTIRELY within these paths may be committed and pushed straight to master. Anything else - src/, fixtures/, scripts/, deploy/, .github/, package files - goes through the PR flow, and a change that touches both a source file and a doc is NOT an exception. -->
 
 ## Commits
 
@@ -266,10 +158,11 @@ Sync with `intelligence sync`. Generated outputs (`.claude/`, `.cursor/`) are gi
 
 ## Verification
 
-- typecheck: npm run typecheck      <!-- tsc --noEmit + app workspace typecheck -->
-- lint: npm run lint                <!-- eslint + ts-prune + knip dead-code checks -->
-- test: npm test                    <!-- vitest run --coverage -->
-- coverage_gate: 90%                <!-- >=90% on touched files; >=95% for engine/pipeline/primitives -->
+- typecheck: npm run typecheck      <!-- tsc --noEmit, strict, erasable syntax only -->
+- lint: none                        <!-- strict tsc options (noUnused*, exactOptionalPropertyTypes, noUncheckedIndexedAccess) are the static gate -->
+- test: npm test                    <!-- node:test over src/**/*.test.ts; live Ainoflow tests run when AINOFLOW_API_KEY is set -->
+- verify: none                      <!-- CI runs typecheck, test and test:pack (npm pack, install into an empty directory, run the CLI) on Node 24 and 26 -->
+- coverage_gate: none               <!-- every module has a colocated test; no numeric threshold -->
 
 ## Pull requests
 
@@ -301,9 +194,9 @@ Sync with `intelligence sync`. Generated outputs (`.claude/`, `.cursor/`) are gi
 
 # Source Language: English Only
 
-> **Every string the codebase emits or carries is written in English** — user-facing CLI and log output, code comments, JSDoc, identifiers, commit messages, and docs. The product runs for many operators in many locales; the source language is English so the engine reads the same to everyone.
+> **Every string the codebase emits or carries is written in English** — user-facing CLI and log output, code comments, JSDoc, identifiers, commit messages, and docs. The product runs for many operators in many locales; the source language is English so the runtime reads the same to everyone.
 
-This rule applies to source files (`engine/`, `packages/`, `app/`), tests, comments, docstrings, JSDoc, examples, fixtures, documentation (`docs/**`), intelligence content (`intelligence/**`), CI workflows (`.github/**`), and dev scripts (`dev/**`).
+This rule applies to source files (`src/`), tests, comments, JSDoc, examples, fixtures (`fixtures/`), documentation, intelligence content (`intelligence/**`), CI workflows (`.github/**`), and scripts (`scripts/`, `deploy/`).
 
 ## FORBIDDEN
 
@@ -317,7 +210,7 @@ Typographic symbols that are not language text — em dash `—`, middot `·`, e
 ## REQUIRED
 
 - **English literals for everything the user reads.** When a hint or message needs words, write them in English (e.g. `"ESC — quit · Ctrl+C — abort"`).
-- **No i18n layer for engine/CLI output.** There is no translation framework; do not introduce one to "fix" a non-English string — just write English.
+- **No i18n layer for runtime/CLI output.** There is no translation framework; do not introduce one to "fix" a non-English string — just write English.
 - **If localization is ever needed**, it is a deliberate, separately-designed feature (resource bundles, not inline literals).
 
 ## Why
@@ -326,37 +219,41 @@ The operator is a product meant to run for many repos, customers, and operators.
 
 ## How to enforce
 
-- New code review: any non-English word in `engine/`, `packages/`, `app/`, `intelligence/`, `docs/`, `.github/`, or `dev/` is a blocker.
+- New code review: any non-English word in `src/`, `fixtures/`, `scripts/`, `deploy/`, `intelligence/` or `.github/` is a blocker.
 
-# Test Project Name Hygiene
+# Project Name Hygiene
 
-> **The only place a real test/client project name may appear in this repository is the bootstrap test config (`config/repos.yaml`).** Everywhere else uses generic placeholders so the operator codebase reads as a product, not as the artifact of one customer's deployment.
+> **No real customer or managed project is named anywhere in this repository.** The runtime is a
+> product that runs for many projects; a project's manifest, scripts and skills live in that
+> project's own repository.
 
-This rule applies to source files (`engine/`, `packages/`, `app/`), tests, comments, docstrings, examples, fixtures, documentation (`docs/**` including archives), intelligence content (`intelligence/**`), CI workflows (`.github/**`), and dev scripts (`dev/**`).
+This rule applies to source files (`src/`), tests, comments, fixtures (`fixtures/`), documentation,
+intelligence content (`intelligence/**`), CI workflows (`.github/**`), and scripts (`scripts/`,
+`deploy/`).
 
 ## FORBIDDEN
 
-- **🚨 Naming a real customer / sandbox project in code, comments, tests, fixtures, docs, intelligence files, CI workflows, dev scripts, env-var names, secret names, file names, or directory names.** This includes every case variant — `<name>` / `<Name>` / `<NAME>` — of any project used as a test bed.
-- **🚨 Embedding the project name in fixture string content** such as csproj paths, error message samples, repo slugs, or PR body excerpts. Replace with generic equivalents (`Sample`, `repo`, `owner/<repo-id>`).
-- **🚨 Embedding the project name in environment variable names** (e.g. `<NAME>_GH_TOKEN`). Use a role-based name like `MANAGED_REPO_GH_TOKEN`. The bootstrap config and CI workflow must agree on the role-based name; the actual GitHub secret can be renamed by the operator once.
-- **Attributing observations to a real project in comments** ("Discovered on `<customer>` T20260411…", "live `<customer>` cycles show…"). Drop the attribution; keep the technical content. Commit messages already carry the context for anyone who needs the history.
-- **Project-name-prefixed file names** (e.g. `migrate-<customer>-data.mjs`). Use the role the file plays (`migrate-data.mjs`, `normalize-status.mjs`).
+- **🚨 Naming a real customer or managed project** in code, comments, tests, fixtures, docs,
+  intelligence files, CI workflows, scripts, env-var names, secret names, file or directory names -
+  in any case variant.
+- **🚨 Project-specific vocabulary in `src/`**: a project's labels, milestones, branch prefixes,
+  skill names or workspace names. The runtime reads them from a manifest; it never hard-codes them.
+- **Attributing observations to a real project** in comments ("seen on <customer> …"). Keep the
+  technical content, drop the attribution.
+- **Project-name-prefixed env vars or files** (`<NAME>_TOKEN`, `migrate-<customer>.mjs`). Use the
+  role the value plays (`AINOFLOW_API_KEY`, `OPERATOR_MANIFEST`).
 
 ## REQUIRED
 
-- **Generic placeholders in fixtures and examples.** Tests use `repoId: "sample"`, `projectId: "sample"`, `PROJECT_NAME: "SAMPLE"`, `owner/sample`, fixture-content paths under `Source/Backend/Sample/`.
-- **`<repo-id>` placeholder** inside code blocks / backticks in docs and help text (`--repo <repo-id>`). In prose, prefer "a managed repo" or "the sample demo config" — never use the literal customer name.
-- **Single allowed exception**: `config/repos.yaml` (the instance repo binding — gitignored and local-only; the committed generic template is `config/repos.yaml.example`). This file is the one place where the real repo identifier, GitHub slug, and any per-repo overrides live. Everything else stays neutral.
+- **Generic placeholders** in tests, fixtures and examples: project `demo`, subjects like `item-1`
+  or `pr-7`, workspaces like `slot-a`, `d1`, paths under a temporary directory.
+- **`<project>` placeholder** in docs and help text (`operator@<project>.service`).
 
 ## Why
 
-Mixing customer / sandbox project names into the engine codebase leaks deployment specifics into a product that is meant to run for many repos and customers. It also creates churn the day the test project changes — every comment, fixture, and doc reference becomes wrong at once. Keep the codebase neutral; let the bootstrap config carry the one-off binding.
-
-## How to enforce
-
-- New code review: any new occurrence of a customer / sandbox name outside `config/repos.yaml` is a blocker.
-- Pre-commit search (recommended): `git diff --cached -- ':!config/repos.yaml' | grep -i '<known-customer-names>'` should return no matches.
-- When adopting the operator for a new test bed, only `config/repos.yaml` changes. The codebase stays as-is.
+Customer names in a generic runtime leak deployment specifics into a product meant for many
+projects, and create churn the day the managed project changes. A project binds itself to the
+runtime through its own manifest.
 
 
 # Context Engineering

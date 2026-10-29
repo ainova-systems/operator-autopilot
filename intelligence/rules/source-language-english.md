@@ -1,8 +1,8 @@
 # Source Language: English Only
 
-> **Every string the codebase emits or carries is written in English** — user-facing CLI and log output, code comments, JSDoc, identifiers, commit messages, and docs. The product runs for many operators in many locales; the source language is English so the engine reads the same to everyone.
+> **Every string the codebase emits or carries is written in English** — user-facing CLI and log output, code comments, JSDoc, identifiers, commit messages, and docs. The product runs for many operators in many locales; the source language is English so the runtime reads the same to everyone.
 
-This rule applies to source files (`engine/`, `packages/`, `app/`), tests, comments, docstrings, JSDoc, examples, fixtures, documentation (`docs/**`), intelligence content (`intelligence/**`), CI workflows (`.github/**`), and dev scripts (`dev/**`).
+This rule applies to source files (`src/`), tests, comments, JSDoc, examples, fixtures (`fixtures/`), documentation, intelligence content (`intelligence/**`), CI workflows (`.github/**`), and scripts (`scripts/`, `deploy/`).
 
 ## FORBIDDEN
 
@@ -16,7 +16,7 @@ Typographic symbols that are not language text — em dash `—`, middot `·`, e
 ## REQUIRED
 
 - **English literals for everything the user reads.** When a hint or message needs words, write them in English (e.g. `"ESC — quit · Ctrl+C — abort"`).
-- **No i18n layer for engine/CLI output.** There is no translation framework; do not introduce one to "fix" a non-English string — just write English.
+- **No i18n layer for runtime/CLI output.** There is no translation framework; do not introduce one to "fix" a non-English string — just write English.
 - **If localization is ever needed**, it is a deliberate, separately-designed feature (resource bundles, not inline literals).
 
 ## Why
@@ -25,4 +25,4 @@ The operator is a product meant to run for many repos, customers, and operators.
 
 ## How to enforce
 
-- New code review: any non-English word in `engine/`, `packages/`, `app/`, `intelligence/`, `docs/`, `.github/`, or `dev/` is a blocker.
+- New code review: any non-English word in `src/`, `fixtures/`, `scripts/`, `deploy/`, `intelligence/` or `.github/` is a blocker.

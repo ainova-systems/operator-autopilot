@@ -2,30 +2,16 @@ name: Tests
 
 on:
   push:
-    paths:
-      - 'engine/**'
-      - 'packages/**'
-      - 'app/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'vitest.config.ts'
-      - '.github/workflows/tests.yml'
+    branches: [master]
   pull_request:
-    paths:
-      - 'engine/**'
-      - 'packages/**'
-      - 'app/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'vitest.config.ts'
   workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        node: ['24', '26']
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -33,7 +19,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install dependencies
@@ -42,8 +28,11 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Run tests with coverage
+      - name: Tests
         run: npm test
+        env:
+          # Live Ainoflow tests run when the secret is set; a fork's pull request has none and skips them.
+          AINOFLOW_API_KEY: ${{ secrets.AINOFLOW_API_KEY }}
+
+      - name: Pack and run the installed CLI
+        run: npm run test:pack

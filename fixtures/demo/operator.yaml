@@ -1,0 +1,34 @@
+# Demo project for the runtime itself: a discovery script, a stand-in agent placed in a herdr tab,
+# a follow-on step, a question answered through a trigger, and an interactive session the wrapper
+# closes after its result. Drop a file into data/inbox:
+#   <name>.work (content: seconds to work), <name>.ask  or  <name>.plan
+contract: 1
+project: demo
+state:
+  provider: ainoflow
+  namespace: op-demo
+runtime:
+  tick: 2s
+  poll: 2s
+  leaseTtl: 60s
+  retention: { noop: 2h, done: 2d, failed: 7d }
+herdr:
+  workspace: operator-demo
+pools:
+  agent-slot:
+    workspaces:
+      slot-a: { cwd: ., herdr: operator-demo }
+  checks: { limit: 1, slotTtl: 30m }
+workflows:
+  demo:
+    timezone: Europe/Vilnius
+    triggers:
+      - { every: 1m, run: discover }
+      - { on: poke, run: discover }
+    operations:
+      discover: { kind: script, command: node scripts/discover.mjs, timeout: 2m, exclusive: true }
+      work:     { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: agent-slot, placement: herdr, timeout: 30m }
+      finish:   { kind: script, command: node scripts/finish.mjs, pool: checks }
+      ask:      { kind: agent, engine: command, command: node scripts/ask.mjs, pool: agent-slot, placement: herdr }
+      answered: { kind: script, command: node scripts/answered.mjs }
+      plan:     { kind: interactive, engine: command, command: node scripts/session.mjs, pool: agent-slot, placement: herdr, timeout: 30m }

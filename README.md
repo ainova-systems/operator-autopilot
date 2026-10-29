@@ -1,132 +1,110 @@
 # Operator
 
-Closed-loop SDLC engine that autonomously discovers issues, plans fixes, implements code, verifies, delivers, observes, and learns. **Orchestrator, not agent** — schedules work and invokes external agent CLIs (Claude Code, OpenCode, …) through a single generic stage loop.
+A small, generic runtime that runs a project's workflow operations - deterministic scripts and
+agent CLIs (Claude Code, Codex) - on timers and named triggers, keeps its state in
+[Ainoflow](https://ainoflow.io), and can place runs in [herdr](https://herdr.dev) tabs so a person
+sees them working, or attends an interactive session there.
 
-**Status: 0.6.0 — self-managed.** The v5 architecture rebuild is complete and running, and the engine now manages this repository itself. See [CHANGELOG.md](CHANGELOG.md) for release notes. The v4 implementation was abandoned mid-migration — v5 collapses all pipeline work into `runStage` + 10 primitives, puts state in a pluggable KV model, and ships an observability UI from day one.
+The runtime knows operations, triggers, pools, state and delivery. It does not know milestones,
+labels, pull requests or merge rules: those live in the project's own scripts and skills, which
+return a small versioned result and may request the next operation.
 
-## Before you run it — blast radius
+## How it works
 
-Operator acts on real repositories without a human in the loop. Know what it can reach before the first cycle:
-
-- It runs with a **git host token carrying repo scope**, and it invokes an **external agent CLI** that edits files in a local workspace.
-- It **pushes branches and opens pull requests** on every repository you register — through the setup screen or in `config/repos.yaml` — and nothing outside that list.
-- It **never pushes `master` / `main` / `develop`**. Every change arrives as a feature branch plus a pull request.
-- Every MVP stage ships with `merge: gated` in [engine/content/prompts/stages.yaml](engine/content/prompts/stages.yaml) — **nothing lands without a human approving the pull request**.
-
-Start against a **non-critical repository** — a scratch repo or a fork — until you have watched a few cycles end to end in the observability UI, and give the token access to that repository only.
-
-## Documentation (read in this order)
-
-1. **[docs/vision.md](docs/vision.md)** — product direction, invariants, non-goals, refused directions
-2. **[docs/workflow.md](docs/workflow.md)** — behavior contract: 8-step run loop, 3 persistence modes, 5 verdicts, MVP stage list
-3. **[docs/architecture-v5.md](docs/architecture-v5.md)** — target shape: monorepo layout, primitives, KV model, package boundaries
-4. **[docs/deployment.md](docs/deployment.md)** — local-first dev, VM/systemd, Docker Compose, Kubernetes
-
-## Monorepo layout
-
-```
-git-operator-autopilot/
-├── engine/            daemon source — @operator/engine (flat, no src/)
-│   ├── entry.ts       composition root
-│   ├── pipeline/      run-stage.ts + primitives/ + stage-logic/
-│   ├── agents/, platforms/, state/, storage/, delivery/, work-items/, …
-│   └── content/       bundled engine assets — prompts, templates, defaults
-├── app/               Next.js observability + config-edit UI — @operator/app
-├── packages/
-│   ├── core/          shared types + interfaces + Zod schemas — @operator/core
-│   └── adapters/      KVStore + kind-registry impls — @operator/adapters
-├── config/            instance config (repos.yaml, seed-mirror source)
-├── intelligence/      AI prompt framework (rules/agents/skills) — syncs to .claude, .cursor
-├── docs/              canonical documentation
-├── scripts/           CI helpers (check-ts-prune.mjs)
-└── state/             runtime state — gitignored
+```text
+timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent or interactive, headless or in a herdr tab
+                                                     │
+                       next operations / a wait ◀── result file (contract 1)
 ```
 
-## Getting started
+- **Manifest** (`operator.yaml`, next to the project's sources) names workflows, their triggers
+  (`every`, `cron`, `on`), operations and pools.
+- **Contract 1.** Every run gets an input file (`$OPERATOR_INPUT`) and writes one result file
+  (`$OPERATOR_RESULT`): `status` is `done | noop | waiting | needs-input | failed`, with `evidence`,
+  `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Exit 0
+  without a valid result is a failure.
+- **Dedupe, not exactly-once.** A job's id is derived from (workflow, operation, subject, trigger
+  id); the same trigger twice is one job. A `next` request may carry a `key`: requests with the
+  same operation, subject and key are one job while its record is kept, so a discovery that runs
+  every few minutes can ask for the same work each time. Operations re-read live state before acting.
+- **Crash safety.** A run's wrapper is detached from the daemon and leaves a heartbeat and
+  `exit.json` in its run directory. A restarted daemon adopts running jobs instead of starting them
+  again, and re-runs a job whose wrapper died.
+- **Codex agents.** `engine: codex` with `agent: <name>` runs read-only with the model, reasoning
+  effort and instructions of `.codex/agents/<name>.toml` in the run's working directory; `validate`
+  reads the definition and names what it cannot read.
+- **Exclusive operations.** `exclusive: true` keeps an operation - typically discovery - to one run
+  at a time, so a timer slot and a manual trigger cannot both take the same work.
+- **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
+  `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
+  A `next` request (or a `wait`, for the operation it resumes) may name the `member` to run in -
+  for example the workspace that holds its subject - and the job waits for that member rather than
+  taking another. A follow-on in the same workspace pool stays in the member its run held unless its
+  request names another, and the input file tells each run its `member`. An operation may hold a `limit` pool alongside its `pool`, and `access: read`
+  places a run in its named member without holding it, so read-only runs share a workspace.
+- **Three kinds.** `script` is a deterministic program; `agent` is an agent CLI that answers and
+  exits (`claude -p`, `codex exec`); `interactive` is a session a person can attend in a terminal
+  (`claude` without `-p`, or a command). An interactive run needs a terminal placement: the
+  wrapper hands it the terminal and ends it a few seconds after its result file is written, because
+  the slot it holds goes to the next run. Without a reachable terminal it runs as an agent, and the
+  job record says so. The command learns it has a terminal from `OPERATOR_ATTENDED=1`.
+- **Kept tabs.** `keepTab: 30m` leaves a herdr run's tab open that long after its result: the
+  result is collected and the follow-on starts at once, while an interactive session stays live in
+  the tab for a person's questions and any other run's output stays readable; then the session ends
+  and the tab closes, after a daemon restart too.
+- **Notifications.** `notify` lists the final result statuses that raise an owner notification
+  (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
+  scheduled retry is not final.
+- **herdr.** `placement: herdr` opens a tab of the runtime's own in the target workspace and runs the
+  wrapper there. Screen state is only a hint; a `blocked` agent raises a notification and is never
+  answered by the runtime. Without herdr the run degrades to headless and the job record says so.
+  A tab herdr cannot close when its run ends is closed on a later poll; one closed by hand counts
+  as closed.
 
-**Prerequisites:** Node.js 24+, `git` 2.40+ on `$PATH`, the agent CLIs named in [engine/content/defaults/agents.yaml](engine/content/defaults/agents.yaml) on `$PATH`, and a GitHub token with repo scope for the repository you want managed. Docker covers all of that for you — see the second path below.
-
-Both paths end in the same place: **`http://localhost:3000/setup`**, a four-step screen that
-creates the engine's state database, checks this host (git, the agent CLIs, the token — with a
-one-shot token verification against GitHub that stores nothing), registers the managed repository,
-and tells you how to start the first cycle. Nothing has to be hand-edited to get there.
-
-### Quick start — local
+## Use
 
 ```bash
-npm install                                        # install all workspaces
-cp .env.local.example .env.local                   # then fill in your tokens (gitignored)
-
-npm run dev --workspace @operator/app              # then open http://localhost:3000/setup
+npm install --global @ainova-systems/operator   # or: npm install && npm run build
+operator validate --manifest operator.yaml      # manifest, scripts (--describe), skills, schemas, state
+operator run --manifest operator.yaml          # the daemon; one active daemon per project
+operator run --dry-run                          # scripts run, agents are only logged, local state
+operator trigger <workflow> <name> --subject pr-7 --key q-1 --input '{"answer":"yes"}'
+operator jobs [--status queued]  |  operator job <id>  |  operator waits
+operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
+operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart
+operator resume                                 # also happens by itself when the service starts again
 ```
 
-The setup screen checks the credentials it can see in its own process, and the root `.env.local`
-belongs to the engine — copy the same values into `app/.env.local` (also gitignored) if you want
-those checks to resolve rather than warn.
+`AINOFLOW_API_KEY` comes from the environment, or from the manifest's `envFile` /
+`OPERATOR_ENV_FILE` (`envKeys` / `OPERATOR_ENV_KEYS` limit what is taken, and a missing file is fine
+once the environment already holds every one of them). The file state provider is
+for tests and dry runs only.
 
-The dev server holds the terminal. Complete the setup screen, then run a cycle from a second
-terminal against the repository you registered:
+The same CLI ships as an image, `ghcr.io/ainova-systems/operator-autopilot/operator`, for hosts
+that run it in a container. The image carries no agent CLIs, so it suits script operations or a
+base image that adds them; it runs as the `node` user, which must be able to read the mounted
+project:
 
 ```bash
-npx tsx --env-file=.env.local engine/entry.ts --once --repo <repo-id>
+docker run --rm -v "$PWD:/project" ghcr.io/ainova-systems/operator-autopilot/operator validate
 ```
 
-`npm run exec` does the same for every registered repository. Prefer a file to a screen? Copy
-`config/repos.yaml.example` to `config/repos.yaml` and edit it instead — the engine mirrors that
-file into its database on start, and the setup screen is simply the other way in.
+`deploy/systemd/operator@.service` runs the daemon as a user service. `fixtures/demo` is a complete
+example project: a discovery script, a stand-in agent placed in a herdr tab, a follow-on step and a
+question answered through a trigger.
 
-### Quick start — Docker
-
-The image bundles Node, git, `gh`, ripgrep, and the agent CLIs, so the host needs none of them.
+## Develop
 
 ```bash
-cp deployment/.env.example deployment/.env         # then fill in the tokens
-docker compose -f deployment/docker-compose.yml up -d --build
-
-# open http://localhost:3000/setup
+npm ci
+npm run typecheck
+npm test            # unit and integration tests; live Ainoflow tests run when AINOFLOW_API_KEY is set
+                    # in the environment or in .env.local (see .env.local.example)
+npm run test:pack   # packs the package, installs it into an empty directory and runs the CLI
 ```
 
-The engine daemon and the UI run from the same image against one shared state volume. The UI is
-published on loopback only (it edits engine configuration and has no authentication of its own);
-put it behind an authenticating reverse proxy before changing `OPERATOR_APP_BIND`.
-
-### Developer checks
-
-Every change must pass all three before merge (CI-blocking):
-
-```bash
-npm run typecheck                                  # tsc --noEmit across workspaces
-npm test                                           # vitest — coverage gated
-npm run lint                                       # eslint + ts-prune + knip (dead-code gates)
-
-# Fresh-DB smoke test
-npx tsx --env-file=.env.local engine/entry.ts --once --fresh-db --repo <id>
-```
-
-See [docs/deployment.md](docs/deployment.md) for systemd / Docker Compose / Kubernetes manifests and the environment-variable reference.
-
-## Automation status
-
-Operator runs as an always-on daemon, not as a CI job — it schedules its own cycles over every repo in `config/repos.yaml`. See [docs/deployment.md](docs/deployment.md) for the systemd / Docker Compose / Kubernetes manifests, or use `npm run exec` for a single manual cycle.
-
-Two GitHub Actions workflows back that: [Tests](.github/workflows/tests.yml) runs typecheck, tests, and lint on every push and pull request touching code, and [Build Image](.github/workflows/build-image.yml) publishes the engine image to GHCR on `master` and on a nightly schedule.
-
-Observability is through the `@operator/app` UI — point it at the same SQLite file the engine writes.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks, and the full code standards. PRs follow the rules in `intelligence/rules/` (synced to `.claude/` and `.cursor/` via `intelligence sync`). The non-negotiable three:
-
-1. **No dead code.** Every export is reachable from `engine/entry.ts` or a colocated test. `ts-prune` via `scripts/check-ts-prune.mjs` is CI-blocking.
-2. **No force-push.** Every commit-push sequence is fast-forward-safe. `FileWorkspaceScope` is the only file that decides branch creation.
-3. **One PR per migration step.** Never combine. Rollback is a single revert.
-
-Commit message format: one line, capital letter, past tense, no prefixes (no `feat:`, `fix:`, etc.), no `Co-authored-by`, no `Signed-off-by`.
-
-## Security
-
-Report vulnerabilities privately through the repository's Security tab — see [SECURITY.md](SECURITY.md). Please do not open a public issue for a suspected vulnerability.
+Node 24 or newer. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE).
+MIT

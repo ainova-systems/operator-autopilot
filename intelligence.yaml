@@ -34,9 +34,8 @@ ignore:
   - ".tmp"
   - "dist"
   - "coverage"
-  - "state"
   - "intelligence/_backup"
-  - "engine/content"
+  - "fixtures"
 schema_version: "0.23.0"
 
 packages:

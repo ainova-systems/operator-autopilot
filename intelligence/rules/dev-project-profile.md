@@ -9,10 +9,8 @@ description: Project-specific configuration consumed by the intelligence-dev-pac
 > `TODO(owner)` could not be detected and are left for the owner to set. Plain `key: value`
 > lines only.
 >
-> Scope note: this profile describes how a developer works on THIS repository. It does NOT
-> govern the engine's behavior on managed repos — that product rule (operator never pushes
-> `master`/`main`/`develop`, authors `ai/<kind>/<id>` feature branches + PRs only) lives in
-> `context.md`, `migration.md`, and `typescript.md` and is unaffected by this pack.
+> Scope note: this profile describes how a developer works on THIS repository. What the runtime
+> does in a managed project is that project's own scripts and skills, not this profile.
 
 ## Branching
 
@@ -21,7 +19,7 @@ description: Project-specific configuration consumed by the intelligence-dev-pac
 - branch_prefixes: feature/, bugfix/, hotfix/   <!-- pack defaults; existing remote branches use no slash (e.g. fix-agent-lock-ttl) -->
 - update_strategy: merge
 - protected_branches: master        <!-- owner decision 2026-08-10, resolving the earlier CONFLICT note in favour of the git-workflow pack rule: master is protected. Code lands through a feature branch + PR only. Supersedes the previous direct-to-master practice. -->
-- direct_push_paths: docs/**, intelligence/**, *.md   <!-- LOCAL key, not a pack key: the one exception to protected_branches. A change whose diff is ENTIRELY within these paths may be committed and pushed straight to master. Anything else — engine/, packages/, app/, config/, deployment/, .github/, scripts/, dev/ — goes through the PR flow, and a change that touches both a source file and a doc is NOT an exception: the whole change goes through the PR. -->
+- direct_push_paths: docs/**, intelligence/**, *.md   <!-- LOCAL key, not a pack key: the one exception to protected_branches. A change whose diff is ENTIRELY within these paths may be committed and pushed straight to master. Anything else - src/, fixtures/, scripts/, deploy/, .github/, package files - goes through the PR flow, and a change that touches both a source file and a doc is NOT an exception. -->
 
 ## Commits
 
@@ -30,10 +28,11 @@ description: Project-specific configuration consumed by the intelligence-dev-pac
 
 ## Verification
 
-- typecheck: npm run typecheck      <!-- tsc --noEmit + app workspace typecheck -->
-- lint: npm run lint                <!-- eslint + ts-prune + knip dead-code checks -->
-- test: npm test                    <!-- vitest run --coverage -->
-- coverage_gate: 90%                <!-- >=90% on touched files; >=95% for engine/pipeline/primitives -->
+- typecheck: npm run typecheck      <!-- tsc --noEmit, strict, erasable syntax only -->
+- lint: none                        <!-- strict tsc options (noUnused*, exactOptionalPropertyTypes, noUncheckedIndexedAccess) are the static gate -->
+- test: npm test                    <!-- node:test over src/**/*.test.ts; live Ainoflow tests run when AINOFLOW_API_KEY is set -->
+- verify: none                      <!-- CI runs typecheck, test and test:pack (npm pack, install into an empty directory, run the CLI) on Node 24 and 26 -->
+- coverage_gate: none               <!-- every module has a colocated test; no numeric threshold -->
 
 ## Pull requests
 

@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something in the engine, the packages, or the UI does not behave as documented
+about: Something in the runtime or its CLI does not behave as documented
 title: ''
 labels: bug
 assignees: ''
