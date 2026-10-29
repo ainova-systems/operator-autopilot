@@ -25,9 +25,10 @@ src/
   collect.ts      exit + result file -> contract result (Codex output -> result via `then`)
   engines.ts      argv for command / claude -p, or a claude session when attended / codex exec (resume per subject)
   herdr.ts        the herdr CLI calls: own tab, metadata, run, close, status, notification
+  pause.ts        the control/pause record the daemon reads before it starts anything
+  service.ts      the systemd user unit and `operator service` install / uninstall / status
   state/          one interface; ainoflow.ts (HTTP) and file.ts (tests and dry runs only)
 fixtures/demo/    a complete example project used by tests and the live demo
-deploy/systemd/   operator@<project>.service
 ```
 
 ## Invariants

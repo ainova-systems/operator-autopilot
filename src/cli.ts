@@ -15,6 +15,7 @@ import { enqueue, JobStore, type JobStatus } from './jobs.ts';
 import { createLogger, errorText, type LogLevel } from './log.ts';
 import { loadManifest, manifestPath, type Manifest } from './manifest.ts';
 import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
+import { installService, serviceStatus, uninstallService } from './service.ts';
 import { capabilityProblems, checkCapabilities, openState } from './state/open.ts';
 import type { StateBackend } from './state/types.ts';
 import { fireTrigger } from './triggers.ts';
@@ -40,6 +41,8 @@ Commands:
   pause                            Start no new job while running ones finish; --wait until none runs.
                                    The service resumes by itself when it starts again
   resume                           End a pause
+  service <install|uninstall|status> <project>
+                                   Run the daemon as the systemd user service operator@<project> (Linux)
   state <get|put|list|delete> <collection> [key]
                                    Project state for scripts and skills (reserved: jobs, waits, threads, deliveries, tabs, control)
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
@@ -62,6 +65,8 @@ Options:
   --reason <text>       pause: why, for the log and the owner
   --wait                pause: return once no job runs
   --timeout <duration>  pause --wait: give up after this long (default: wait as long as it takes)
+  --env-file <path>     service install: secrets file the service reads (OPERATOR_ENV_FILE)
+  --no-start            service install: enable the service without starting it now
   --json                Machine-readable output
   --log-level <level>   debug, info, warn or error (default info)
   -h, --help            This help
@@ -86,6 +91,8 @@ const options = {
   reason: { type: 'string' },
   wait: { type: 'boolean' },
   timeout: { type: 'string' },
+  'env-file': { type: 'string' },
+  'no-start': { type: 'boolean' },
   json: { type: 'boolean' },
   'log-level': { type: 'string' },
   help: { type: 'boolean', short: 'h' },
@@ -270,6 +277,43 @@ async function commandResume(values: Values): Promise<number> {
   return 0;
 }
 
+async function commandService(values: Values, positionals: string[]): Promise<number> {
+  const [action, project] = positionals;
+  if (!action || !project) throw new UsageError('usage: operator service <install|uninstall|status> <project>');
+  switch (action) {
+    case 'install': {
+      const report = installService({
+        project,
+        manifest: manifestPath(values.manifest),
+        ...(values['env-file'] !== undefined ? { envFile: values['env-file'] } : {}),
+        start: !values['no-start'],
+      });
+      print(values, report, () => [
+        `${report.instance}: ${report.started ? 'enabled and started' : 'enabled'} (unit ${report.unit}, env file ${report.env}: ${report.envPath})`,
+        ...(report.env === 'kept' ? ['the existing env file was kept as it is; edit it to change the manifest or PATH'] : []),
+        ...(report.linger ? [] : ['linger is off: the service stops when you log out; enable it with `loginctl enable-linger`']),
+      ].join('\n'));
+      return 0;
+    }
+    case 'uninstall': {
+      const report = uninstallService(project);
+      print(values, report, () => [
+        `${report.instance}: stopped and disabled; running jobs were detached and finish on their own`,
+        report.unitRemoved ? 'no other project uses the unit, so it was removed' : 'the unit stays for the other enabled projects',
+        `kept ${report.envPath}`,
+      ].join('\n'));
+      return 0;
+    }
+    case 'status': {
+      const report = serviceStatus(project);
+      print(values, report, () => `${report.instance}: ${report.enabled}, ${report.active}; unit ${report.unit ? 'present' : 'missing'}, env file ${report.env ? 'present' : 'missing'}, linger ${report.linger ? 'on' : 'off'}`);
+      return report.active === 'active' ? 0 : 3;
+    }
+    default:
+      throw new UsageError(`unknown service action ${action}`);
+  }
+}
+
 async function commandState(values: Values, positionals: string[]): Promise<number> {
   const [action, collection, key] = positionals;
   if (!action || !collection) throw new UsageError('usage: operator state <get|put|list|delete> <collection> [key]');
@@ -335,6 +379,7 @@ export async function main(argv: string[]): Promise<number> {
       case 'waits': return await commandWaits(values);
       case 'pause': return await commandPause(values);
       case 'resume': return await commandResume(values);
+      case 'service': return await commandService(values, rest);
       case 'state': return await commandState(values, rest);
       case 'job-exec': {
         if (!rest[0]) throw new UsageError('usage: operator job-exec <run-dir>');

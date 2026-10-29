@@ -18,6 +18,9 @@
 - `operator pause` starts no new job and fires no timer while running jobs finish; `--wait` returns,
   and the daemon logs and notifies the owner, once none runs. `operator resume` ends it, and so does
   the service starting again.
+- `operator service install|uninstall|status <project>` runs the daemon as the systemd user service
+  `operator@<project>`: install writes the unit and a private env file and enables it, uninstall
+  stops it and keeps the env file. A host without systemd is refused before anything is written.
 - Published as the npm package `@ainova-systems/operator` and the image
   `ghcr.io/ainova-systems/operator-autopilot/operator`.
 
