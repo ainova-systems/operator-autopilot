@@ -1,6 +1,7 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -9,6 +10,10 @@ import { CLI_ENTRY } from './launch.ts';
 import { createTestProject, type TestProject } from './test-support/project.ts';
 
 const run = promisify(execFile);
+// The CLI under test must never reach the herdr of the session running the suite: a daemon placing a
+// run there opens a real tab, and one killed mid-test leaves it open. An unreachable socket makes
+// every herdr placement degrade to headless, exactly as on a host without herdr.
+const env = { ...process.env, HERDR_SOCKET_PATH: join(tmpdir(), 'operator-cli-test-no-herdr.sock') };
 const projects: TestProject[] = [];
 const children: ChildProcess[] = [];
 after(async () => {
@@ -18,7 +23,7 @@ after(async () => {
 
 async function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await run(process.execPath, [CLI_ENTRY, ...args]);
+    const { stdout, stderr } = await run(process.execPath, [CLI_ENTRY, ...args], { env });
     return { code: 0, stdout, stderr };
   } catch (error) {
     const failed = error as { code: number; stdout: string; stderr: string };
@@ -64,7 +69,7 @@ test('kill -9 of the daemon mid-job: the restart adopts the run and launches not
   await p.drop('slow.work', '4');
   const output: string[] = [];
   const start = (): ChildProcess => {
-    const child = spawn(process.execPath, [CLI_ENTRY, 'run', '--manifest', manifest, '--allow-file-state'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI_ENTRY, 'run', '--manifest', manifest, '--allow-file-state'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout?.on('data', (chunk: Buffer) => output.push(chunk.toString()));
     child.stderr?.on('data', (chunk: Buffer) => output.push(chunk.toString()));
     children.push(child);
