@@ -73,6 +73,8 @@ operator jobs [--status queued]  |  operator job <id>  |  operator waits
 operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
 operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart
 operator resume                                 # also happens by itself when the service starts again
+operator service install <project> --manifest operator.yaml [--env-file secrets.env] [--no-start]
+operator service status <project>  |  operator service uninstall <project>
 ```
 
 `AINOFLOW_API_KEY` comes from the environment, or from the manifest's `envFile` /
@@ -89,7 +91,15 @@ project:
 docker run --rm -v "$PWD:/project" ghcr.io/ainova-systems/operator-autopilot/operator validate
 ```
 
-`deploy/systemd/operator@.service` runs the daemon as a user service. `fixtures/demo` is a complete
+`operator service install` runs the daemon as the systemd user service `operator@<project>` (Linux):
+it writes the unit to `~/.config/systemd/user/` and `~/.config/operator/<project>.env` with the
+manifest, the secrets file and your current `PATH`, which the jobs start with, then enables and starts
+it. An existing env file is kept as it is. Without linger the service stops when you log out
+(`loginctl enable-linger`). `uninstall` stops and disables it, keeps the env file, and removes the unit
+once no other project uses it; running jobs are detached and finish on their own, so `operator pause
+--wait` first lets them end. Elsewhere, run `operator run` under the host's own service manager.
+
+`fixtures/demo` is a complete
 example project: a discovery script, a stand-in agent placed in a herdr tab, a follow-on step and a
 question answered through a trigger.
 
