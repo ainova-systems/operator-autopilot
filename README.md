@@ -65,10 +65,12 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   `endSubjects`; `operator tabs` lists the tabs kept and their sessions, and the records survive a
   daemon restart and are renewed while their tabs stay open. A tab is recorded as soon as it opens,
   so a run that fails to start leaks none. A tab closed by hand is replaced, with a new session, by
-  the next run. A session is resumed when claude has its transcript
-  (`<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<cwd as letters, digits and dashes>/<id>.jsonl`), however
-  its last run ended; without one - its first run never got to start it - it starts new under the
-  same id. A session kept after its result no longer has a timeout. `keepTab` applies to per-job tabs
+  the next run. The wrapper, in the pane with the session's own environment and cwd, resumes the
+  session when claude has its transcript (`<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<real path of
+  the cwd as letters, digits and dashes>/<id>.jsonl`), however its last run ended, and otherwise starts
+  it new under the same id - its first run never got to start it. If claude still refuses ("already
+  in use", "No conversation found"), the wrapper tries once the other way; never after a result, a
+  signal or a hand-over. A session kept after its result no longer has a timeout. `keepTab` applies to per-job tabs
   only.
 - **Tabs in use.** The runtime closes a tab - a kept tab whose `keepTab` ran out, a per-subject tab
   whose subject ended - or ends the session in a per-subject tab for the next run only when herdr

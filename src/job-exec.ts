@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
+import { claudeSessionExists } from './claude-session.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
 import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type LaunchSpec, type WrapperInfo } from './runfiles.ts';
@@ -9,6 +10,12 @@ import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo
 const HEARTBEAT_MS = 5_000;
 const KILL_GRACE_MS = 10_000;
 const RESULT_POLL_MS = 1_000;
+const HEAD_CHARS = 4_000;
+/** What claude 2.1.308 prints when it refuses a session id. */
+const ALREADY_IN_USE = 'is already in use';
+const NO_CONVERSATION = 'No conversation found with session ID';
+/** An attended session that ends this quickly without a result was refused, not worked in. */
+const ATTENDED_REFUSAL_MS = 15_000;
 
 /** Signals the command's whole process group, so a shell's children end with it. */
 export function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -87,7 +94,13 @@ export async function runJobExec(runDir: string): Promise<number> {
   let closedAfterResult = false;
   let released = false;
   let current: CommandInfo | undefined;
-  const forward = (signal: NodeJS.Signals): void => { if (current) signalCommand(current, signal); };
+  let stopping = false;
+  /** The start of what the command printed, where claude says why a session would not start. */
+  let head = '';
+  const forward = (signal: NodeJS.Signals): void => {
+    if (signal !== 'SIGINT') stopping = true;
+    if (current) signalCommand(current, signal);
+  };
   process.on('SIGTERM', forward);
   process.on('SIGHUP', forward);
   // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
@@ -98,8 +111,9 @@ export async function runJobExec(runDir: string): Promise<number> {
     const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
     current = info;
     if (info) void writeJsonAtomic(runPath(runDir, 'command'), info).catch(() => undefined);
-    child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); });
-    child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); });
+    const keep = (chunk: Buffer): void => { if (head.length < HEAD_CHARS) head += chunk.toString('utf8').slice(0, HEAD_CHARS - head.length); };
+    child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); keep(chunk); });
+    child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); keep(chunk); });
     const end = (): void => {
       if (!info) return;
       signalCommand(info, 'SIGTERM');
@@ -152,7 +166,34 @@ export async function runJobExec(runDir: string): Promise<number> {
     });
   });
 
-  const exit = await runCommand(launch.argv);
+  const say = (text: string): void => { process.stdout.write(text); output.write(text); };
+  const session = launch.claudeSession;
+  let resuming = session?.resume === true;
+  if (session) {
+    // Resume or start: decided here, with the session's own environment and cwd.
+    const exists = claudeSessionExists(launch.cwd, session.id, { ...process.env, ...launch.env });
+    if (exists !== undefined && exists !== resuming) {
+      resuming = exists;
+      say(`operator: session ${session.id} ${exists ? 'has a transcript; resuming it' : 'has no transcript; starting it under its id'}\n`);
+    }
+  }
+  const startedAt = Date.now();
+  let exit = await runCommand(session ? (resuming ? session.resumeArgv : session.freshArgv) : launch.argv);
+  // A safety net for a session the transcript check misread: claude refusing to start an id it has,
+  // or to resume one it has not, is tried once the other way. Never after a result, a signal or a
+  // hand-over - an attended session the owner ended stays ended.
+  if (session && !stopping && !released && !exit.timedOut && exit.signal === null && exit.exitCode !== 0
+    && !(await resultWritten(String(launch.env['OPERATOR_RESULT'])))) {
+    const refused = resuming ? head.includes(NO_CONVERSATION) : head.includes(ALREADY_IN_USE);
+    // An attended session prints to its terminal, not to the wrapper; a refusal there ends it at once.
+    const quick = attended !== undefined && Date.now() - startedAt < ATTENDED_REFUSAL_MS;
+    if (refused || quick) {
+      resuming = !resuming;
+      say(`operator: claude would not ${resuming ? 'start' : 'resume'} session ${session.id}; trying once to ${resuming ? 'resume' : 'start'} it\n`);
+      head = '';
+      exit = await runCommand(resuming ? session.resumeArgv : session.freshArgv);
+    }
+  }
 
   clearInterval(heartbeat);
   const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;

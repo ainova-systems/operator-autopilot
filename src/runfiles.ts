@@ -21,6 +21,8 @@ export interface LaunchSpec {
   attended?: { resultPath: string; graceMs: number; keepMs?: number; retain?: boolean };
   /** The run's herdr tab outlives it: a per-subject tab the next run of the operation reuses. */
   retainedTab?: boolean;
+  /** A claude session the wrapper resumes when claude has it, and starts under its id otherwise. */
+  claudeSession?: { id: string; resume: boolean; resumeArgv: string[]; freshArgv: string[] };
 }
 
 export interface WrapperInfo { pid: number; host: string; startedAt: string }

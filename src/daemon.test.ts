@@ -1,6 +1,7 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { enqueue } from './jobs.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -959,10 +960,13 @@ async function fakeClaude(p: TestProject): Promise<{ restore: () => void; calls:
     `const data = ${JSON.stringify(p.data)};`,
     'const args = process.argv.slice(2);',
     "appendFileSync(join(data, 'claude.log'), JSON.stringify(args) + '\\n');",
-    "const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', process.cwd().replace(/[^a-zA-Z0-9]/g, '-'));",
+    "const { realpathSync } = require('node:fs');",
+    "const store = existsSync(join(data, 'claude-store')) ? readFileSync(join(data, 'claude-store'), 'utf8') : process.env.CLAUDE_CONFIG_DIR;",
+    "const dir = join(store, 'projects', realpathSync(process.cwd()).replace(/[^a-zA-Z0-9]/g, '-'));",
     "const resume = args.indexOf('--resume');",
     "if (resume >= 0 && !existsSync(join(dir, args[resume + 1] + '.jsonl'))) { console.error('No conversation found with session ID: ' + args[resume + 1]); process.exit(1); }",
     "const fresh = args.indexOf('--session-id');",
+    "if (fresh >= 0 && existsSync(join(dir, args[fresh + 1] + '.jsonl'))) { console.error('Error: Session ID ' + args[fresh + 1] + ' is already in use.'); process.exit(1); }",
     "if (fresh >= 0) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, args[fresh + 1] + '.jsonl'), ''); }",
     "const fail = join(data, 'claude-exit');",
     "if (existsSync(fail)) { const code = Number(readFileSync(fail, 'utf8')); rmSync(fail); process.exit(code); }",
@@ -1139,4 +1143,114 @@ test('renewing a tab record loses to a write that landed between its read and it
   assert.equal(record?.value.jobId, 'j-concurrent');
   const wrapper = await readJsonFile<WrapperInfo>(runPath((await jobsBy(daemon, 'look', 'pr-3'))[0]?.run?.runDir ?? '', 'wrapper'));
   process.kill(wrapper?.pid ?? 0, 'SIGTERM');
+});
+
+/** Runs `code` for pr-5 twice in member l1 and answers what claude was asked each time. */
+async function codeTwice(p: TestProject, herdr: Herdr, claude: Awaited<ReturnType<typeof fakeClaude>>): Promise<{ statuses: (string | undefined)[]; calls: string[][] }> {
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  const statuses: (string | undefined)[] = [];
+  for (const id of ['code-1', 'code-2']) {
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'codel', subject: 'pr-5', input: {}, trigger: { id, name: 'test', kind: 'manual' }, member: 'l1' });
+    await pollUntil(daemon, async () => ['done', 'failed'].includes((await daemon.jobs.list()).find((job) => job.trigger.id === id)?.status ?? ''));
+    statuses.push((await daemon.jobs.list()).find((job) => job.trigger.id === id)?.status);
+  }
+  return { statuses, calls: await claude.calls() };
+}
+
+async function linkedProject(target?: string): Promise<TestProject> {
+  const link = join(tmpdir(), `operator-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const p = await project({
+    pools: `  links:\n    workspaces:\n      l1: { cwd: ${link} }`,
+    extraOperations: '      codel:    { kind: agent, engine: claude, prompt: "work on {subject}", pool: links, placement: herdr, tabs: per-subject, timeout: 5m }',
+  });
+  await symlink(target ?? p.root, link);
+  links.push(link);
+  return p;
+}
+const links: string[] = [];
+after(async () => { for (const link of links) await rm(link, { force: true }); });
+
+test('a session in a symlinked cwd is found where claude keeps it, under the real path, and resumed', async () => {
+  const p = await linkedProject();
+  const claude = await fakeClaude(p);
+  try {
+    const { statuses, calls } = await codeTwice(p, tabHerdr().herdr, claude);
+    assert.deepEqual(statuses, ['done', 'done']);
+    assert.equal(sessionArg(calls[1], '--resume'), sessionArg(calls[0], '--session-id'));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('the session is looked up with the environment of the pane it runs in, not the daemon\'s', async () => {
+  const p = await linkedProject();
+  const claude = await fakeClaude(p);
+  const paneConfig = join(p.root, 'pane-claude-config');
+  try {
+    const { herdr } = tabHerdr();
+    // The herdr server started the pane with a CLAUDE_CONFIG_DIR the daemon does not have.
+    const paneHerdr: Herdr = { ...herdr, runInPane: (pane, command) => herdr.runInPane(pane, `CLAUDE_CONFIG_DIR=${paneConfig} ${command}`) };
+    const { statuses, calls } = await codeTwice(p, paneHerdr, claude);
+    assert.deepEqual(statuses, ['done', 'done']);
+    assert.equal(sessionArg(calls[1], '--resume'), sessionArg(calls[0], '--session-id'));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a session claude says is already in use is resumed instead, once', async () => {
+  const p = await linkedProject();
+  const claude = await fakeClaude(p);
+  try {
+    // claude keeps its transcripts where the wrapper does not look, so the wrapper misreads the session as new.
+    await writeFile(join(p.data, 'claude-store'), join(p.root, 'elsewhere'));
+    const { statuses, calls } = await codeTwice(p, tabHerdr().herdr, claude);
+    assert.deepEqual(statuses, ['done', 'done']);
+    const id = sessionArg(calls[0], '--session-id');
+    assert.equal(calls.length, 3);
+    assert.equal(sessionArg(calls[1], '--session-id'), id);
+    assert.equal(sessionArg(calls[2], '--resume'), id);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('two unknown answers in one poll are one, and a pane id herdr hands out again starts unconfirmed', async () => {
+  const p = await project();
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  const record = (tabId: string) => ({ tabId, jobId: 'j-x', since: new Date().toISOString(), closeAt: new Date(Date.now() - 1000).toISOString(), paneId: 'wT:p7', guard: true });
+  await p.backend.docs.replace('tabs', 'wT:t7', record('wT:t7'));
+  await p.backend.docs.replace('tabs', 'wT:t8', record('wT:t8'));
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closes, [], 'both tabs asked about the same pane in one poll: still one answer');
+  await daemon.poll(new Date(Date.now() + 240_000));
+  // Closing the first tab forgets its pane, so the second starts its own confirmation.
+  assert.deepEqual(closes, ['wT:t7']);
+  await daemon.poll(new Date(Date.now() + 360_000));
+  assert.deepEqual(closes, ['wT:t7', 'wT:t8']);
+  await p.backend.docs.replace('tabs', 'wT:t9', record('wT:t9'));
+  await daemon.poll(new Date(Date.now() + 480_000));
+  assert.deepEqual(closes, ['wT:t7', 'wT:t8'], 'the pane id is new again: its first unknown is not a shell yet');
+});
+
+test('a renewal that is not due reads nothing more than the list', async () => {
+  const p = await perSubjectProject();
+  const { herdr } = tabHerdr();
+  const docs = p.backend.docs;
+  let reads = 0;
+  const backend = { ...p.backend, docs: { ...docs, get: async <T>(collection: string, key: string) => { if (collection === 'subject-tabs') reads += 1; return docs.get<T>(collection, key); } } };
+  const daemon = p.daemon({ herdr, backend });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  // The renewal pass is due; the record itself was just renewed.
+  const later = Date.now() + 2 * 3_600_000;
+  const [kept] = await docs.list<Record<string, unknown>>('subject-tabs');
+  await docs.replace('subject-tabs', kept?.key ?? '', { ...kept?.value, refreshedAt: new Date(later).toISOString() });
+  reads = 0;
+  await daemon.poll(new Date(later));
+  assert.equal(reads, 0);
+  await endAll(daemon);
 });

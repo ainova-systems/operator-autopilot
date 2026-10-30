@@ -85,6 +85,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
       ...(options.attended ? { OPERATOR_ATTENDED: '1' } : {}),
     },
     timeoutMs: op.timeoutMs,
+    ...(command.session ? { claudeSession: command.session } : {}),
     ...(options.retain ? { retainedTab: true } : {}),
     ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS, ...(options.retain ? { retain: true } : op.keepTabMs > 0 ? { keepMs: op.keepTabMs } : {}) } } : {}),
     ...(manifest.envFile ? { envFile: manifest.envFile } : {}),
