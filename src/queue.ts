@@ -63,7 +63,7 @@ function required(value: string, field: string): string {
 }
 
 function newId(now: Date): string {
-  return `q-${now.toISOString().replace(/\D/g, '').slice(0, 14)}-${randomBytes(3).toString('hex')}`;
+  return `q-${now.toISOString().replace(/\D/g, '').slice(0, 14)}-${randomBytes(6).toString('hex')}`;
 }
 
 /** Two writes of the same item agree when everything but the moment of writing does. */

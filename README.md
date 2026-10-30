@@ -109,9 +109,11 @@ once no other project uses it; running jobs are detached and finish on their own
 **Claims and the work queue.** `operator claim` is a lease on an opaque subject: `take` wins only
 when nobody holds it, the holder's lease ran out, or the same run takes it again; `renew` and
 `release` act only for the holder, and the holder may renew its own lease that ran out while nobody
-else took the subject. Every write is compare-and-set, so two runs never both hold a subject; a
-conflict exits 3 and prints the holder. A lease lasts at most 30 days, and its expiry is judged by
-the clock of the host reading it, so hosts sharing a namespace keep their clocks in sync. Subjects,
+else took the subject. Who holds a subject is decided by the state backend's atomic lock (Shield on
+Ainoflow), so two runs never both hold one; the claim record beside it only describes the holder. A
+conflict exits 3 and prints the holder. A lease lasts at most 24 hours, the lock's lifetime; renewing
+keeps a subject longer. The record's expiry is judged by the clock of the host reading it, so hosts
+sharing a namespace keep their clocks in sync. Subjects,
 run ids and item ids use letters, digits, `.`, `_`, `:` and `-`, at most 120. `operator queue` keeps
 a project's private work items (`{ id, title, body, priority, status, source, createdAt, updatedAt,
 takenBy: { run, ref } }`) in its own namespace: `take` moves a `ready` or `needs-decision` item to

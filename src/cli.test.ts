@@ -147,7 +147,7 @@ test('claim and queue misuse is refused before anything is written', async () =>
   assert.equal((await cli(['claim', 'take', 'item-1', '--run', 'run a', '--manifest', manifest])).code, 2);
   const tooLong = await cli(['claim', 'take', 'item-1', '--run', 'run-a', '--ttl', '400d', '--manifest', manifest]);
   assert.equal(tooLong.code, 1);
-  assert.match(tooLong.stderr, /at most 30d/);
+  assert.match(tooLong.stderr, /at most 24h/);
   const empty = join(p.root, 'empty.md');
   await writeFile(empty, '  \n');
   assert.equal((await cli(['queue', 'add', '--title', 'Fix it', '--body-file', empty, '--manifest', manifest])).code, 2);

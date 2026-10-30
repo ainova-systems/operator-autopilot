@@ -23,7 +23,7 @@ test('an added item has the full shape and the list puts the most urgent and old
   const low = await addQueueItem(docs, { title: 'Tidy logs', body: 'spec', priority: 'low' }, at('2026-10-30T09:00:00Z'));
   const high = await addQueueItem(docs, { title: 'Fix a lost wait', body: 'spec', priority: 'high', source: { kind: 'project-session', ref: 'finding-12' } }, at('2026-10-30T10:00:00Z'));
   const highOlder = await addQueueItem(docs, { title: 'Fix a stale claim', body: 'spec', priority: 'high' }, at('2026-10-30T08:00:00Z'));
-  assert.match(high.id, /^q-20261030100000-[0-9a-f]{6}$/);
+  assert.match(high.id, /^q-20261030100000-[0-9a-f]{12}$/);
   assert.deepEqual({ ...high, id: 'x' }, {
     id: 'x', title: 'Fix a lost wait', body: 'spec', priority: 'high', status: 'ready',
     source: { kind: 'project-session', ref: 'finding-12' }, createdAt: '2026-10-30T10:00:00.000Z', updatedAt: '2026-10-30T10:00:00.000Z',

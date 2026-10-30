@@ -7,7 +7,7 @@ import { createAinoflowBackend } from './ainoflow.ts';
 type Answer = { status: number; body?: unknown; etag?: string };
 
 /** An Ainoflow API that answers each call from a script, in order, and records what was asked. */
-function scripted(answers: Answer[]): { docs: ReturnType<typeof createAinoflowBackend>['docs']; calls: string[] } {
+function scripted(answers: Answer[]): { docs: ReturnType<typeof createAinoflowBackend>['docs']; store: ReturnType<typeof createAinoflowBackend>; calls: string[] } {
   const calls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const answer = answers.shift();
@@ -15,43 +15,40 @@ function scripted(answers: Answer[]): { docs: ReturnType<typeof createAinoflowBa
     if (!answer) throw new Error('the script ran out of answers');
     return new Response(answer.body === undefined ? null : JSON.stringify(answer.body), { status: answer.status, headers: answer.etag ? { etag: answer.etag } : {} });
   }) as typeof fetch;
-  return { docs: createAinoflowBackend({ apiKey: 'k', namespace: 'op-demo', fetchImpl }).docs, calls };
+  const store = createAinoflowBackend({ apiKey: 'k', namespace: 'op-demo', fetchImpl });
+  return { docs: store.docs, store, calls };
 }
 
 const now = new Date('2026-10-30T10:00:00Z');
 const HOUR = 3_600_000;
 const claim = (run: string, expiresAt: string): Record<string, string> => ({ subject: 'item-7', run, takenAt: '2026-10-30T08:00:00.000Z', renewedAt: '2026-10-30T08:00:00.000Z', expiresAt });
 
-test('claim take over the Ainoflow API: a 409 create and a 412 replace are both read again as the new holder', async () => {
-  const lostCreate = scripted([
-    { status: 404 },
-    { status: 409 },
-    { status: 200, body: claim('run-b', '2026-10-30T11:00:00.000Z'), etag: '"e2"' },
+test('claim take over the Ainoflow API: the Shield lock decides, and a loser reports the recorded holder', async () => {
+  const won = scripted([
+    { status: 201, body: { acquired: true, token: 't1' } },
+    { status: 200 },
   ]);
-  const held = await takeClaim(lostCreate.docs, 'item-7', 'run-a', HOUR, now);
-  assert.equal(!held.ok && held.reason === 'held' && held.holder.run, 'run-b');
+  const taken = await takeClaim(won.store, 'item-7', 'run-a', HOUR, now);
+  assert.equal(taken.ok && taken.claim.run, 'run-a');
+  assert.deepEqual(won.calls, ['POST op-demo.claim.item-7 -> 201', 'PUT item-7 -> 200']);
 
-  const lostReplace = scripted([
-    { status: 200, body: claim('run-x', '2026-10-30T09:00:00.000Z'), etag: '"e1"' },
-    { status: 412 },
-    { status: 200, body: claim('run-b', '2026-10-30T11:00:00.000Z'), etag: '"e2"' },
+  const lost = scripted([
+    { status: 200, body: { acquired: false, status: 'locked', token: null } },
+    { status: 200, body: { ...claim('run-b', '2026-10-30T11:00:00.000Z'), token: 't2' }, etag: '"e2"' },
+    { status: 200, body: { ...claim('run-b', '2026-10-30T11:00:00.000Z'), token: 't2' }, etag: '"e2"' },
   ]);
-  const held2 = await takeClaim(lostReplace.docs, 'item-7', 'run-a', HOUR, now);
-  assert.equal(!held2.ok && held2.reason === 'held' && held2.holder.run, 'run-b');
+  const held = await takeClaim(lost.store, 'item-7', 'run-a', HOUR, now);
+  assert.equal(!held.ok && held.reason === 'held' && held.holder.run, 'run-b');
+  assert.equal(!held.ok && 'holder' in held && 'token' in held.holder, false);
 });
 
-test('a conditional replace on a key that vanished is a conflict that is read again, not a crash', async () => {
-  const vanished = scripted([
-    { status: 200, body: claim('run-x', '2026-10-30T09:00:00.000Z'), etag: '"e1"' },
-    { status: 404 },
-    { status: 404 },
-    { status: 201 },
-  ]);
-  const taken = await takeClaim(vanished.docs, 'item-7', 'run-a', HOUR, now);
-  assert.equal(taken.ok && taken.claim.run, 'run-a');
-  assert.deepEqual(vanished.calls.map((call) => call.split(' ')[0]), ['GET', 'PUT', 'GET', 'POST']);
-  const precondition = scripted([{ status: 200, body: claim('run-x', '2026-10-30T09:00:00.000Z'), etag: '"e1"' }, { status: 428 }, { status: 404 }, { status: 201 }]);
-  assert.equal((await takeClaim(precondition.docs, 'item-7', 'run-a', HOUR, now)).ok, true);
+test('a conditional replace on a key that vanished is a conflict for the caller to read again, not a crash', async () => {
+  for (const status of [404, 428]) {
+    const api = scripted([{ status }]);
+    assert.equal(await api.store.docs.replace('work-queue', 'q-1', {}, { etag: '"e1"' }), 'conflict');
+  }
+  const unconditional = scripted([{ status: 404 }]);
+  await assert.rejects(unconditional.store.docs.replace('work-queue', 'q-1', {}), /answered 404/);
 });
 
 const item = (status: string, extra: Partial<QueueItem> = {}): QueueItem => ({

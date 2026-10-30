@@ -85,7 +85,7 @@ Options:
 
 Claims and queue:
   Subjects, run ids and item ids use letters, digits, '.', '_', ':' and '-' (at most 120).
-  A claim lasts at most 30d; expiry is judged by the reading host's clock.
+  A lease lasts at most 24h (renew to keep a subject longer); expiry is judged by the reading host's clock.
   claim take|renew|release <subject> --run <id> [--ttl 1h]   exit 3 when another run holds it
   queue add --title <t> --body-file <f|-> [--priority critical|high|medium|low]
             [--status ready|needs-decision|blocked] [--source-kind owner|project-session] [--source-ref r]
@@ -396,14 +396,14 @@ async function commandClaim(values: Values, positionals: string[]): Promise<numb
   const [action, subject] = positionals;
   if (!action) throw new UsageError('usage: operator claim <take|renew|release|show> [subject] --run <id> [--ttl 1h]');
   const manifest = load(values);
-  const docs = openForCommand(manifest).docs;
+  const store = openForCommand(manifest);
   if (action === 'show') {
     if (!subject) {
-      const claims = await liveClaims(docs);
+      const claims = await liveClaims(store);
       print(values, claims, () => claims.map((c) => `${c.subject}  ${c.run}  until ${c.expiresAt}`).join('\n') || 'no live claims');
       return 0;
     }
-    const shown = await showClaim(docs, key(subject, 'subject'));
+    const shown = await showClaim(store, key(subject, 'subject'));
     print(values, shown ?? null, () => (shown ? `${shown.live ? 'held' : 'free'}: ${subject} last held by ${shown.claim.run} until ${shown.claim.expiresAt}` : 'no claim'));
     return 0;
   }
@@ -414,9 +414,9 @@ async function commandClaim(values: Values, positionals: string[]): Promise<numb
   const ttlMs = parseDuration(values.ttl ?? DEFAULT_CLAIM_TTL, '--ttl');
   let result: ClaimResult;
   switch (action) {
-    case 'take': result = await takeClaim(docs, subject, values.run, ttlMs); break;
-    case 'renew': result = await renewClaim(docs, subject, values.run, ttlMs); break;
-    case 'release': result = await releaseClaim(docs, subject, values.run); break;
+    case 'take': result = await takeClaim(store, subject, values.run, ttlMs); break;
+    case 'renew': result = await renewClaim(store, subject, values.run, ttlMs); break;
+    case 'release': result = await releaseClaim(store, subject, values.run); break;
     default: throw new UsageError(`unknown claim action ${action}`);
   }
   print(values, result, () => claimText(result));
