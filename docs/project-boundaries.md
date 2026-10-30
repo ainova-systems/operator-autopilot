@@ -3,58 +3,68 @@
 Status: proposed. Owner decisions are listed at the end; everything above them is the design as
 recommended.
 
-The first managed project grew the development workflow inside its own repository: discovery,
+The first managed project grew its development workflow inside its own repository: discovery,
 the phase skills, the run contract, the code-host calls, the queue reader and the project's own
 specifics all sit side by side there. This document draws the line through that code, so that a
-second project adopts the workflow by configuration, and so that the Operator repository can run
-its own development through the same workflow.
+second project gets a workflow of its own without copying the first one by hand, and so that the
+Operator repository can run its own development the same way.
 
-## The test
+**Every project's workflow is its own.** Branching, CI, test suites, preview and QA environments,
+where work is queued and how the owner signals are different in every repository, so there is no
+shared workflow that every project runs. What is shared is the mechanics a workflow is built from,
+the patterns that worked, and the procedure that builds a workflow from both.
 
-Every function answers one question: **would a second project, on another code host and another
-tracker, need exactly this?**
+## Layers
 
-| Answer | Layer | Lives in |
-|---|---|---|
-| Yes, and it says nothing about pull requests or phases | **Runtime** | `src/` (this package, unchanged boundary) |
-| Yes, and it is the development workflow: phases, claims, factors, questions, the queue | **Workflow kit** | this repository, a separate package the runtime never imports |
-| No - its paths, documents, services, names or business rules | **Project layer** | the managed project's repository |
+| # | Layer | What it is | Lives in |
+|---|---|---|---|
+| 1 | **Runtime** | operations, triggers, pools, jobs, waits, state backend, delivery, herdr placement; knows no process | this repository, `src/` (unchanged boundary) |
+| 2 | **Building blocks** | the generic mechanics a workflow calls: ports and adapters, the `operator-flow` wrapper, claims, questions, discovery and contract helpers | this repository, a package the runtime does not import |
+| 3 | **SDLC pattern references** | documented sample workflows: what each phase decides, why, and how it was built from the blocks | this repository, documentation beside the blocks |
+| 4 | **Setup skill** | researches a repository, interviews its owner, then generates and validates that project's workflow from blocks and patterns | this repository, shipped with the blocks |
+| 5 | **Project workflow** | the project's manifest, discovery script, phase skills and adapters - generated once, then owned and changed by the project | the managed project's repository |
 
-The runtime's rule stays as written in `intelligence/rules/context.md`: it knows operations,
-triggers, pools, state and delivery, and nothing about a process. The workflow kit is the new
-middle layer: it knows the development process, but no project. A project binds itself to both
-through configuration - its manifest, its profile values and the small adapters only it can write.
+The test for any function: **is it a mechanic every workflow needs in the same form?** Then it is a
+block. **Is it a decision about how one project works?** Then it belongs to that project's
+workflow, and at most an anonymized copy of it becomes a pattern reference.
+
+The runtime's rule stays as written in `intelligence/rules/context.md`: it knows nothing about a
+process. The blocks know pull requests, claims and questions, but decide nothing; deciding is the
+project's workflow.
 
 ## Inventory
 
-Where each piece the first project carries belongs. "Splits" means the generic decision moves to
-the kit and a project-supplied value or adapter stays behind.
+Where each piece the first project carries belongs. The first project's workflow stays in its
+repository; it is rebuilt on the blocks, and only its generic mechanics move.
 
 | Function | Today | Verdict |
 |---|---|---|
 | Timers, jobs, dedupe, pools, waits, herdr placement, engines, result collection | runtime | **stays** in the runtime |
-| One tab per subject and operation, reused across repeats, closed when the subject ends | runtime branch | **stays** in the runtime (generic: a subject is any key) |
-| Run contract (`operator-contract`): input, result, claims, questions, markers | project, staged as a pack | **moves** to the kit |
-| Phase skills: intake, plan, implement, review, review-verdict, verify, merge, clarify | project, staged as a pack | **move** to the kit; they already read profile keys only |
-| Phase routing: which operation a pull request waits for, its dedupe key, stale claims, the conflict route, owner-input detection, question answers, stage-report envelopes, verification-steps digest, ready-limit and draft promotion, slot-of-branch | project discovery script | **moves** to the kit as a discovery library and a default discovery command |
-| CI state from the code host's runs, filtered to the deciding workflows | project discovery script | **splits**: the reduction moves; the deciding workflow names stay as configuration |
-| Milestone and label names, slots, ready limit, quotas, question marker | project JSON | **splits**: schema and defaults move; values stay |
-| Review result schema | project | **moves** to the kit |
-| Keeping the control checkout fast-forwarded and reporting a changed manifest | project discovery script | **moves** to the kit |
-| Session hooks that refuse to end a session still holding a claim | project | **moves** to the kit (generic claim guard) |
-| `dev-deliver-next`, `git-sync-base` | project, staged as a pack | **move** to the core development pack, not this repository: they are not runtime- or phase-specific |
-| Queue reading: folder order, frontmatter fields, statuses, per-folder quotas | project discovery script | **splits**: the `queue` port moves (below); the repository-files layout is the project's provider configuration |
-| QA deployment status for a head | project script reading the project's status comment | **stays** in the project, behind the kit's `qa_status` command contract |
-| QA feedback tickets: list and move them | project script calling the project's application API | **stays** in the project, behind the kit's `qa_feedback` and `qa_feedback_status` command contracts |
-| Judge engine choice for review and verification | project skill plus manifest | **splits**: the choice is manifest configuration; the delegation skill is the kit's when generic |
-| Implementation skill, plan skill, merge gates, business priority | project | **stay** in the project (profile keys the kit reads) |
-| Prompt overrides carrying a new rule into old slot branches | project manifest | **disappears** once phase skills load from the control checkout (blocker B1) |
+| One tab per subject and operation, reused across repeats, closed when the subject ends | runtime branch | **stays** in the runtime (a subject is any key) |
+| Discovery script: which operation each pull request waits for, in which slot | project | **stays** in the project as its workflow, rebuilt on the blocks: no direct code-host CLI, state through the `state` port |
+| Phase skills: intake, plan, implement, review, review-verdict, verify, merge, clarify | project | **stay** in the project, rebuilt on the blocks: every host call through `operator-flow`; anonymized copies become pattern references |
+| Run contract (input, result, claims, questions, markers) | project skill | **splits**: the contract-1 file helpers and the claim and question mechanics become blocks; the project's skill keeps its own rules on top |
+| Request keys bounded and deduped, slot-of-branch, owner-input cursor, stage-report envelope, verification-steps digest, CI state for a commit | project discovery script | **move** to the blocks as discovery helpers |
+| Stale-claim detection, claim take and release | project discovery script and skills | **move** to the blocks as the CAS claim on the `state` port |
+| Question posting, answer detection, resuming the waiting run | project skill and discovery | **move** to the blocks as question/answer mechanics |
+| Code-host and tracker calls (list, view, checks, threads, labels, milestones, comments, merge) | `gh` in the script and the skills | **move** to the blocks as the GitHub adapter behind the ports |
+| Keeping the control checkout fast-forwarded and reporting a changed manifest | project discovery script | **moves** to the blocks |
+| Phase routing rules, ready limit and draft promotion, conflict route, clarification phase, merge gates, owner labels | project | **stay** in the project; each becomes a pattern reference, anonymized |
+| Milestone and label names, slots, quotas, deciding CI workflows | project JSON | **stay** in the project as its configuration |
+| Queue layout (folders, frontmatter, statuses, quotas) | project discovery script | **splits**: the `queue` port and its `repo-files` provider are blocks; the layout is the project's provider configuration |
+| QA deployment status, QA feedback tickets | project scripts | **stay** in the project; the blocks define only the command contracts a phase calls |
+| Review result schema | project | **stays** in the project; a copy becomes part of the review pattern reference |
+| Session hooks that refuse to end a session still holding a claim | project | **move** to the blocks (generic claim guard); the project wires them |
+| `dev-deliver-next`, `git-sync-base` | project, staged as a pack | **move** to the core development pack: they are not operator-specific |
+| Prompt overrides carrying a new rule into old slot branches | project manifest | **disappear** once phase skills load from the control checkout (blocker B1) |
 | Live monitoring findings | private notes | **move** to the Operator project's private queue (below) |
 
-## Ports
+## Building blocks
 
-The kit talks to the outside world through four ports. A project names a provider for each; the
-phase skills and discovery never call a provider's CLI directly.
+### Ports
+
+A project's workflow talks to the outside world through four ports. It names a provider for each;
+its discovery script and phase skills never call a provider's CLI directly.
 
 | Port | Owns | Example providers |
 |---|---|---|
@@ -63,11 +73,11 @@ phase skills and discovery never call a provider's CLI directly.
 | `state` | the machine's own state: phase per subject, claims, factors per head, cursors, open questions | ainoflow |
 | `queue` | work items waiting to be taken: their spec, priority and readiness | repo-files, issues, ainoflow |
 
-### Source of truth
+**Source of truth.**
 
 - **State is authoritative for machine state.** Claim, phase, factor freshness and question
-  bookkeeping live in `state`, where a claim can finally be a lock: compare-and-set with a run id
-  and an expiry, which a label cannot be.
+  bookkeeping live in `state`, where a claim can be a lock: compare-and-set with a run id and an
+  expiry, which a label cannot be.
 - **The tracker carries owner signals and a projection.** Owner decisions (accept, hold, reject,
   cancel, an answer) are read from the tracker as events and recorded in `state`; the machine's
   phase and outcome are projected back onto the tracker so a person sees them. A projection that
@@ -77,12 +87,11 @@ phase skills and discovery never call a provider's CLI directly.
 - **The queue is authoritative for what work exists.** An item is taken by a compare-and-set on its
   status, so two intake runs never take one item.
 
-With `tracker: codeHost` on GitHub this is today's behaviour: labels and milestones are both the
-owner's signals and the projection. The split matters as soon as the tracker is not the code host.
+With the tracker on the code host this is the first project's behaviour today: labels and
+milestones are both the owner's signals and the projection. The split matters as soon as the
+tracker is not the code host.
 
-### Normalized pull request
-
-What the kit reads, whatever the host:
+**Normalized pull request** - what a workflow reads, whatever the host:
 
 ```text
 pr      { id, number, url, title, body, draft, state: open|merged|closed,
@@ -94,11 +103,8 @@ reviews [{ author, state: approved|changes|commented|dismissed, body, submittedA
 notes   [{ id, author, authorRole: owner|member|other, body, createdAt }]
 ```
 
-### Capabilities the kit needs
-
-The kit needs a fixed set of operations from each port. An adapter declares which it supports; a
-missing one is reported as a capability gap at start, never emulated silently, because a factor
-nobody can check is not a factor.
+**Capabilities.** An adapter declares which operations it supports; a missing one is reported as a
+capability gap at start, never emulated silently, because a factor nobody can check is not a factor.
 
 | Port | Required | Optional |
 |---|---|---|
@@ -111,22 +117,20 @@ The GitHub mapping is the one the first project uses today and is the reference 
 provider's mapping is written and verified against that host's documentation when its adapter is
 built; this document does not assert one.
 
-### Configuration
+**Configuration** - the project's ports section:
 
 ```yaml
-# the kit's section of the project's operator configuration
 codeHost: { provider: github, repo: <owner>/<repo>, identity: <env file key or config dir> }
 tracker:  { provider: codeHost }              # or { provider: asana, project: <id> }, { provider: ainoflow }
 state:    { provider: ainoflow, namespace: op-<project> }
 queue:    { provider: repo-files, root: <path>, layout: <provider options> }
-names:    { milestones: {...}, labels: {...} }  # tracker vocabulary; defaults from the kit
 ```
 
 Combinations are free because the ports are independent: Bitbucket with Asana is
 `{ codeHost: bitbucket, tracker: asana }`; adding Ainoflow as the owner's surface is
 `tracker: ainoflow`, with `state` already there.
 
-## The queue port
+### The queue port
 
 The Operator project's own queue is private (owner decision, 2026-10-30): its items name findings
 from other projects' live runs, and this repository is public. The port therefore has a private
@@ -138,7 +142,7 @@ provider from the start.
 | `issues` | the code host's or tracker's issues, with a label marking queue items | as the issue tracker |
 | `ainoflow` | a state collection in the project's namespace | private to holders of the namespace key |
 
-### Item
+Item:
 
 ```text
 { id, title, body,                       # body is the spec: problem, expectation, evidence
@@ -149,34 +153,35 @@ provider from the start.
   takenBy?: { run, pr } }
 ```
 
-Every update is compare-and-set on the item's etag. Intake takes an item by moving `ready → taken`
-with its run id; a conflict means another run took it, and intake picks the next. Clarification takes
-`needs-decision` items and returns them `ready` with the answers in the body.
+Every update is compare-and-set on the item's etag. An intake phase takes an item by moving
+`ready → taken` with its run id; a conflict means another run took it, and intake picks the next.
+A clarification phase takes `needs-decision` items and returns them `ready` with the answers in the
+body.
 
-### Producers and consumers
+Producers and consumers:
 
-- **The owner** files items directly, through the wrapper CLI or the Ainoflow interface.
-- **Another project's operator session** files a generic finding about the runtime or the kit:
+- **The owner** files items directly, through `operator-flow` or the Ainoflow interface.
+- **Another project's operator session** files a generic finding about the runtime or the blocks:
   the defect, the evidence reduced to what any project would see, and no project name. It writes
   with a key scoped to creating items in the Operator project's queue collection, nothing else.
-- **`operator-intake` and `operator-clarify`** consume through the wrapper; they never read the
-  provider directly.
+- **The project's intake and clarification phases** consume through `operator-flow`; they never read
+  the provider directly.
 
-### Public and private
+Public and private:
 
 | Public (the repository) | Private (namespace, private tracker) |
 |---|---|
 | pull requests, commits, their reports and review replies | queue items and their evidence |
-| design documents like this one, the changelog, releases | findings from live runs of other projects |
-| the kit's skills and adapters | owner questions and answers, when the tracker is private |
+| design documents like this one, pattern references, the changelog, releases | findings from live runs of other projects |
+| the blocks, the setup skill | owner questions and answers, when the tracker is private |
 
 A pull request that delivers a queue item links nothing private: it states the change and how to
 confirm it, the way any published artifact does.
 
-## The wrapper CLI
+### The wrapper CLI
 
 Skills are executed literally, so a provider call written into a skill ties the skill to that
-provider. The kit ships one command that every phase skill calls instead, with JSON in the
+provider. The blocks ship one command every generated phase skill calls instead, with JSON in the
 normalized shapes above:
 
 ```text
@@ -190,15 +195,77 @@ operator-flow question ask <subject> --key <k> --body-file <f> | answers <subjec
 operator-flow queue list [--status ready] | take <id> | update <id> ... | file --title ... --body-file <f>
 ```
 
-It reads the project's configuration for the providers, and it is the only code that knows a
-provider's CLI or API. Discovery uses the same adapters as a library.
+It reads the project's ports section, and it is the only code that knows a provider's CLI or API.
+A project's discovery script imports the same adapters and the discovery helpers as a library.
+
+### Other blocks
+
+- **CAS claim**: take, renew and release a subject's claim on the `state` port, with run id and
+  expiry; a claim whose run is gone is detectable, not guessed.
+- **Questions and answers**: post a question with a stable key, detect the owner's answer on the
+  tracker, resume the run that waits on it through the runtime's trigger.
+- **Discovery helpers**: bounded request keys, slot-of-branch, owner-input cursor, stage-report
+  envelope parsing, verification-steps digest, CI state for one commit, control-checkout
+  fast-forward.
+- **Contract helpers**: read the contract-1 input, write a valid result with `next` requests and a
+  `wait`.
+- **Claim guard**: session hooks that refuse to end a session still holding a claim it took.
+
+## SDLC pattern references
+
+Documented sample workflows a setup run draws from, each stating what it decides, why, which blocks
+it uses and what a project must supply. They are references, not code a project runs: a project's
+workflow copies and adapts them.
+
+- **Pull request pipeline with independent judges**: intake, plan, implement, review by another
+  engine or a fresh session, verify against the running change, owner review, merge; factors fresh
+  per head.
+- **QA admission and drafts**: a limited number of ready pull requests hold the QA environments;
+  drafts get builds, suites and review, and are promoted oldest first.
+- **Clarification phase**: an item waiting on an owner decision is planned, its questions asked one
+  at a time, and merged once every answer is recorded.
+- **Conflict route**: a pull request in a later phase that conflicts with its base returns to
+  implementation instead of waiting.
+- **Owner signals**: accept, hold, revalidate, reject, cancel and answer, and how each moves a
+  pull request.
+- **Merge gates**: required checks on the head, fresh factors, no open thread, no unresolved open
+  question, no unaccepted manual step.
+
+The first project's pipeline is included as one complete reference, anonymized: its phases, routing
+rules and skills with every project path, name and service replaced by its role.
+
+## The setup skill
+
+`operator-setup-workflow` turns a repository into a managed project.
+
+1. **Research the repository.** Branching and protected branches, CI workflows and which checks
+   decide, test suites and how they run, preview or QA environments, where work is queued today,
+   the code host and the tracker, existing agent rules and skills.
+2. **Interview the owner, one question at a time.** Each question states what the research found,
+   two to four options and a recommendation drawn from the pattern references: which phases, how
+   many slots, who judges, how QA is admitted, which owner signals, which merge gates, which queue
+   provider.
+3. **Generate the workflow.** The project's `operator.yaml`, its ports section, its discovery script
+   built on the discovery helpers, its phase skills calling `operator-flow`, and the adapters only
+   it can write (QA status, QA feedback) - each with tests.
+4. **Validate.** `operator validate --describe` resolves every operation; the discovery script's
+   tests pass; a dry run of the daemon makes the requests the owner expects for the repository's
+   current pull requests and queue.
+
+After generation the workflow belongs to the project: it changes it like any other code. A newer
+blocks version is a dependency upgrade; a revised pattern reference is offered by running the setup
+skill again in review mode, which proposes the difference and changes nothing on its own.
 
 ## Operator for Operator
 
-The Operator repository becomes a managed project of itself: its own queue, its own slots, and the
-same phase skills delivering changes to the runtime and the kit.
+The Operator repository becomes a managed project of itself: its own private queue, its own slots,
+and a workflow of its own.
 
-Setup:
+**Acceptance test:** the setup skill generates the Operator project's workflow from research of this
+repository and the owner's answers, with no hand-written workflow code, and that workflow delivers
+the first item from the private queue to a merge-ready pull request.
+
+Expected shape, which the setup run confirms or changes with the owner:
 
 - A control checkout on `master`, separate from development checkouts, running a daemon from the
   **released** package, with its own manifest, namespace and code host identity.
@@ -213,42 +280,49 @@ Blockers, each to be cleared before the daemon takes its first item:
 
 | # | Blocker | Resolution |
 |---|---|---|
-| B1 | A slot session loads phase skills from the pull request's branch, so a rule changed on the integration branch reaches an older branch late, and a pull request changing a phase skill would be judged by its own change | phase skills and the contract load from the kit version installed in the control checkout; a slot's branch never supplies them |
+| B1 | A slot session loads phase skills from the pull request's branch, so a rule changed on the integration branch reaches an older branch late, and a pull request changing a phase skill would be judged by its own change | phase skills load from the control checkout; a slot's branch never supplies them |
 | B2 | The daemon would run the code under change | the daemon runs the released package; a merged change takes effect at release and restart, which is a deliberate owner step |
 | B3 | Tests that start daemons or reach herdr or Ainoflow could touch the live instance | tests use the file driver and a temporary herdr scope; live Ainoflow tests use a namespace of their own, never the operator project's |
 | B4 | Findings filed from other projects could carry their names into public pull requests | producers file reduced findings; intake re-checks against the project-name rule before any public text is written |
-| B5 | Milestones, labels and the code host identity do not exist for this repository yet | the kit's init command creates the tracker vocabulary; the identity is the manifest's configuration, never the user's default |
+| B5 | Milestones, labels and the code host identity do not exist for this repository yet | the setup skill creates the tracker vocabulary the owner chose; the identity is the manifest's configuration, never the user's default |
 
 ## Migration order
 
 Each step leaves the first project running unchanged.
 
-1. **State into Ainoflow.** Claims become compare-and-set leases with a run id and expiry; factors
-   are recorded per head; the tracker becomes a projection. Exit: the first project's discovery
-   reads claims and factors from `state`, and its labels still match.
-2. **Wrapper and GitHub adapter.** `operator-flow` with the GitHub provider for `codeHost`, `tracker`
-   and `queue: issues`, plus the `repo-files` and `ainoflow` queue providers. Exit: every phase skill
-   calls the wrapper; no skill names a provider CLI.
-3. **Move the kit.** The run contract, phase skills, discovery library, review schema, claim guard and
-   control-checkout updater move into this repository's kit package; the first project consumes it
-   and keeps only its adapters and values. The repository context rule gains the kit as its second
-   layer. Exit: the first project's discovery script is configuration plus its project readers.
-4. **Dogfood.** Clear B1-B5 and start the Operator project's daemon on its private queue.
-5. **More providers.** Each new code host or tracker is an adapter with its capability declaration
-   and tests; no skill changes.
+1. **State into Ainoflow.** The CAS claim and per-head factors on the `state` port; the tracker
+   becomes a projection. Exit: the first project's discovery reads claims and factors from `state`,
+   and its labels still match.
+2. **Blocks package.** Ports, the GitHub adapter, the `repo-files`, `issues` and `ainoflow` queue
+   providers, `operator-flow`, questions, discovery and contract helpers, the claim guard - extracted
+   from the first project's mechanics, with tests. Exit: the package is released and the runtime
+   does not import it.
+3. **Rebuild the first project's workflow on the blocks.** Its discovery script and phase skills
+   stay in its repository and keep their decisions; their host calls go through `operator-flow` and
+   the helpers. Exit: no skill or script of that workflow names a provider CLI, and its pipeline
+   behaves as before.
+4. **Pattern references.** The sample workflows above, the first project's pipeline among them,
+   anonymized. Exit: each names the blocks it uses and what a project supplies.
+5. **Setup skill.** Research, interview, generate, validate. Exit: it regenerates a workflow
+   equivalent to the first project's from that repository and recorded answers, as a dry run.
+6. **Dogfood.** Clear B1-B5, run the setup skill on this repository, start the daemon on the private
+   queue. Exit: the acceptance test above.
+7. **More providers.** Each new code host or tracker is an adapter with its capability declaration
+   and tests; workflows change only their ports section.
 
 ## Owner decisions
 
-1. **Where the kit lives.** (a) This repository, a separate package the runtime does not import;
-   (b) its own repository; (c) inside the core development pack. Recommended: (a) - the kit and
-   the run contract change together, and one CI proves both.
-2. **Default tracker for GitHub projects.** (a) The code host itself (labels, milestones), as today;
-   (b) Ainoflow only, with labels as a projection. Recommended: (a) - the owner already works there.
-3. **The first project's queue provider.** (a) Keep `repo-files`; (b) move to `ainoflow`.
-   Recommended: (a) - its queue items are public documentation by its own rules.
-4. **How phase skills reach a slot.** (a) From the kit version installed in the control checkout;
-   (b) installed per user, outside any checkout. Recommended: (a) - one pinned version per project.
-5. **Wrapper language.** (a) TypeScript in the kit package, built like the runtime; (b) a plain
+Decided: the Operator project's queue is private, on the `ainoflow` provider in its own namespace
+(owner, 2026-10-30).
+
+1. **Where blocks, patterns and the setup skill live.** (a) This repository, a package separate from
+   the runtime; (b) their own repository; (c) the blocks here and the setup skill in the core
+   development pack. Recommended: (a) - the blocks and the run contract change together, one CI
+   proves both, and the setup skill must generate against the blocks version it ships with.
+2. **How phase skills reach a slot.** (a) From the control checkout; (b) installed per user, outside
+   any checkout. Recommended: (a) - one version per project, and a pull request never judges itself
+   with its own skill change.
+3. **Wrapper language.** (a) TypeScript in the blocks package, built like the runtime; (b) a plain
    Node script. Recommended: (a) - the repository's conventions and tests already apply.
-6. **Write access for other projects' findings.** (a) A scoped key that can only create queue items;
+4. **Write access for other projects' findings.** (a) A scoped key that can only create queue items;
    (b) the owner relays every finding. Recommended: (a), with intake's name check as the second guard.
