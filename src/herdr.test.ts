@@ -5,7 +5,7 @@ import { createHerdr, herdrRefusal, HerdrRefusal, shellQuote } from './herdr.ts'
 test('the herdr adapter opens its own tab and names it, using the CLI\'s JSON answers', async () => {
   const calls: string[][] = [];
   const answers: Record<string, string> = {
-    'workspace list': JSON.stringify({ result: { workspaces: [{ workspace_id: 'w1', label: 'tradintek-tomis-d1' }, { workspace_id: 'wA', label: 'operator-demo' }] } }),
+    'workspace list': JSON.stringify({ result: { workspaces: [{ workspace_id: 'w1', label: 'project-a-d1' }, { workspace_id: 'wA', label: 'operator-demo' }] } }),
     'tab create': JSON.stringify({ result: { root_pane: { pane_id: 'wA:p3', tab_id: 'wA:t3' }, tab: {} } }),
     'pane get': JSON.stringify({ result: { pane: { agent_status: 'blocked' } } }),
   };

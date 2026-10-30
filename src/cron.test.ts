@@ -3,11 +3,11 @@ import { strict as assert } from 'node:assert';
 import { parseCron } from './cron.ts';
 
 test('matches weekday mornings in the workflow time zone, not in UTC', () => {
-  const schedule = parseCron('0 6 * * 1-5', 'Europe/Vilnius');
-  // 2026-10-23 is a Friday; 06:00 in Vilnius (UTC+3 in October) is 03:00 UTC.
+  const schedule = parseCron('0 6 * * 1-5', 'Europe/Helsinki');
+  // 2026-10-23 is a Friday; 06:00 in Helsinki (UTC+3 in October) is 03:00 UTC.
   assert.equal(schedule.matches(new Date('2026-10-23T03:00:00Z')), true);
   assert.equal(schedule.matches(new Date('2026-10-23T06:00:00Z')), false);
-  // Saturday 06:00 Vilnius.
+  // Saturday 06:00 Helsinki.
   assert.equal(schedule.matches(new Date('2026-10-24T03:00:00Z')), false);
 });
 
