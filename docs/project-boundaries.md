@@ -1,7 +1,6 @@
 # Project boundaries
 
-Status: proposed. Owner decisions are listed at the end; everything above them is the design as
-recommended.
+Status: accepted (owner, 2026-10-30). The decisions it rests on are listed at the end.
 
 The first managed project grew its development workflow inside its own repository: discovery,
 the phase skills, the run contract, the code-host calls, the queue reader and the project's own
@@ -56,7 +55,6 @@ repository; it is rebuilt on the blocks, and only its generic mechanics move.
 | Review result schema | project | **stays** in the project; a copy becomes part of the review pattern reference |
 | Session hooks that refuse to end a session still holding a claim | project | **move** to the blocks (generic claim guard); the project wires them |
 | `dev-deliver-next`, `git-sync-base` | project, staged as a pack | **move** to the core development pack: they are not operator-specific |
-| Prompt overrides carrying a new rule into old slot branches | project manifest | **disappear** once phase skills load from the control checkout (blocker B1) |
 | Live monitoring findings | private notes | **move** to the Operator project's private queue (below) |
 
 ## Building blocks
@@ -106,12 +104,12 @@ notes   [{ id, author, authorRole: owner|member|other, body, createdAt }]
 **Capabilities.** An adapter declares which operations it supports; a missing one is reported as a
 capability gap at start, never emulated silently, because a factor nobody can check is not a factor.
 
-| Port | Required | Optional |
-|---|---|---|
-| `codeHost` | list open PRs with head and mergeability; view one; read checks for a SHA; read threads with their resolved flag; comment; create; mark ready; merge with a method | draft PRs, inline review comments, required-check list |
-| `tracker` | read owner signals since a cursor; project phase and outcome; post a question and read its answer | per-item milestones, assignee |
-| `state` | documents with etags and compare-and-set; leases with expiry; counting slots | TTL cleanup |
-| `queue` | list ready items; take one by compare-and-set; update status and body; file a new item | priorities beyond four levels, attachments |
+| Port | Required |
+|---|---|
+| `codeHost` | list open PRs with head and mergeability; view one; read checks for a SHA; read threads with their resolved flag; comment; create; mark ready; merge with a method |
+| `tracker` | read owner signals since a cursor; project phase and outcome; post a question and read its answer |
+| `state` | documents with etags and compare-and-set; leases with expiry; counting slots |
+| `queue` | list ready items; take one by compare-and-set; update status and body; file a new item |
 
 The GitHub mapping is the one the first project uses today and is the reference adapter. Each other
 provider's mapping is written and verified against that host's documentation when its adapter is
@@ -252,9 +250,12 @@ rules and skills with every project path, name and service replaced by its role.
    tests pass; a dry run of the daemon makes the requests the owner expects for the repository's
    current pull requests and queue.
 
-After generation the workflow belongs to the project: it changes it like any other code. A newer
-blocks version is a dependency upgrade; a revised pattern reference is offered by running the setup
-skill again in review mode, which proposes the difference and changes nothing on its own.
+After generation the workflow belongs to the project: it changes it like any other code, and a
+newer blocks version is a dependency upgrade.
+
+**A change to a workflow never reaches a task in flight.** A pipeline branch runs the phase skills
+and rules it was created with; a change applies to branches started after it. The one exception is
+an engine that is unavailable: the manifest swaps it for every run.
 
 ## Operator for Operator
 
@@ -280,11 +281,10 @@ Blockers, each to be cleared before the daemon takes its first item:
 
 | # | Blocker | Resolution |
 |---|---|---|
-| B1 | A slot session loads phase skills from the pull request's branch, so a rule changed on the integration branch reaches an older branch late, and a pull request changing a phase skill would be judged by its own change | phase skills load from the control checkout; a slot's branch never supplies them |
-| B2 | The daemon would run the code under change | the daemon runs the released package; a merged change takes effect at release and restart, which is a deliberate owner step |
-| B3 | Tests that start daemons or reach herdr or Ainoflow could touch the live instance | tests use the file driver and a temporary herdr scope; live Ainoflow tests use a namespace of their own, never the operator project's |
-| B4 | Findings filed from other projects could carry their names into public pull requests | producers file reduced findings; intake re-checks against the project-name rule before any public text is written |
-| B5 | Milestones, labels and the code host identity do not exist for this repository yet | the setup skill creates the tracker vocabulary the owner chose; the identity is the manifest's configuration, never the user's default |
+| B1 | The daemon would run the code under change | the daemon runs the released package; a merged change takes effect at release and restart, which is a deliberate owner step |
+| B2 | Tests that start daemons or reach herdr or Ainoflow could touch the live instance | tests use the file driver and a temporary herdr scope; live Ainoflow tests use a namespace of their own, never the operator project's |
+| B3 | Findings filed from other projects could carry their names into public pull requests | producers file reduced findings; intake re-checks against the project-name rule before any public text is written |
+| B4 | Milestones, labels and the code host identity do not exist for this repository yet | the setup skill creates the tracker vocabulary the owner chose; the identity is the manifest's configuration, never the user's default |
 
 ## Migration order
 
@@ -305,24 +305,19 @@ Each step leaves the first project running unchanged.
    anonymized. Exit: each names the blocks it uses and what a project supplies.
 5. **Setup skill.** Research, interview, generate, validate. Exit: it regenerates a workflow
    equivalent to the first project's from that repository and recorded answers, as a dry run.
-6. **Dogfood.** Clear B1-B5, run the setup skill on this repository, start the daemon on the private
+6. **Dogfood.** Clear B1-B4, run the setup skill on this repository, start the daemon on the private
    queue. Exit: the acceptance test above.
 7. **More providers.** Each new code host or tracker is an adapter with its capability declaration
    and tests; workflows change only their ports section.
 
-## Owner decisions
+## Decisions
 
-Decided: the Operator project's queue is private, on the `ainoflow` provider in its own namespace
-(owner, 2026-10-30).
+All owner decisions, 2026-10-30. Nothing is open.
 
-1. **Where blocks, patterns and the setup skill live.** (a) This repository, a package separate from
-   the runtime; (b) their own repository; (c) the blocks here and the setup skill in the core
-   development pack. Recommended: (a) - the blocks and the run contract change together, one CI
-   proves both, and the setup skill must generate against the blocks version it ships with.
-2. **How phase skills reach a slot.** (a) From the control checkout; (b) installed per user, outside
-   any checkout. Recommended: (a) - one version per project, and a pull request never judges itself
-   with its own skill change.
-3. **Wrapper language.** (a) TypeScript in the blocks package, built like the runtime; (b) a plain
-   Node script. Recommended: (a) - the repository's conventions and tests already apply.
-4. **Write access for other projects' findings.** (a) A scoped key that can only create queue items;
-   (b) the owner relays every finding. Recommended: (a), with intake's name check as the second guard.
+1. Blocks, pattern references and the setup skill live in this repository, as a package separate
+   from the runtime.
+2. The wrapper CLI is TypeScript in that package, built and tested like the runtime.
+3. The Operator project's queue is private: the `ainoflow` provider in its own namespace.
+4. Other projects file findings with a key that can only create items in that queue; intake checks
+   every item for project names before any public text is written.
+5. A pipeline branch runs the phase skills and rules it was created with (see *The setup skill*).
