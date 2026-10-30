@@ -73,10 +73,6 @@ test('a claude run in a per-subject tab starts its session under a known id, and
   assert.deepEqual(next.slice(0, 2), ['claude', '-p']);
   assert.deepEqual(next.slice(3, 5), ['--resume', id]);
   assert.equal(next.includes('--session-id'), false);
-  // A session with nothing to resume starts new under the same id instead.
-  const fallback = buildCommand(op, { ...context, session: { id, resume: true } }).fallbackArgv ?? [];
-  assert.deepEqual(fallback.slice(3, 5), ['--session-id', id]);
-  assert.equal(buildCommand(op, { ...context, session: { id, resume: false } }).fallbackArgv, undefined);
   assert.deepEqual(next.slice(-4), ['--model', 'opus', '--permission-mode', 'auto']);
   assert.equal(buildCommand(op, context).argv.some((arg) => arg === '--session-id' || arg === '--resume'), false);
 });

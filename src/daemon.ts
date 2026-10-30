@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { mkdir, open, rm } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { claudeSessionExists } from './claude-session.ts';
 import { collectRun, readExit } from './collect.ts';
 import type { OperationResult } from './contract.ts';
 import { OperatorError } from './errors.ts';
@@ -115,7 +115,9 @@ export class Daemon {
   private tabsPending = true;
   private readonly tabsWarned = new Set<string>();
   /** Tabs whose close or reuse waits because someone works in them, since when, and whether the owner was told. */
-  private readonly inUse = new Map<string, { since: number; warned: boolean }>();
+  private readonly inUse = new Map<string, { since: number; warned: boolean; notified: boolean }>();
+  /** Panes herdr last reported `unknown` for: a second `unknown` in a row reads as a shell. */
+  private readonly unknownPanes = new Set<string>();
   private lastSubjectTabRefresh = 0;
   private lastTabRetry = 0;
   private lastPoll = 0;
@@ -469,7 +471,14 @@ export class Daemon {
     // A retained claude tab continues its session; the first run in it starts one under a known id.
     let session: { id: string; resume: boolean } | undefined;
     if (retain && placement.kind === 'herdr' && placement.tabId && placement.paneId && placement.workspace) {
-      session = op.engine === 'claude' ? (kept?.sessionId ? { id: kept.sessionId, resume: true } : { id: randomUUID(), resume: false }) : undefined;
+      // A session whose transcript is missing - its first run never got to start it - is started new
+      // under the same id; one with a transcript is resumed, however its last run ended.
+      if (op.engine === 'claude') {
+        const id = kept?.sessionId ?? randomUUID();
+        const resume = kept?.sessionId !== undefined && claudeSessionExists(cwd, id, { ...process.env, ...op.env });
+        if (kept?.sessionId && !resume) this.log.info('the session to continue has no transcript; starting it under the same id', { job: job.id, session: id });
+        session = { id, resume };
+      }
       const now = new Date().toISOString();
       const record: SubjectTab = { workflow: job.workflow, subject: job.subject, operation: job.operation, ...(member ? { member } : {}), workspaceId: placement.workspace, tabId: placement.tabId, paneId: placement.paneId, ...(session ? { sessionId: session.id } : {}), jobId: job.id, runDir: runDirFor(this.manifest, job), since: kept?.since ?? now, updatedAt: now, refreshedAt: now };
       try {
@@ -583,14 +592,27 @@ export class Daemon {
   private async endSubjects(job: JobRecord, subjects: string[]): Promise<void> {
     for (const { key, value } of await this.backend.docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)) {
       if (value.workflow !== job.workflow || !subjects.includes(value.subject)) continue;
-      await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
-      await this.closeTab(value.jobId, value.tabId, { paneId: value.paneId, runDir: value.runDir, guard: true, ownJob: job.id });
-      this.log.info('the tab of an ended subject is closed, or closes once nobody works in it', { subject: value.subject, operation: value.operation, tab: value.tabId });
+      try {
+        // The tab enters the close retries before it leaves the registry, so a failure between the two
+        // leaves it in one of them; the retries close it once nobody works in it.
+        const now = new Date().toISOString();
+        await this.backend.docs.replace(TABS_COLLECTION, value.tabId, { tabId: value.tabId, jobId: value.jobId, since: now, refreshedAt: now, paneId: value.paneId, runDir: value.runDir, guard: true } satisfies TabRecord, { ttlMs: TAB_RECORD_TTL_MS });
+        this.tabsPending = true;
+        this.lastTabRetry = 0;
+        await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
+        this.log.info('the tab of an ended subject closes once nobody works in it', { subject: value.subject, operation: value.operation, tab: value.tabId });
+      } catch (error) {
+        this.log.warn('could not end a subject\'s tab; a later result naming the subject retries', { subject: value.subject, tab: value.tabId, error: errorText(error) });
+      }
     }
     const workflow = this.manifest.workflows.get(job.workflow);
     for (const op of workflow?.operations.values() ?? []) {
       if (op.thread !== 'per-subject') continue;
-      for (const subject of subjects) await this.backend.docs.delete('threads', stableId('t', job.workflow, op.name, subject));
+      for (const subject of subjects) {
+        await this.backend.docs.delete('threads', stableId('t', job.workflow, op.name, subject)).catch((error: unknown) => {
+          this.log.warn('could not forget an ended subject\'s Codex thread', { subject, operation: op.name, error: errorText(error) });
+        });
+      }
     }
   }
 
@@ -839,8 +861,7 @@ export class Daemon {
       if (outcome.status === 'rejected') this.log.warn('releasing part of a run failed; it expires by itself', { job: jobId, error: errorText(outcome.reason) });
     }
     // A per-subject tab stays for the next run of its operation until its subject ends.
-    if (run.placement.retained) { await this.forgetUnstartedSession(jobId); return; }
-    if (!run.placement.tabId) return;
+    if (!run.placement.tabId || run.placement.retained) return;
     const pane = { ...(run.placement.paneId ? { paneId: run.placement.paneId } : {}), ...(run.runDir ? { runDir: run.runDir } : {}) };
     // A kept tab holds a session a person may be working in, so its close waits for an idle pane; a
     // tab whose run is over holds nothing but a shell.
@@ -848,36 +869,8 @@ export class Daemon {
     else await this.closeTab(jobId, run.placement.tabId, pane);
   }
 
-  /**
-   * A run that ended without a result - failed to start, interrupted, timed out - may never have
-   * created the claude session its tab names, so the next run there starts a new one instead.
-   */
-  private async forgetUnstartedSession(jobId: string): Promise<void> {
-    try {
-      for (const { key, value } of await this.backend.docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION, { where: { jobId } })) {
-        if (!value.sessionId || existsSync(runPath(value.runDir, 'result'))) continue;
-        const { sessionId: _dropped, ...rest } = value;
-        await this.backend.docs.replace(SUBJECT_TABS_COLLECTION, key, { ...rest, updatedAt: new Date().toISOString() }, { ttlMs: SUBJECT_TAB_TTL_MS });
-        this.log.info('forgot a session its run may never have started', { job: jobId, tab: value.tabId });
-      }
-    } catch (error) {
-      this.log.warn('could not forget a session that may never have started', { job: jobId, error: errorText(error) });
-    }
-  }
-
-  /**
-   * Closes a tab now, or records it for a later poll: when herdr does not answer, or - for a `guard`
-   * tab, one a person or a run may still work in - while it is in use. A session in the tab is ended
-   * first, so nothing outlives its tab.
-   */
-  private async closeTab(jobId: string, tabId: string, pane: TabPane & { ownJob?: string } = {}): Promise<void> {
-    const { ownJob, ...record } = pane;
-    if (pane.guard) {
-      const holder = jobId !== ownJob && (await this.jobs.get(jobId))?.status === 'running';
-      const use = holder ? 'in-use' : await this.tabUse(tabId, pane.paneId, jobId);
-      if (use === 'gone') { this.inUse.delete(tabId); return; }
-      if (use === 'in-use') { await this.closeTabLater(jobId, tabId, undefined, record); return; }
-    }
+  /** Closes a finished run's tab now, ending any session left in it, or records it for a later poll when herdr does not answer. */
+  private async closeTab(jobId: string, tabId: string, pane: TabPane = {}): Promise<void> {
     try {
       if (pane.runDir) await this.endSession(pane.runDir);
       await this.herdr.closeTab(tabId);
@@ -886,21 +879,33 @@ export class Daemon {
     } catch (error) {
       this.log.warn('closing the run\'s herdr tab failed; a later poll retries it', { job: jobId, tab: tabId, error: errorText(error) });
     }
-    await this.closeTabLater(jobId, tabId, undefined, record);
+    await this.closeTabLater(jobId, tabId, undefined, pane);
   }
 
-  /** What herdr says of a pane: free (idle, done, or a shell with no agent), gone, or in use. */
-  private async paneUse(paneId: string): Promise<{ use: 'free' | 'in-use' | 'gone'; status: string }> {
+  /**
+   * What herdr says of a pane: free (idle, done, or a shell with no agent), gone, in use, or not yet
+   * known. herdr answers a missing pane with `{"error":{"code":"pane_not_found"}}` on `pane get` (and
+   * `tab_not_found` on `tab close`), checked against herdr itself. It reports `unknown` both for a
+   * shell and for an agent it has not detected yet - one a person just started - so `unknown` counts
+   * as free only on two consecutive answers.
+   */
+  private async paneUse(paneId: string): Promise<{ use: 'free' | 'in-use' | 'gone' | 'confirming'; status: string }> {
     let status: string | undefined;
     try {
       status = await this.herdr.agentStatus(paneId);
     } catch (error) {
+      this.unknownPanes.delete(paneId);
       if (error instanceof HerdrRefusal && (error.reason === 'pane_not_found' || error.reason === 'tab_not_found')) return { use: 'gone', status: error.reason };
       // herdr did not answer: nobody can say the pane is free, so nothing in it is ended yet.
       return { use: 'in-use', status: `unanswered (${errorText(error)})` };
     }
-    // herdr reports `unknown` for a pane with no agent in it: a shell.
-    if (status === 'idle' || status === 'done' || status === 'unknown') return { use: 'free', status };
+    if (status === 'unknown') {
+      if (this.unknownPanes.has(paneId)) return { use: 'free', status };
+      this.unknownPanes.add(paneId);
+      return { use: 'confirming', status };
+    }
+    this.unknownPanes.delete(paneId);
+    if (status === 'idle' || status === 'done') return { use: 'free', status };
     return { use: 'in-use', status: status ?? 'unreported' };
   }
 
@@ -914,20 +919,30 @@ export class Daemon {
     // A tab recorded without its pane, by an older daemon, is closed as it always was.
     if (!paneId) return 'free';
     const { use, status } = await this.paneUse(paneId);
+    if (use === 'confirming') return 'in-use';
     if (use !== 'in-use') { this.inUse.delete(tabId); return use; }
     const now = Date.now();
     const episode = this.inUse.get(tabId);
     if (!episode) {
-      this.inUse.set(tabId, { since: now, warned: false });
+      this.inUse.set(tabId, { since: now, warned: false, notified: false });
       this.log.info('a herdr tab is in use; it is not closed or reused until its pane is idle', { job: jobId, tab: tabId, pane: paneId, status });
       return 'in-use';
     }
     const limit = this.manifest.runtime.idleNudgeMs > 0 ? this.manifest.runtime.idleNudgeMs : IN_USE_WARN_MS;
-    if (!episode.warned && now - episode.since >= limit) {
+    if (now - episode.since < limit) return 'in-use';
+    const minutes = Math.round((now - episode.since) / 60_000);
+    if (!episode.warned) {
       episode.warned = true;
-      const minutes = Math.round((now - episode.since) / 60_000);
       this.log.warn('a herdr tab has been in use a long time; its close or next step still waits', { job: jobId, tab: tabId, pane: paneId, status, minutes });
-      await this.herdr.notify(`operator: tab ${tabId} is still in use`, `pane ${paneId} has been ${status} for ${minutes} min; the next step or its close waits for it`).catch(() => undefined);
+    }
+    // The owner hears of it once per episode; a notification herdr could not deliver is sent again later.
+    if (!episode.notified) {
+      try {
+        await this.herdr.notify(`operator: tab ${tabId} is still in use`, `pane ${paneId} has been ${status} for ${minutes} min; the next step or its close waits for it`);
+        episode.notified = true;
+      } catch (error) {
+        this.log.debug('the long-use notification was not delivered; retrying on a later poll', { tab: tabId, error: errorText(error) });
+      }
     }
     return 'in-use';
   }
@@ -945,19 +960,29 @@ export class Daemon {
     }
   }
 
-  /** Renews a kept record's lifetime, at most once per refresh period, while it still has a tab to close. */
-  private async refreshRecord(collection: string, key: string, value: TabRecord | SubjectTab, now: Date, ttlMs: number): Promise<void> {
-    const last = Date.parse(value.refreshedAt ?? ('updatedAt' in value ? value.updatedAt : value.since));
-    if (now.getTime() - last < RECORD_REFRESH_MS) return;
-    await this.backend.docs.replace(collection, key, { ...value, refreshedAt: now.toISOString() }, { ttlMs }).catch((error: unknown) => {
-      this.log.warn('could not renew a kept tab record; it may expire', { tab: value.tabId, error: errorText(error) });
-    });
+  /**
+   * Renews a kept record's lifetime, at most once per refresh period, while it still has a tab to
+   * close. It re-reads the record and writes only if nothing changed it since, so a record another
+   * step replaced or deleted meanwhile is neither overwritten nor brought back.
+   */
+  private async refreshRecord(collection: string, key: string, now: Date, ttlMs: number): Promise<void> {
+    try {
+      const current = await this.backend.docs.get<TabRecord | SubjectTab>(collection, key);
+      if (!current) return;
+      const value = current.value;
+      const last = Date.parse(value.refreshedAt ?? ('updatedAt' in value ? value.updatedAt : value.since));
+      if (now.getTime() - last < RECORD_REFRESH_MS) return;
+      const outcome = await this.backend.docs.replace(collection, key, { ...value, refreshedAt: now.toISOString() }, { etag: current.etag, ttlMs });
+      if (outcome === 'conflict') this.log.debug('a kept tab record changed while being renewed; left as it is', { collection, key });
+    } catch (error) {
+      this.log.warn('could not renew a kept tab record; it may expire', { collection, key, error: errorText(error) });
+    }
   }
 
   /** Keeps per-subject tab records alive while their tabs stay open, however long a subject lasts. */
   private async refreshSubjectTabs(now: Date): Promise<void> {
-    for (const { key, value } of await this.backend.docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)) {
-      await this.refreshRecord(SUBJECT_TABS_COLLECTION, key, value, now, SUBJECT_TAB_TTL_MS);
+    for (const { key } of await this.backend.docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)) {
+      await this.refreshRecord(SUBJECT_TABS_COLLECTION, key, now, SUBJECT_TAB_TTL_MS);
     }
   }
 
@@ -972,7 +997,7 @@ export class Daemon {
         if (use === 'in-use') {
           left += 1;
           // A close that keeps waiting must not let its record expire into a tab nobody closes.
-          await this.refreshRecord(TABS_COLLECTION, key, value, now, TAB_RECORD_TTL_MS);
+          await this.refreshRecord(TABS_COLLECTION, key, now, TAB_RECORD_TTL_MS);
           continue;
         }
         if (use === 'gone') {

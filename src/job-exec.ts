@@ -9,8 +9,6 @@ import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo
 const HEARTBEAT_MS = 5_000;
 const KILL_GRACE_MS = 10_000;
 const RESULT_POLL_MS = 1_000;
-/** A resumed session failing within this long without a result is taken for one with nothing to resume. */
-const RESUME_FALLBACK_WINDOW_MS = 30_000;
 
 /** Signals the command's whole process group, so a shell's children end with it. */
 export function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -88,12 +86,8 @@ export async function runJobExec(runDir: string): Promise<number> {
   let timedOut = false;
   let closedAfterResult = false;
   let released = false;
-  let stopping = false;
   let current: CommandInfo | undefined;
-  const forward = (signal: NodeJS.Signals): void => {
-    if (signal !== 'SIGINT') stopping = true;
-    if (current) signalCommand(current, signal);
-  };
+  const forward = (signal: NodeJS.Signals): void => { if (current) signalCommand(current, signal); };
   process.on('SIGTERM', forward);
   process.on('SIGHUP', forward);
   // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
@@ -126,6 +120,8 @@ export async function runJobExec(runDir: string): Promise<number> {
           // The pipeline goes on now; the session stays for questions.
           setTimeout(() => {
             released = true;
+            // The run is over for the pipeline: its timeout no longer applies to a session kept for people.
+            clearTimeout(timer);
             const exit: ExitInfo = { exitCode: null, signal: null, timedOut: false, finishedAt: new Date().toISOString(), released: true };
             void writeJsonAtomic(runPath(runDir, 'exit'), exit).catch((error: unknown) => process.stderr.write(`operator: exit.json write failed: ${(error as Error).message}\n`));
             const kept = retain
@@ -156,18 +152,7 @@ export async function runJobExec(runDir: string): Promise<number> {
     });
   });
 
-  const startedAt = Date.now();
-  let exit = await runCommand(launch.argv);
-  // A resumed session that fails at once without a result has nothing to resume - a run before it
-  // never got to create it - so it starts once more as a new session under the same id.
-  const resultPath = launch.env['OPERATOR_RESULT'];
-  if (launch.resumeFallback && !stopping && !released && !exit.timedOut && exit.signal === null && exit.exitCode !== 0
-    && Date.now() - startedAt < RESUME_FALLBACK_WINDOW_MS && !(resultPath && (await resultWritten(resultPath)))) {
-    const note = '\noperator: the session could not be resumed; starting it new under the same id\n';
-    process.stdout.write(note);
-    output.write(note);
-    exit = await runCommand(launch.resumeFallback.argv);
-  }
+  const exit = await runCommand(launch.argv);
 
   clearInterval(heartbeat);
   const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;

@@ -111,7 +111,8 @@ fixtures/demo/    a complete example project used by tests and the live demo
   it runs, never how its end is decided. A kept or per-subject session is handed over instead, and
   ends only when the runtime closes its tab or the next run of its operation takes the tab.
 - The runtime closes a tab, ends a kept session or reuses a per-subject tab only when herdr reports
-  its pane idle, done, without an agent, or gone; working, blocked or no answer wait for a later poll.
+  its pane idle, done, gone, or `unknown` twice in a row; working, blocked or no answer wait for a
+  later poll, however long.
 - The file state driver is for tests and dry runs; a live daemon refuses it unless told explicitly.
 - Every Ainoflow feature the runtime relies on is checked through `/api/v1/capabilities` at start.
 

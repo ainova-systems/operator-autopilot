@@ -65,19 +65,24 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   `endSubjects`; `operator tabs` lists the tabs kept and their sessions, and the records survive a
   daemon restart and are renewed while their tabs stay open. A tab is recorded as soon as it opens,
   so a run that fails to start leaks none. A tab closed by hand is replaced, with a new session, by
-  the next run; a run that ended without a result - failed to start, interrupted, timed out - leaves
-  no session to resume, and a resumed session that fails at once without a result starts once more
-  as a new session under the same id. `keepTab` applies to per-job tabs only.
+  the next run. A session is resumed when claude has its transcript
+  (`<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<cwd as letters, digits and dashes>/<id>.jsonl`), however
+  its last run ended; without one - its first run never got to start it - it starts new under the
+  same id. A session kept after its result no longer has a timeout. `keepTab` applies to per-job tabs
+  only.
 - **Tabs in use.** The runtime closes a tab - a kept tab whose `keepTab` ran out, a per-subject tab
   whose subject ended - or ends the session in a per-subject tab for the next run only when herdr
-  reports the pane `idle`, `done`, `unknown` (no agent: a shell) or gone. `working`, `blocked` or a
-  herdr that does not answer mean someone, usually the owner talking to the session after its
+  reports the pane `idle`, `done`, gone, or `unknown` on two polls in a row (herdr reports `unknown`
+  for a shell, but also for an agent a person just started before it detects it). `working`,
+  `blocked` or a herdr that does not answer mean someone, usually the owner talking to the session after its
   result, may be doing work that closing it would cut off: the close waits for a later poll, an ended
   subject's tab leaves the registry and waits in the close retries, and the next run stays queued,
   saying why. A session on another host, or a pane not back at its shell, also keeps the next run
   waiting. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
-  warning and one owner notification. A kept session is ended by closing its tab, never by its own
-  clock; a tab an older daemon recorded without its pane closes as before.
+  warning and one owner notification, sent again on later polls until herdr delivers it. A pane left
+  working or blocked keeps its tab open for as long as it stays so - the owner is told, and closes
+  or frees it. A kept session is ended by closing its tab, never by its own clock; a tab an older
+  daemon recorded without its pane closes as before.
 - **Notifications.** `notify` lists the final result statuses that raise an owner notification
   (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
   scheduled retry is not final.

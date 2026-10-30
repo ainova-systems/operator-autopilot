@@ -16,13 +16,13 @@ const job = { id: 'j1', subject: 'pr-7', input: {} } as unknown as JobRecord;
 const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
 
 /** A run directory whose command is a node script; `attended` hands it the terminal. */
-async function runDir(script: string, attended: boolean, keepMs = 0): Promise<{ dir: string; resultPath: string }> {
+async function runDir(script: string, attended: boolean, keepMs = 0, timeoutMs = 30_000): Promise<{ dir: string; resultPath: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'operator-exec-'));
   dirs.push(dir);
   const resultPath = runPath(dir, 'result');
   const launch: LaunchSpec = {
     jobId: 'j1', attempt: 1, title: 'pr-7 op:plan', argv: [process.execPath, '-e', script], cwd: dir,
-    env: { OPERATOR_RESULT: resultPath }, timeoutMs: 30_000,
+    env: { OPERATOR_RESULT: resultPath }, timeoutMs,
     ...(attended ? { attended: { resultPath, graceMs: 200, ...(keepMs > 0 ? { keepMs } : {}) } } : {}),
   };
   await writeJsonAtomic(runPath(dir, 'launch'), launch);
@@ -109,4 +109,22 @@ test('a kept session hands its result over at once and stays open until the runt
   await running;
   assert.equal(processAlive(command?.pid ?? 0), false);
   assert.equal((await readJsonFile<ExitInfo>(runPath(dir, 'exit')))?.released, true);
+});
+
+test('a session kept after its result outlives the operation timeout, which ended with the hand-over', async () => {
+  const { dir } = await runDir(`${WRITE_RESULT} setInterval(() => {}, 1000);`, true, 60_000, 1500);
+  const running = runJobExec(dir);
+  let handedOver: ExitInfo | undefined;
+  for (let i = 0; i < 40 && !handedOver; i += 1) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    handedOver = await readJsonFile<ExitInfo>(runPath(dir, 'exit'));
+  }
+  const command = await readJsonFile<CommandInfo>(runPath(dir, 'command'));
+  await new Promise((resolveWait) => setTimeout(resolveWait, 2500));
+  assert.equal(processAlive(command?.pid ?? 0), true, 'the timeout no longer ends a session someone may work in');
+  process.kill(command?.pid ?? 0, 'SIGTERM');
+  await running;
+  const exit = await readJsonFile<ExitInfo>(runPath(dir, 'exit'));
+  assert.equal(exit?.released, true);
+  assert.equal(exit?.timedOut, false);
 });
