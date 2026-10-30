@@ -80,7 +80,7 @@ project's process is in the wrong repository.
 
 ```
 src/
-  cli.ts          the operator CLI (validate, run, trigger, enqueue, jobs, job, waits, state, job-exec)
+  cli.ts          the operator CLI (validate, run, trigger, enqueue, jobs, job, waits, state, claim, queue, job-exec)
   manifest.ts     operator.yaml: workflows, triggers (every/cron/on), operations, pools; all problems at once
   contract.ts     contract 1: the input file every run gets, the result file it writes back
   daemon.ts       leader lease, timers, dispatch into pools, observe runs, collect results, restart adoption
@@ -92,6 +92,8 @@ src/
   engines.ts      argv for command / claude -p, or a claude session when attended / codex exec (resume per subject)
   herdr.ts        the herdr CLI calls: own tab, metadata, run, close, status, notification
   pause.ts        the control/pause record the daemon reads before it starts anything
+  claims.ts       compare-and-set leases on opaque subjects (reserved collection subject-claims)
+  queue.ts        a private work queue with fixed status transitions (reserved collection work-queue)
   service.ts      the systemd user unit and `operator service` install / uninstall / status
   state/          one interface; ainoflow.ts (HTTP) and file.ts (tests and dry runs only)
 fixtures/demo/    a complete example project used by tests and the live demo

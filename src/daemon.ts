@@ -15,7 +15,7 @@ import type { Manifest, OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
 import { Pools } from './pools.ts';
 import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
-import type { StateBackend } from './state/types.ts';
+import type { Acquired, StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
 import { WaitStore } from './waits.ts';
 
@@ -35,6 +35,8 @@ const START_GRACE_MS = 60_000;
 const MAX_INTERRUPTIONS = 3;
 const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
+// A dispatch the state backend failed is tried again after this, not on every poll.
+const BACKEND_RETRY_MS = 30_000;
 const TAB_RECORD_TTL_MS = 7 * 86_400_000;
 /** Nudges an idle interactive session gets before the owner is told. */
 const IDLE_NUDGES = 2;
@@ -409,18 +411,31 @@ export class Daemon {
       const member = decision.member ?? this.pools.member(hold);
       if (member) { cwd = member.cwd; herdrWorkspace = member.herdr; }
     }
-    if (op.limit) {
-      const decision = await this.pools.acquire(op.limit, job.id);
-      if (!decision.granted) {
-        if (hold) await this.pools.release(job.id, hold);
-        await queue(decision.waitingFor, decision.retryAfterMs);
-        return;
-      }
-      limitHold = decision.hold;
-    }
-
     const leaseKey = `run.${job.id}`;
-    const lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
+    let lease: Acquired;
+    try {
+      if (op.limit) {
+        const decision = await this.pools.acquire(op.limit, job.id);
+        if (!decision.granted) {
+          if (hold) await this.pools.release(job.id, hold);
+          await queue(decision.waitingFor, decision.retryAfterMs);
+          return;
+        }
+        limitHold = decision.hold;
+      }
+      lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
+    } catch (error) {
+      // The state backend failed before the run was recorded: give back what this dispatch holds,
+      // or the workspace would read busy for this job until the daemon restarts, and try again later.
+      for (const taken of [hold, limitHold]) {
+        if (!taken) continue;
+        await this.pools.release(job.id, taken).catch((releaseError: unknown) => {
+          this.log.warn('releasing part of a run failed; it expires by itself', { job: job.id, error: errorText(releaseError) });
+        });
+      }
+      this.deferred.set(job.id, now.getTime() + BACKEND_RETRY_MS);
+      throw error;
+    }
     if (!lease.acquired) {
       if (hold) await this.pools.release(job.id, hold);
       if (limitHold) await this.pools.release(job.id, limitHold);
