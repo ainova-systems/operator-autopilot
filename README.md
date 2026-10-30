@@ -7,7 +7,8 @@ sees them working, or attends an interactive session there.
 
 The runtime knows operations, triggers, pools, state and delivery. It does not know milestones,
 labels, pull requests or merge rules: those live in the project's own scripts and skills, which
-return a small versioned result and may request the next operation.
+return a small versioned result and may request the next operation. Where the line between the
+runtime, the development workflow and a project runs is [docs/project-boundaries.md](docs/project-boundaries.md).
 
 ## How it works
 
