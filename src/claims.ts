@@ -44,14 +44,26 @@ export async function takeClaim(docs: DocStore, subject: string, run: string, tt
   checkRun(run);
   const at = now.toISOString();
   const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+  let recovered = false;
   for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
     const current = await docs.get<ClaimRecord>(CLAIMS_COLLECTION, subject);
     if (current && claimIsLive(current.value, now) && current.value.run !== run) return { ok: false, reason: 'held', holder: current.value };
     const sameRun = current !== undefined && claimIsLive(current.value, now) && current.value.run === run;
     const claim: ClaimRecord = { subject, run, takenAt: sameRun ? current.value.takenAt : at, renewedAt: at, expiresAt };
-    const outcome = current
-      ? await docs.replace(CLAIMS_COLLECTION, subject, claim, { etag: current.etag, ttlMs: storeTtl(ttlMs) })
-      : (await docs.create(CLAIMS_COLLECTION, subject, claim, storeTtl(ttlMs))) === 'created' ? 'written' : 'conflict';
+    let outcome: 'written' | 'conflict';
+    if (current) {
+      outcome = await docs.replace(CLAIMS_COLLECTION, subject, claim, { etag: current.etag, ttlMs: storeTtl(ttlMs) });
+    } else {
+      try {
+        outcome = (await docs.create(CLAIMS_COLLECTION, subject, claim, storeTtl(ttlMs))) === 'created' ? 'written' : 'conflict';
+      } catch (error) {
+        // A store may answer the loser of two simultaneous creates with an error instead of a
+        // conflict. Once, a record that is there now is read like any other; none there is a failure.
+        if (recovered || !(await docs.get<ClaimRecord>(CLAIMS_COLLECTION, subject))) throw error;
+        recovered = true;
+        outcome = 'conflict';
+      }
+    }
     if (outcome === 'written') return { ok: true, claim };
   }
   throw new OperatorError('CLAIM_CONTENDED', `subject ${subject}: the claim kept changing under ${CAS_ATTEMPTS} attempts`);

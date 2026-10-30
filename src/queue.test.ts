@@ -82,3 +82,13 @@ test('an item handed back to the queue forgets who took it', async () => {
   assert.equal(canMove('cancelled', 'ready'), false);
   assert.equal(canMove('blocked', 'ready'), true);
 });
+
+test('an add the store answers with an error is kept when it landed, and fails when nothing did', async () => {
+  const docs = await store();
+  const outage = new Error('store answered 500');
+  const landedThenErrored: DocStore = { ...docs, async create(collection, key, value, ttlMs) { await docs.create(collection, key, value, ttlMs); throw outage; } };
+  const item = await addQueueItem(landedThenErrored, { title: 'Fix a lost wait', body: 'spec' });
+  assert.equal((await getQueueItem(docs, item.id)).value.title, 'Fix a lost wait');
+  const failing: DocStore = { ...docs, async create() { throw outage; } };
+  await assert.rejects(addQueueItem(failing, { title: 'Fix a stale claim', body: 'spec' }), /store answered 500/);
+});

@@ -93,3 +93,25 @@ test('a run id is checked before anything is written', async () => {
   await assert.rejects(takeClaim(docs, 'a', 'run with spaces', HOUR), /run id/);
   assert.equal(await showClaim(docs, 'a'), undefined);
 });
+
+test('a create the store answers with an error is read again: a record another taker wrote is a holder, none is a failure', async () => {
+  const docs = await store();
+  const now = at('2026-10-30T10:00:00Z');
+  const outage = new Error('store answered 500');
+  // The losing side of two simultaneous creates: the winner's record lands, this create errors.
+  const losing: DocStore = {
+    ...docs,
+    async create(collection, key, value, ttlMs) {
+      await docs.create(collection, key, { ...(value as ClaimRecord), run: 'run-winner' }, ttlMs);
+      throw outage;
+    },
+  };
+  const lost = await takeClaim(losing, 'item-10', 'run-loser', HOUR, now);
+  assert.equal(!lost.ok && lost.reason === 'held' && lost.holder.run, 'run-winner');
+  // An error with nothing written is a genuine failure, and so is a re-read that fails too.
+  const failing: DocStore = { ...docs, async create() { throw outage; } };
+  await assert.rejects(takeClaim(failing, 'item-11', 'run-a', HOUR, now), /store answered 500/);
+  let reads = 0;
+  const unreachable: DocStore = { ...docs, async get(collection, key) { reads += 1; if (reads > 1) throw new Error('store unreachable'); return docs.get(collection, key); }, async create() { throw outage; } };
+  await assert.rejects(takeClaim(unreachable, 'item-12', 'run-a', HOUR, now), /store unreachable/);
+});

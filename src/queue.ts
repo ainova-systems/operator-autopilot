@@ -40,6 +40,7 @@ const TRANSITIONS: Record<QueueStatus, readonly QueueStatus[]> = {
 };
 
 const TAKEABLE: readonly QueueStatus[] = ['ready', 'needs-decision'];
+const ADD_ATTEMPTS = 5;
 
 function oneOf<T extends string>(allowed: readonly T[], value: string, field: string): T {
   if (!(allowed as readonly string[]).includes(value)) throw new OperatorError('INVALID_QUEUE_ITEM', `${field} must be one of ${allowed.join(', ')}, got ${JSON.stringify(value)}`);
@@ -72,7 +73,7 @@ export async function addQueueItem(docs: DocStore, input: NewQueueItem, now: Dat
   const status = input.status ?? 'ready';
   if (!['ready', 'needs-decision', 'blocked'].includes(status)) throw new OperatorError('INVALID_QUEUE_ITEM', `a new item starts ready, needs-decision or blocked, not ${status}`);
   const at = now.toISOString();
-  for (;;) {
+  for (let attempt = 0; attempt < ADD_ATTEMPTS; attempt += 1) {
     const item: QueueItem = {
       id: newId(now),
       title: input.title.trim(),
@@ -83,8 +84,17 @@ export async function addQueueItem(docs: DocStore, input: NewQueueItem, now: Dat
       createdAt: at,
       updatedAt: at,
     };
-    if ((await docs.create(QUEUE_COLLECTION, item.id, item)) === 'created') return item;
+    try {
+      if ((await docs.create(QUEUE_COLLECTION, item.id, item)) === 'created') return item;
+    } catch (error) {
+      // An error from the store leaves the outcome unknown: the item there now is this one when its
+      // content matches, another writer's when it does not (a fresh id is tried), and none is a failure.
+      const there = await docs.get<QueueItem>(QUEUE_COLLECTION, item.id);
+      if (!there) throw error;
+      if (JSON.stringify(there.value) === JSON.stringify(item)) return item;
+    }
   }
+  throw new OperatorError('QUEUE_CONTENDED', `no free item id after ${ADD_ATTEMPTS} attempts`);
 }
 
 /** Items, most urgent first, oldest first within a priority. */
