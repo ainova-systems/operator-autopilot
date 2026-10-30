@@ -152,7 +152,13 @@ async function extend(store: ClaimStore, record: StoredClaim, etag: string, ttlM
         await endLock(store.locks, record.subject, record.token);
         return 'released';
       }
-      return current?.value.run === record.run ? publicView(current.value) : undefined;
+      if (!current) {
+        // The record vanished: nobody could name this run as the holder, so the lock this renewal
+        // extended must not keep the subject.
+        await endLock(store.locks, record.subject, record.token);
+        return undefined;
+      }
+      return current.value.run === record.run ? publicView(current.value) : undefined;
     }
     if (outcome === 'lifetime-exceeded') return undefined;
   } else if (await store.locks.exists(lockKey(record.subject))) {
@@ -183,11 +189,13 @@ export async function takeClaim(store: ClaimStore, subject: string, run: string,
   const taken = await acquire(store, subject, run, ttl, clock);
   if (taken) return { ok: true, claim: taken };
   const record = await readRecord(store.docs, subject);
+  let justReleased = record?.value.releasedAt !== undefined && clock().getTime() - Date.parse(record.value.releasedAt) < 2 * END_MS;
   if (record && record.value.run === run && record.value.releasedAt === undefined) {
     const renewed = await extend(store, record.value, record.etag, ttl, clock);
-    if (renewed && renewed !== 'released') return { ok: true, claim: renewed };
+    if (renewed === 'released') justReleased = true;
+    else if (renewed) return { ok: true, claim: renewed };
   }
-  if (record?.value.releasedAt !== undefined && clock().getTime() - Date.parse(record.value.releasedAt) < 2 * END_MS) {
+  if (justReleased) {
     await sleep(END_MS + 100);
     const retaken = await acquire(store, subject, run, ttl, clock);
     if (retaken) return { ok: true, claim: retaken };

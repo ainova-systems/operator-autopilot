@@ -417,6 +417,41 @@ test('a run lease the state backend fails to grant gives the workspace back for 
   assert.ok(p.lines.some((line) => line.includes('starting a queued job failed')));
 });
 
+test('a run lease that throws after a limit slot was granted frees the slot and waits before trying again', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const job = await inSlot(p, 'peek', 'pr-3', 's1');
+  let attempts = 0;
+  const backend = { ...p.backend, locks: { ...p.backend.locks, async acquire(key: string, ttlMs: number, reference?: string) {
+    if (key === `run.${job.id}`) { attempts += 1; throw new Error('lock service answered 503'); }
+    return p.backend.locks.acquire(key, ttlMs, reference);
+  } } };
+  const daemon = p.daemon({ backend });
+  await daemon.acquireLeader();
+  await daemon.poll();
+  await daemon.poll();
+  // One attempt, then a deferral; and the limit pool's single slot is free again.
+  assert.equal(attempts, 1);
+  const slot = await p.backend.slots.acquire('pool.checks', 1, 60_000);
+  assert.equal(slot.granted, true);
+});
+
+test('a hold that cannot be given back after a failed run lease is logged, not swallowed', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const job = await inSlot(p, 'peek', 'pr-4', 's1');
+  const backend = {
+    ...p.backend,
+    locks: { ...p.backend.locks, async acquire(key: string, ttlMs: number, reference?: string) {
+      if (key === `run.${job.id}`) throw new Error('lock service answered 503');
+      return p.backend.locks.acquire(key, ttlMs, reference);
+    } },
+    slots: { ...p.backend.slots, async release() { throw new Error('guard answered 503'); } },
+  };
+  const daemon = p.daemon({ backend });
+  await daemon.acquireLeader();
+  await daemon.poll();
+  assert.ok(p.lines.some((line) => line.includes('releasing part of a run failed; it expires by itself') && line.includes('guard answered 503')));
+});
+
 test('a read job shares the member a write job holds, and holds its limit pool', async () => {
   const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
   const daemon = p.daemon();

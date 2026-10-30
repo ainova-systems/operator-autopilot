@@ -249,3 +249,36 @@ test('a renewal racing its own run\'s release does not bring the claim back', as
   assert.equal((await showClaim(store, 'r', () => clock.now)).claim?.releasedAt !== undefined, true);
   assert.equal(locks.ttlOf('claim.r'), 1000);
 });
+
+test('a renewal whose record vanished meanwhile ends the lock it just extended', async () => {
+  const { store, clock, locks, docs } = await setup('2026-10-30T10:00:00Z');
+  await takeClaim(store, 'v', 'run-a', HOUR, () => clock.now);
+  const vanishing: LockStore = { ...locks, async renew(key, token, ttlMs) {
+    const outcome = await locks.renew(key, token, ttlMs);
+    if (ttlMs > 1000) await docs.delete('subject-claims', 'v');
+    return outcome;
+  } };
+  const renewed = await renewClaim({ docs, locks: vanishing }, 'v', 'run-a', HOUR, () => clock.now);
+  assert.deepEqual(renewed, { ok: false, reason: 'held' });
+  assert.equal(locks.ttlOf('claim.v'), 1000);
+});
+
+test('a take racing its own run\'s release waits for the released lock and takes it again', async () => {
+  const started = Date.now();
+  const clock = { get now(): Date { return new Date(Date.parse('2026-10-30T10:00:00Z') + Date.now() - started); } };
+  const dir = await mkdtemp(join(tmpdir(), 'operator-claims-'));
+  dirs.push(dir);
+  const locks = fakeLocks(clock);
+  const store: ClaimStore = { docs: createFileBackend(dir, 'demo').docs, locks };
+  await takeClaim(store, 'own', 'run-a', HOUR, () => clock.now);
+  // The release lands between the take's lock extension and its record write.
+  let raced = false;
+  const racing: LockStore = { ...locks, async renew(key, token, ttlMs) {
+    const outcome = await locks.renew(key, token, ttlMs);
+    if (!raced && ttlMs > 1000) { raced = true; await releaseClaim(store, 'own', 'run-a', () => clock.now); }
+    return outcome;
+  } };
+  const taken = await takeClaim({ docs: store.docs, locks: racing }, 'own', 'run-a', HOUR, () => clock.now);
+  assert.equal(taken.ok && taken.claim.run, 'run-a');
+  assert.equal(taken.ok && taken.claim.releasedAt, undefined);
+});

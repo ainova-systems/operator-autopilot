@@ -34,6 +34,8 @@ const START_GRACE_MS = 60_000;
 const MAX_INTERRUPTIONS = 3;
 const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
+// A dispatch the state backend failed is tried again after this, not on every poll.
+const BACKEND_RETRY_MS = 30_000;
 const TAB_RECORD_TTL_MS = 7 * 86_400_000;
 /** Nudges an idle interactive session gets before the owner is told. */
 const IDLE_NUDGES = 2;
@@ -366,9 +368,14 @@ export class Daemon {
       lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
     } catch (error) {
       // The state backend failed before the run was recorded: give back what this dispatch holds,
-      // or the workspace would read busy for this job until the daemon restarts.
-      if (hold) await this.pools.release(job.id, hold).catch(() => undefined);
-      if (limitHold) await this.pools.release(job.id, limitHold).catch(() => undefined);
+      // or the workspace would read busy for this job until the daemon restarts, and try again later.
+      for (const taken of [hold, limitHold]) {
+        if (!taken) continue;
+        await this.pools.release(job.id, taken).catch((releaseError: unknown) => {
+          this.log.warn('releasing part of a run failed; it expires by itself', { job: job.id, error: errorText(releaseError) });
+        });
+      }
+      this.deferred.set(job.id, now.getTime() + BACKEND_RETRY_MS);
       throw error;
     }
     if (!lease.acquired) {
