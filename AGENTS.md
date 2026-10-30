@@ -104,7 +104,8 @@ fixtures/demo/    a complete example project used by tests and the live demo
   never the runtime's inference.
 - A run is collected from its run directory, never from screen state. A restarted daemon adopts a
   live run and re-runs one whose wrapper died; it never starts the same attempt twice.
-- The runtime never answers an agent prompt; a `blocked` pane raises a notification.
+- The runtime never answers an agent prompt; a `blocked` pane raises a notification. The one message
+  it types is the idle nudge, to an interactive session that sits without a result (`runtime.idleNudge`).
 - An interactive run is collected like any other: its result file is the proof. The wrapper ends the
   session after that file is written, because the slot goes to the next run; the terminal is where
   it runs, never how its end is decided.

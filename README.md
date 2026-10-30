@@ -57,7 +57,11 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   scheduled retry is not final.
 - **herdr.** `placement: herdr` opens a tab of the runtime's own in the target workspace and runs the
   wrapper there. Screen state is only a hint; a `blocked` agent raises a notification and is never
-  answered by the runtime. Without herdr the run degrades to headless and the job record says so.
+  answered by the runtime. An interactive session whose pane reads `done` or `idle` for
+  `runtime.idleNudge` (default 20m, `off` to disable) without a result is asked, in the session, to
+  write its result or say what it waits for; after two such nudges the owner is notified once. A
+  session waiting on its own background work answers and keeps waiting. Without herdr the run
+  degrades to headless and the job record says so.
   A tab herdr cannot close when its run ends is closed on a later poll; one closed by hand counts
   as closed.
 

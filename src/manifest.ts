@@ -88,6 +88,8 @@ export interface Manifest {
     tickMs: number;
     pollMs: number;
     leaseTtlMs: number;
+    /** An interactive session idle this long without a result is nudged; 0 (`idleNudge: off`) turns it off. */
+    idleNudgeMs: number;
     retentionMs: { done: number; noop: number; failed: number; waiting: number };
   };
   herdr: { workspace?: string };
@@ -363,7 +365,7 @@ export function parseManifest(text: string, path: string): LoadedManifest {
   }
 
   const runtimeRaw = reader.object(raw, 'runtime', 'manifest');
-  reader.unknownKeys(runtimeRaw, ['stateDir', 'tick', 'poll', 'leaseTtl', 'retention'], 'runtime');
+  reader.unknownKeys(runtimeRaw, ['stateDir', 'tick', 'poll', 'leaseTtl', 'idleNudge', 'retention'], 'runtime');
   const retentionRaw = reader.object(runtimeRaw, 'retention', 'runtime');
   reader.unknownKeys(retentionRaw, ['done', 'noop', 'failed', 'waiting'], 'runtime.retention');
   const stateDir = reader.string(runtimeRaw, 'stateDir', 'runtime');
@@ -401,6 +403,7 @@ export function parseManifest(text: string, path: string): LoadedManifest {
       tickMs: reader.duration(runtimeRaw, 'tick', 'runtime', 5_000),
       pollMs: reader.duration(runtimeRaw, 'poll', 'runtime', 10_000),
       leaseTtlMs: reader.duration(runtimeRaw, 'leaseTtl', 'runtime', 120_000),
+      idleNudgeMs: runtimeRaw['idleNudge'] === 'off' ? 0 : reader.duration(runtimeRaw, 'idleNudge', 'runtime', 20 * 60_000),
       retentionMs: {
         done: reader.duration(retentionRaw, 'done', 'runtime.retention', 14 * DAY),
         noop: reader.duration(retentionRaw, 'noop', 'runtime.retention', DAY),

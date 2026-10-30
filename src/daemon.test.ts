@@ -494,3 +494,63 @@ test('a pause ends when the service starts again', async () => {
   await discover(p, 't1');
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'discover'))[0]?.status === 'noop');
 });
+
+async function idleSessionProject(): Promise<TestProject> {
+  const p = await project({ extraOperations: '      idle:     { kind: interactive, engine: command, command: node scripts/idle.mjs, placement: herdr, timeout: 5m }' });
+  await writeFile(join(p.root, 'scripts', 'idle.mjs'), [
+    "import { existsSync } from 'node:fs';",
+    "import { join } from 'node:path';",
+    "import { dataDir, describeIfAsked, writeResult } from './lib.mjs';",
+    'describeIfAsked();',
+    "const release = join(dataDir(), 'release');",
+    "const timer = setInterval(() => { if (existsSync(release)) { writeResult({ status: 'done', message: 'released' }); clearInterval(timer); } }, 100);",
+  ].join('\n'));
+  p.manifest.runtime.idleNudgeMs = 300;
+  return p;
+}
+
+test('an idle interactive session without a result is nudged twice, then the owner is told once', async () => {
+  const p = await idleSessionProject();
+  const notes: string[] = [];
+  const typed: string[] = [];
+  const base = hostingHerdr(notes);
+  const daemon = p.daemon({ herdr: {
+    ...base,
+    agentStatus: async () => 'done',
+    runInPane: async (pane, command) => { if (command.startsWith('operator:')) typed.push(command); else await base.runInPane(pane, command); },
+  } });
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'idle', subject: 'pr-9', input: {}, trigger: { id: 'idle-1', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => notes.some((note) => note.includes('is idle')), 30_000);
+  assert.equal(typed.length, 2);
+  assert.match(typed[0] ?? '', /idle for \d+ min without a result.*write your result now.*waiting on a subagent/);
+  assert.equal(notes.filter((note) => note.includes('is idle')).length, 1);
+  assert.ok(p.lines.some((line) => line.includes('nudged an idle session that has no result yet')));
+  assert.ok(p.lines.some((line) => line.includes('an idle session still has no result after being nudged')));
+  for (let i = 0; i < 5; i += 1) { await daemon.poll(); await sleep(500); }
+  assert.equal(typed.length, 2);
+  assert.equal(notes.filter((note) => note.includes('is idle')).length, 1);
+  await writeFile(join(p.data, 'release'), '1');
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'idle', 'pr-9'))[0]?.status === 'done', 30_000);
+});
+
+test('a working session is never nudged, and idleNudge off turns nudging off', async () => {
+  for (const [status, nudgeMs] of [['working', 300], ['done', 0]] as const) {
+    const p = await idleSessionProject();
+    p.manifest.runtime.idleNudgeMs = nudgeMs;
+    const typed: string[] = [];
+    const base = hostingHerdr();
+    const daemon = p.daemon({ herdr: {
+      ...base,
+      agentStatus: async () => status,
+      runInPane: async (pane, command) => { if (command.startsWith('operator:')) typed.push(command); else await base.runInPane(pane, command); },
+    } });
+    await daemon.acquireLeader();
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'idle', subject: 'pr-9', input: {}, trigger: { id: `idle-${status}`, name: 'test', kind: 'manual' } });
+    const deadline = Date.now() + 7_000;
+    while (Date.now() < deadline) { await daemon.poll(); await sleep(200); }
+    assert.deepEqual(typed, [], `${status} / ${nudgeMs}`);
+    await writeFile(join(p.data, 'release'), '1');
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'idle', 'pr-9'))[0]?.status === 'done', 30_000);
+  }
+});
