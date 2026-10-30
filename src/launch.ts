@@ -24,6 +24,11 @@ export function jobTitle(job: JobRecord): string {
   return `${job.subject ? `${job.subject} ` : ''}op:${job.operation}`;
 }
 
+/** The run directory of a job's current attempt. */
+export function runDirFor(manifest: Manifest, job: JobRecord): string {
+  return join(manifest.runtime.stateDir, 'runs', job.id, `a${job.attempt}`);
+}
+
 /** How long an attended session keeps its terminal after the result file appears, to finish its last message. */
 export const ATTENDED_CLOSE_GRACE_MS = 5_000;
 
@@ -32,7 +37,7 @@ export const ATTENDED_CLOSE_GRACE_MS = 5_000;
  * an interactive operation that got its terminal; one that did not runs as an agent.
  */
 export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean; attended?: boolean; member?: string; session?: { id: string; resume: boolean }; retain?: boolean }): Promise<PreparedRun> {
-  const runDir = join(manifest.runtime.stateDir, 'runs', job.id, `a${job.attempt}`);
+  const runDir = runDirFor(manifest, job);
   await rm(runDir, { recursive: true, force: true });
   await mkdir(runDir, { recursive: true });
   const inputPath = runPath(runDir, 'input');
@@ -80,6 +85,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
       ...(options.attended ? { OPERATOR_ATTENDED: '1' } : {}),
     },
     timeoutMs: op.timeoutMs,
+    ...(command.fallbackArgv ? { resumeFallback: { argv: command.fallbackArgv } } : {}),
     ...(options.retain ? { retainedTab: true } : {}),
     ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS, ...(options.retain ? { retain: true } : op.keepTabMs > 0 ? { keepMs: op.keepTabMs } : {}) } } : {}),
     ...(manifest.envFile ? { envFile: manifest.envFile } : {}),

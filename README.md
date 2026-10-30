@@ -60,16 +60,24 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   ended. A `claude` run starts its session under a runtime-chosen `--session-id`, and the next run in
   the tab continues it with `--resume`, so a step that needs more work picks up where it stopped;
   other operations keep tabs and sessions of their own, so a reviewer never shares the implementer's
-  context. The tab stays open until a result names its subject in `endSubjects`; `operator tabs`
-  lists the tabs kept and their sessions, and the record survives a daemon restart. A tab closed by
-  hand is replaced, with a new session, by the next run; a run that wrote no result leaves no
-  session to resume. `keepTab` applies to per-job tabs only.
-- **Tabs in use.** The runtime never closes a tab - a kept tab whose `keepTab` ran out, a
-  per-subject tab whose subject ended - and never ends the session in a per-subject tab for the next
-  run while herdr reports the pane `working` or `blocked`: someone, usually the owner talking to the
-  session after its result, is doing work that closing it would cut off. The close waits for a later
-  poll and the next run stays queued, saying why, until the pane is idle. A kept session is ended by
-  closing its tab, never by its own clock.
+  context. One conversation per key: while a run of the key still works in the tab, the next one
+  waits rather than forking it. The tab stays open until a result names its subject in
+  `endSubjects`; `operator tabs` lists the tabs kept and their sessions, and the records survive a
+  daemon restart and are renewed while their tabs stay open. A tab is recorded as soon as it opens,
+  so a run that fails to start leaks none. A tab closed by hand is replaced, with a new session, by
+  the next run; a run that ended without a result - failed to start, interrupted, timed out - leaves
+  no session to resume, and a resumed session that fails at once without a result starts once more
+  as a new session under the same id. `keepTab` applies to per-job tabs only.
+- **Tabs in use.** The runtime closes a tab - a kept tab whose `keepTab` ran out, a per-subject tab
+  whose subject ended - or ends the session in a per-subject tab for the next run only when herdr
+  reports the pane `idle`, `done`, `unknown` (no agent: a shell) or gone. `working`, `blocked` or a
+  herdr that does not answer mean someone, usually the owner talking to the session after its
+  result, may be doing work that closing it would cut off: the close waits for a later poll, an ended
+  subject's tab leaves the registry and waits in the close retries, and the next run stays queued,
+  saying why. A session on another host, or a pane not back at its shell, also keeps the next run
+  waiting. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
+  warning and one owner notification. A kept session is ended by closing its tab, never by its own
+  clock; a tab an older daemon recorded without its pane closes as before.
 - **Notifications.** `notify` lists the final result statuses that raise an owner notification
   (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
   scheduled retry is not final.

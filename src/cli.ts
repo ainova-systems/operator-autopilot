@@ -251,7 +251,7 @@ async function commandWaits(values: Values): Promise<number> {
   return 0;
 }
 
-/** Pauses the project; with --wait returns once no job runs (0), or after --timeout (3). */
+/** Lists the per-subject herdr tabs the runtime keeps, with their sessions. */
 async function commandTabs(values: Values): Promise<number> {
   const manifest = load(values);
   const tabs = (await openForCommand(manifest).docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)).map((item) => item.value).sort((a, b) => a.since.localeCompare(b.since));
@@ -259,6 +259,7 @@ async function commandTabs(values: Values): Promise<number> {
   return 0;
 }
 
+/** Pauses the project; with --wait returns once no job runs (0), or after --timeout (3). */
 async function commandPause(values: Values): Promise<number> {
   const manifest = load(values);
   const docs = openForCommand(manifest).docs;

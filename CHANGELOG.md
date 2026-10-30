@@ -2,14 +2,7 @@
 
 ## [Unreleased]
 
-- `tabs: per-subject` keeps one herdr tab per subject, operation and workspace member: later runs of
-  the operation for the subject run in it, a `claude` run continues the same session (`--session-id`,
-  then `--resume`), and the tab closes when a result names the subject in the new optional
-  `endSubjects` field. `operator tabs` lists them. The default, `per-job`, is unchanged.
-- The runtime never closes a tab, ends a kept session or reuses a per-subject tab while herdr reports
-  its pane `working` or `blocked`; it retries on a later poll. A kept session no longer ends by its
-  own `keepTab` clock: closing its tab ends it.
-- A session whose result is written is no longer nudged while it hands the result over.
+- `tabs: per-subject` keeps one herdr tab and claude session per subject and operation until a result names the subject in `endSubjects` (`operator tabs` lists them), and no tab is closed, reused or has its session ended unless herdr reports its pane idle, done or gone - a kept `keepTab` session now ends when its tab closes, also for tabs an older daemon recorded.
 
 ## [0.7.0]
 

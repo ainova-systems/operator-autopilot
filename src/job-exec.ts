@@ -9,6 +9,8 @@ import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo
 const HEARTBEAT_MS = 5_000;
 const KILL_GRACE_MS = 10_000;
 const RESULT_POLL_MS = 1_000;
+/** A resumed session failing within this long without a result is taken for one with nothing to resume. */
+const RESUME_FALLBACK_WINDOW_MS = 30_000;
 
 /** Signals the command's whole process group, so a shell's children end with it. */
 export function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -82,14 +84,25 @@ export async function runJobExec(runDir: string): Promise<number> {
   process.stdout.write(banner);
   output.write(banner);
 
-  const [command, ...args] = launch.argv;
   const attended = launch.attended;
   let timedOut = false;
   let closedAfterResult = false;
   let released = false;
-  const exit = await new Promise<ExitInfo>((resolveExit) => {
+  let stopping = false;
+  let current: CommandInfo | undefined;
+  const forward = (signal: NodeJS.Signals): void => {
+    if (signal !== 'SIGINT') stopping = true;
+    if (current) signalCommand(current, signal);
+  };
+  process.on('SIGTERM', forward);
+  process.on('SIGHUP', forward);
+  // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
+  process.on('SIGINT', attended ? () => undefined : forward);
+  const runCommand = (argv: string[]): Promise<ExitInfo> => new Promise<ExitInfo>((resolveExit) => {
+    const [command, ...args] = argv;
     const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: attended ? 'inherit' : ['ignore', 'pipe', 'pipe'], detached: !attended });
     const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
+    current = info;
     if (info) void writeJsonAtomic(runPath(runDir, 'command'), info).catch(() => undefined);
     child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); });
     child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); });
@@ -129,11 +142,6 @@ export async function runJobExec(runDir: string): Promise<number> {
         setTimeout(() => { closedAfterResult = true; end(); }, attended.graceMs).unref();
       }, (error: unknown) => process.stderr.write(`operator: result check failed: ${(error as Error).message}\n`));
     }, RESULT_POLL_MS) : undefined;
-    const forward = (signal: NodeJS.Signals): void => { if (info) signalCommand(info, signal); };
-    process.on('SIGTERM', forward);
-    process.on('SIGHUP', forward);
-    // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
-    process.on('SIGINT', attended ? () => undefined : forward);
     child.on('error', (error) => {
       clearTimeout(timer);
       clearInterval(watcher);
@@ -147,6 +155,19 @@ export async function runJobExec(runDir: string): Promise<number> {
       resolveExit({ exitCode: code, signal, timedOut, finishedAt: new Date().toISOString(), ...(closedAfterResult ? { closedAfterResult: true } : {}) });
     });
   });
+
+  const startedAt = Date.now();
+  let exit = await runCommand(launch.argv);
+  // A resumed session that fails at once without a result has nothing to resume - a run before it
+  // never got to create it - so it starts once more as a new session under the same id.
+  const resultPath = launch.env['OPERATOR_RESULT'];
+  if (launch.resumeFallback && !stopping && !released && !exit.timedOut && exit.signal === null && exit.exitCode !== 0
+    && Date.now() - startedAt < RESUME_FALLBACK_WINDOW_MS && !(resultPath && (await resultWritten(resultPath)))) {
+    const note = '\noperator: the session could not be resumed; starting it new under the same id\n';
+    process.stdout.write(note);
+    output.write(note);
+    exit = await runCommand(launch.resumeFallback.argv);
+  }
 
   clearInterval(heartbeat);
   const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;

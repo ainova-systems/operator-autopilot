@@ -17,8 +17,6 @@ export interface Herdr {
   setTitle(paneId: string, title: string): Promise<void>;
   /** `gone` when the tab was already closed, for example by hand. */
   closeTab(tabId: string): Promise<'closed' | 'gone'>;
-  /** False when herdr no longer has the pane, for example because its tab was closed by hand. */
-  paneExists(paneId: string): Promise<boolean>;
   agentStatus(paneId: string): Promise<string | undefined>;
   notify(title: string, body: string): Promise<void>;
 }
@@ -98,15 +96,6 @@ export function createHerdr(exec: HerdrExec = defaultHerdrExec): Herdr {
         return 'closed';
       } catch (error) {
         if (error instanceof HerdrRefusal && error.reason === 'tab_not_found') return 'gone';
-        throw error;
-      }
-    },
-    async paneExists(paneId: string): Promise<boolean> {
-      try {
-        await exec(['pane', 'get', paneId]);
-        return true;
-      } catch (error) {
-        if (error instanceof HerdrRefusal && (error.reason === 'pane_not_found' || error.reason === 'tab_not_found')) return false;
         throw error;
       }
     },

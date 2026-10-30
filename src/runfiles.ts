@@ -21,6 +21,8 @@ export interface LaunchSpec {
   attended?: { resultPath: string; graceMs: number; keepMs?: number; retain?: boolean };
   /** The run's herdr tab outlives it: a per-subject tab the next run of the operation reuses. */
   retainedTab?: boolean;
+  /** A resumed session that ends at once without a result - nothing to resume - is started once more with these. */
+  resumeFallback?: { argv: string[] };
 }
 
 export interface WrapperInfo { pid: number; host: string; startedAt: string }
