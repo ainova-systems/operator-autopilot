@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- `operator claim` takes, renews and releases a compare-and-set lease on a subject, and `operator queue` keeps a private work queue with fixed status transitions, both in reserved state collections.
+
 ## [0.7.0]
 
 - Replaced the previous closed-loop engine with a small generic runtime: a YAML

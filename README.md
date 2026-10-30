@@ -76,6 +76,8 @@ operator run --dry-run                          # scripts run, agents are only l
 operator trigger <workflow> <name> --subject pr-7 --key q-1 --input '{"answer":"yes"}'
 operator jobs [--status queued]  |  operator job <id>  |  operator waits
 operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
+operator claim take|renew|release <subject> --run <id> [--ttl 1h]  |  operator claim show [subject]
+operator queue add --title t --body-file spec.md  |  queue list|get|take|update   # private work queue
 operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart
 operator resume                                 # also happens by itself when the service starts again
 operator service install <project> --manifest operator.yaml [--env-file secrets.env] [--no-start]
@@ -103,6 +105,17 @@ it. An existing env file is kept as it is. Without linger the service stops when
 (`loginctl enable-linger`). `uninstall` stops and disables it, keeps the env file, and removes the unit
 once no other project uses it; running jobs are detached and finish on their own, so `operator pause
 --wait` first lets them end. Elsewhere, run `operator run` under the host's own service manager.
+
+**Claims and the work queue.** `operator claim` is a lease on an opaque subject: `take` wins only
+when nobody holds it, the holder's lease ran out, or the same run takes it again; `renew` and
+`release` act only for the holder, and every write is compare-and-set, so two runs never both hold
+a subject. A conflict exits 3 and prints the holder. `operator queue` keeps a project's private work
+items (`{ id, title, body, priority, status, source, createdAt, updatedAt, takenBy }`) in its own
+namespace: `take` moves a `ready` or `needs-decision` item to `taken` for one run, `update` needs the
+`--if-match` etag from `get`, and statuses follow fixed transitions (`done` and `cancelled` are
+final). Both live in reserved collections that `operator state` cannot write. A key that may only
+create queue items, for another project's sessions filing findings, is a property of the state
+provider's key, not something the runtime enforces.
 
 `fixtures/demo` is a complete
 example project: a discovery script, a stand-in agent placed in a herdr tab, a follow-on step and a
