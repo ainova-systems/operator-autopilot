@@ -21,7 +21,7 @@ pools:
   checks: { limit: 1, slotTtl: 30m }
 workflows:
   demo:
-    timezone: Europe/Vilnius
+    timezone: Europe/Helsinki
     triggers:
       - { every: 1m, run: discover }
       - { on: poke, run: discover }
