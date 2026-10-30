@@ -4,6 +4,7 @@ import { hostname, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
+import { CLAIMS_COLLECTION, isStateKey, liveClaims, redactClaim, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
 import { isMemberName, type JsonObject } from './contract.ts';
 import { Daemon } from './daemon.ts';
 import { parseDuration } from './duration.ts';
@@ -15,6 +16,7 @@ import { enqueue, JobStore, type JobStatus } from './jobs.ts';
 import { createLogger, errorText, type LogLevel } from './log.ts';
 import { loadManifest, manifestPath, type Manifest } from './manifest.ts';
 import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
+import { addQueueItem, getQueueItem, listQueue, QUEUE_COLLECTION, queuePriority, queueSourceKind, queueStatus, takeQueueItem, updateQueueItem, type QueueItem, type QueueWrite } from './queue.ts';
 import { installService, serviceStatus, uninstallService } from './service.ts';
 import { capabilityProblems, checkCapabilities, openState } from './state/open.ts';
 import type { StateBackend } from './state/types.ts';
@@ -23,8 +25,9 @@ import { validateProject } from './validate.ts';
 import { WaitStore } from './waits.ts';
 
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', CONTROL_COLLECTION]);
+const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', CONTROL_COLLECTION, CLAIMS_COLLECTION, QUEUE_COLLECTION]);
 const PAUSE_POLL_MS = 5_000;
+const DEFAULT_CLAIM_TTL = '1h';
 
 const HELP = `operator ${VERSION} - runs a project's workflow operations on timers and triggers
 
@@ -44,7 +47,12 @@ Commands:
   service <install|uninstall|status> <project>
                                    Run the daemon as the systemd user service operator@<project> (Linux)
   state <get|put|list|delete> <collection> [key]
-                                   Project state for scripts and skills (reserved: jobs, waits, threads, deliveries, tabs, control)
+                                   Project state for scripts and skills (reserved: jobs, waits, threads, deliveries,
+                                   tabs, control, subject-claims, work-queue)
+  claim <take|renew|release|show> [subject] --run <id> [--ttl 1h]
+                                   A compare-and-set lease on an opaque subject; show without a subject lists live claims
+  queue <add|list|get|take|update> [id]
+                                   The project's private work queue (see Claims and queue)
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
 
 Options:
@@ -65,12 +73,25 @@ Options:
   --reason <text>       pause: why, for the log and the owner
   --wait                pause: return once no job runs
   --timeout <duration>  pause --wait: give up after this long (default: wait as long as it takes)
+  --run <id>            claim, queue take: the run taking or holding it
+  --ref <r>             queue take: an opaque reference to what the run delivers the item in
+  --ttl <duration>      claim take/renew: how long the lease lasts (default 1h)
   --env-file <path>     service install: secrets file the service reads (OPERATOR_ENV_FILE)
   --no-start            service install: enable the service without starting it now
   --json                Machine-readable output
   --log-level <level>   debug, info, warn or error (default info)
   -h, --help            This help
   -v, --version         Print the version
+
+Claims and queue:
+  Subjects, run ids and item ids use letters, digits, '.', '_', ':' and '-' (at most 120).
+  A lease lasts at most 24h (renew to keep a subject longer); expiry is judged by the reading host's clock.
+  claim take|renew|release <subject> --run <id> [--ttl 1h]   exit 3 when another run holds it
+  queue add --title <t> --body-file <f|-> [--priority critical|high|medium|low]
+            [--status ready|needs-decision|blocked] [--source-kind owner|project-session] [--source-ref r]
+  queue list [--status s]  |  queue get <id>
+  queue take <id> --run <id> [--ref <r>]           ready or needs-decision -> taken; --ref is opaque
+  queue update <id> --if-match <etag> [--status s] [--title t] [--body-file f|-] [--priority p]
 `;
 
 const options = {
@@ -92,6 +113,14 @@ const options = {
   wait: { type: 'boolean' },
   timeout: { type: 'string' },
   'env-file': { type: 'string' },
+  run: { type: 'string' },
+  ttl: { type: 'string' },
+  title: { type: 'string' },
+  'body-file': { type: 'string' },
+  priority: { type: 'string' },
+  'source-kind': { type: 'string' },
+  'source-ref': { type: 'string' },
+  ref: { type: 'string' },
   'no-start': { type: 'boolean' },
   json: { type: 'boolean' },
   'log-level': { type: 'string' },
@@ -326,7 +355,8 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
     case 'get': {
       const doc = await docs.get(collection, needKey());
       if (!doc) throw new OperatorError('NOT_FOUND', `no ${collection}/${key}`);
-      process.stdout.write(`${JSON.stringify(values.json ? doc : doc.value, null, 2)}\n`);
+      const value = collection === CLAIMS_COLLECTION ? redactClaim(doc.value) : doc.value;
+      process.stdout.write(`${JSON.stringify(values.json ? { ...doc, value } : value, null, 2)}\n`);
       return 0;
     }
     case 'put': {
@@ -344,7 +374,8 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
         where[entry.slice(0, at)] = entry.slice(at + 1);
       }
       const items = await docs.list(collection, { ...(values.prefix ? { prefix: values.prefix } : {}), where });
-      process.stdout.write(`${JSON.stringify(items, null, 2)}\n`);
+      const shown = collection === CLAIMS_COLLECTION ? items.map((item) => ({ ...item, value: redactClaim(item.value) })) : items;
+      process.stdout.write(`${JSON.stringify(shown, null, 2)}\n`);
       return 0;
     }
     case 'delete':
@@ -353,6 +384,122 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
       return 0;
     default:
       throw new UsageError(`unknown state action ${action}`);
+  }
+}
+
+function claimText(subject: string, result: ClaimResult): string {
+  if (result.ok) return `${result.claim.releasedAt ? 'released' : 'held'}: ${result.claim.subject} by ${result.claim.run} until ${result.claim.expiresAt}`;
+  if (result.reason === 'absent') return 'no claim';
+  if (!result.holder) return `${result.reason}: ${subject} is held; the holder is unknown`;
+  return `${result.reason}: ${result.holder.subject} is held by ${result.holder.run} until ${result.holder.expiresAt}`;
+}
+
+/** A claim answers 0 when the call took effect and 3 when another run holds the subject or none does. */
+async function commandClaim(values: Values, positionals: string[]): Promise<number> {
+  const [action, subject] = positionals;
+  if (!action) throw new UsageError('usage: operator claim <take|renew|release|show> [subject] --run <id> [--ttl 1h]');
+  const manifest = load(values);
+  const store = openForCommand(manifest);
+  if (action === 'show') {
+    if (!subject) {
+      const claims = await liveClaims(store);
+      print(values, claims, () => claims.map((c) => `${c.subject}  ${c.run}  until ${c.expiresAt}`).join('\n') || 'no live claims');
+      return 0;
+    }
+    const shown = await showClaim(store, key(subject, 'subject'));
+    print(values, shown, () => {
+      const state = shown.locked ? 'held' : 'free';
+      const record = shown.claim ? ` - record: ${shown.claim.run} until ${shown.claim.expiresAt}${shown.claim.releasedAt ? ', released' : ''}` : ' - no record';
+      const disagree = shown.claim && shown.live !== shown.locked ? ` (the record says ${shown.live ? 'held' : 'free'}; the lock decides)` : '';
+      return `${state}: ${subject}${record}${disagree}`;
+    });
+    return 0;
+  }
+  if (!subject) throw new UsageError(`claim ${action} needs a subject`);
+  if (!values.run) throw new UsageError(`claim ${action} needs --run <id>`);
+  key(subject, 'subject');
+  key(values.run, '--run');
+  const ttlMs = parseDuration(values.ttl ?? DEFAULT_CLAIM_TTL, '--ttl');
+  let result: ClaimResult;
+  switch (action) {
+    case 'take': result = await takeClaim(store, subject, values.run, ttlMs); break;
+    case 'renew': result = await renewClaim(store, subject, values.run, ttlMs); break;
+    case 'release': result = await releaseClaim(store, subject, values.run); break;
+    default: throw new UsageError(`unknown claim action ${action}`);
+  }
+  print(values, result, () => claimText(subject, result));
+  return result.ok ? 0 : 3;
+}
+
+async function readBody(path: string): Promise<string> {
+  if (path === '') throw new UsageError('--body-file needs a path, or - for stdin');
+  const body = path === '-' ? await readStdin() : readFileSync(path, 'utf8');
+  if (!body.trim()) throw new UsageError(`the body read from ${path === '-' ? 'stdin' : path} is empty`);
+  return body;
+}
+
+/** Subjects and run ids become state keys; a malformed one is a usage error, before any call. */
+function key(value: string, what: string): string {
+  if (!isStateKey(value)) throw new UsageError(`${what} ${JSON.stringify(value)} may only use letters, digits, '.', '_', ':' and '-' (at most 120)`);
+  return value;
+}
+
+function queueLine(item: QueueItem): string {
+  return [item.id, item.status.padEnd(14), item.priority.padEnd(8), item.title, item.takenBy ? `(taken by ${item.takenBy.run}${item.takenBy.ref ? `, ${item.takenBy.ref}` : ''})` : ''].join('  ').trimEnd();
+}
+
+function queueWritten(values: Values, result: QueueWrite): number {
+  print(values, result, () => (result.ok ? `${queueLine(result.item)}\netag ${result.etag ?? 'unknown: changed since by another writer'}` : `${result.reason}: ${queueLine(result.item)}`));
+  return result.ok ? 0 : 3;
+}
+
+/** The private work queue; a lost compare-and-set or an item that cannot be taken answers 3. */
+async function commandQueue(values: Values, positionals: string[]): Promise<number> {
+  const [action, id] = positionals;
+  if (!action) throw new UsageError('usage: operator queue <add|list|get|take|update> [id] (see operator --help)');
+  const manifest = load(values);
+  const docs = openForCommand(manifest).docs;
+  const needId = (): string => { if (!id) throw new UsageError(`queue ${action} needs an item id`); return id; };
+  switch (action) {
+    case 'add': {
+      if (!values.title?.trim() || values['body-file'] === undefined) throw new UsageError('queue add needs --title and --body-file');
+      if (values['source-ref'] !== undefined && values['source-kind'] === undefined) throw new UsageError('--source-ref goes with --source-kind');
+      const item = await addQueueItem(docs, {
+        title: values.title,
+        body: await readBody(values['body-file']),
+        ...(values.priority ? { priority: queuePriority(values.priority) } : {}),
+        ...(values.status ? { status: queueStatus(values.status) } : {}),
+        ...(values['source-kind'] ? { source: { kind: queueSourceKind(values['source-kind']), ...(values['source-ref'] ? { ref: values['source-ref'] } : {}) } } : {}),
+      });
+      print(values, item, () => `added ${queueLine(item)}`);
+      return 0;
+    }
+    case 'list': {
+      const items = await listQueue(docs, values.status ? queueStatus(values.status) : undefined);
+      print(values, items, () => items.map(queueLine).join('\n') || 'queue is empty');
+      return 0;
+    }
+    case 'get': {
+      const doc = await getQueueItem(docs, needId());
+      print(values, { ...doc.value, etag: doc.etag }, () => `${queueLine(doc.value)}\netag ${doc.etag}\n\n${doc.value.body}`);
+      return 0;
+    }
+    case 'take': {
+      if (!values.run) throw new UsageError('queue take needs --run <id>');
+      return queueWritten(values, await takeQueueItem(docs, needId(), key(values.run, '--run'), values.ref));
+    }
+    case 'update': {
+      if (!values['if-match']) throw new UsageError('queue update needs --if-match <etag> from queue get');
+      if (values.title !== undefined && !values.title.trim()) throw new UsageError('--title cannot be empty');
+      return queueWritten(values, await updateQueueItem(docs, needId(), {
+        ...(values.status ? { status: queueStatus(values.status) } : {}),
+        ...(values.title !== undefined ? { title: values.title } : {}),
+        ...(values['body-file'] !== undefined ? { body: await readBody(values['body-file']) } : {}),
+        ...(values.priority ? { priority: queuePriority(values.priority) } : {}),
+      }, values['if-match']));
+    }
+    default:
+      throw new UsageError(`unknown queue action ${action}`);
   }
 }
 
@@ -381,6 +528,8 @@ export async function main(argv: string[]): Promise<number> {
       case 'resume': return await commandResume(values);
       case 'service': return await commandService(values, rest);
       case 'state': return await commandState(values, rest);
+      case 'claim': return await commandClaim(values, rest);
+      case 'queue': return await commandQueue(values, rest);
       case 'job-exec': {
         if (!rest[0]) throw new UsageError('usage: operator job-exec <run-dir>');
         return await runJobExec(rest[0]);

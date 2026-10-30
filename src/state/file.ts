@@ -87,7 +87,7 @@ export function createFileBackend(dir: string, namespace: string): StateBackend 
         return 'created';
       });
     },
-    async replace<T>(collection: string, key: string, value: T, options: { etag?: string; ttlMs?: number } = {}): Promise<'written' | 'conflict'> {
+    async replace<T>(collection: string, key: string, value: T, options: { etag?: string; ttlMs?: number; missingIsConflict?: boolean } = {}): Promise<'written' | 'conflict'> {
       return exclusive(async () => {
         const path = await docPath(collection, key);
         const current = live(await readJson<DocFile<T>>(path));
