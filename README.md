@@ -21,8 +21,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   (`every`, `cron`, `on`), operations and pools.
 - **Contract 1.** Every run gets an input file (`$OPERATOR_INPUT`) and writes one result file
   (`$OPERATOR_RESULT`): `status` is `done | noop | waiting | needs-input | failed`, with `evidence`,
-  `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Exit 0
-  without a valid result is a failure.
+  `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Optional
+  `endSubjects` names subjects whose work is over: their per-subject tabs close and their sessions
+  and Codex threads are forgotten; a result without it is read as before. Exit 0 without a valid
+  result is a failure.
 - **Dedupe, not exactly-once.** A job's id is derived from (workflow, operation, subject, trigger
   id); the same trigger twice is one job. A `next` request may carry a `key`: requests with the
   same operation, subject and key are one job while its record is kept, so a discovery that runs
@@ -52,6 +54,22 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   result is collected and the follow-on starts at once, while an interactive session stays live in
   the tab for a person's questions and any other run's output stays readable; then the session ends
   and the tab closes, after a daemon restart too.
+- **Per-subject tabs.** `tabs: per-subject` keeps one herdr tab per subject, operation and workspace
+  member for the whole life of the subject. The first run opens it; every later run of the same
+  operation for that subject runs in it, after the session the previous run left open there has
+  ended. A `claude` run starts its session under a runtime-chosen `--session-id`, and the next run in
+  the tab continues it with `--resume`, so a step that needs more work picks up where it stopped;
+  other operations keep tabs and sessions of their own, so a reviewer never shares the implementer's
+  context. The tab stays open until a result names its subject in `endSubjects`; `operator tabs`
+  lists the tabs kept and their sessions, and the record survives a daemon restart. A tab closed by
+  hand is replaced, with a new session, by the next run; a run that wrote no result leaves no
+  session to resume. `keepTab` applies to per-job tabs only.
+- **Tabs in use.** The runtime never closes a tab - a kept tab whose `keepTab` ran out, a
+  per-subject tab whose subject ended - and never ends the session in a per-subject tab for the next
+  run while herdr reports the pane `working` or `blocked`: someone, usually the owner talking to the
+  session after its result, is doing work that closing it would cut off. The close waits for a later
+  poll and the next run stays queued, saying why, until the pane is idle. A kept session is ended by
+  closing its tab, never by its own clock.
 - **Notifications.** `notify` lists the final result statuses that raise an owner notification
   (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
   scheduled retry is not final.
@@ -73,7 +91,7 @@ operator validate --manifest operator.yaml      # manifest, scripts (--describe)
 operator run --manifest operator.yaml          # the daemon; one active daemon per project
 operator run --dry-run                          # scripts run, agents are only logged, local state
 operator trigger <workflow> <name> --subject pr-7 --key q-1 --input '{"answer":"yes"}'
-operator jobs [--status queued]  |  operator job <id>  |  operator waits
+operator jobs [--status queued]  |  operator job <id>  |  operator waits  |  operator tabs [--json]
 operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
 operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart
 operator resume                                 # also happens by itself when the service starts again

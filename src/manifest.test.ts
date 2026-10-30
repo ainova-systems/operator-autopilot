@@ -184,3 +184,20 @@ workflows:
   assert.equal(parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr }'), 'm.yaml').manifest.workflows.get('w')?.operations.get('plan')?.keepTabMs, 0);
   assert.throws(() => parseManifest(text('{ kind: agent, engine: claude, skill: plan-change, keepTab: 30m }'), 'm.yaml'), /operations\.plan\.keepTab: keepTab keeps a herdr tab open; the placement is headless/);
 });
+
+test('tabs per-subject keeps one herdr tab for the subject, needs a herdr placement, and replaces keepTab', () => {
+  const text = (op: string): string => `
+contract: 1
+project: demo
+workflows:
+  w:
+    operations:
+      plan: ${op}
+`;
+  const tabs = (op: string) => parseManifest(text(op), 'm.yaml').manifest.workflows.get('w')?.operations.get('plan')?.tabs;
+  assert.equal(tabs('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr, tabs: per-subject }'), 'per-subject');
+  assert.equal(tabs('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr }'), 'per-job');
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: claude, skill: plan-change, tabs: per-subject }'), 'm.yaml'), /operations\.plan\.tabs: a per-subject tab is a herdr tab; the placement is headless/);
+  assert.throws(() => parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr, tabs: per-subject, keepTab: 30m }'), 'm.yaml'), /operations\.plan\.keepTab: a per-subject tab stays open until its subject ends/);
+  assert.throws(() => parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr, tabs: forever }'), 'm.yaml'), /operations\.plan\.tabs: expected per-job or per-subject/);
+});

@@ -13,7 +13,7 @@ const dirs: string[] = [];
 after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
 
 const job = { id: 'j1', subject: 'pr-7', input: {} } as unknown as JobRecord;
-const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0 };
+const op: OperationSpec = { name: 'plan', kind: 'interactive', engine: 'command', command: 'x', args: [], thread: 'none', placement: 'herdr', timeoutMs: 30_000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
 
 /** A run directory whose command is a node script; `attended` hands it the terminal. */
 async function runDir(script: string, attended: boolean, keepMs = 0): Promise<{ dir: string; resultPath: string }> {
@@ -89,7 +89,7 @@ test('a noop session closes after its result even when keepTab is set: nothing h
   assert.equal(exit?.released, undefined);
 });
 
-test('a kept session hands its result over at once and stays open for its keepTab time', async () => {
+test('a kept session hands its result over at once and stays open until the runtime ends it', async () => {
   const { dir } = await runDir(`${WRITE_RESULT} setInterval(() => {}, 1000);`, true, 2500);
   const running = runJobExec(dir);
   let handedOver: ExitInfo | undefined;
@@ -102,6 +102,10 @@ test('a kept session hands its result over at once and stays open for its keepTa
   // The pipeline collects now, while the session is still there for questions.
   assert.equal(processAlive(command?.pid ?? 0), true);
   assert.equal((await collectRun(job, op, dir, handedOver as ExitInfo)).result.status, 'done');
+  // Its keepTab time passing does not end it: closing the tab is the runtime's, and waits while it works.
+  await new Promise((resolveWait) => setTimeout(resolveWait, 3000));
+  assert.equal(processAlive(command?.pid ?? 0), true);
+  process.kill(command?.pid ?? 0, 'SIGTERM');
   await running;
   assert.equal(processAlive(command?.pid ?? 0), false);
   assert.equal((await readJsonFile<ExitInfo>(runPath(dir, 'exit')))?.released, true);

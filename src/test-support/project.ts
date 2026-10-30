@@ -21,6 +21,7 @@ export const absentHerdr: Herdr = {
   runInPane: async () => { throw new Error('no herdr'); },
   setTitle: async () => undefined,
   closeTab: async () => 'gone',
+  paneExists: async () => false,
   agentStatus: async () => undefined,
   notify: async () => undefined,
 };

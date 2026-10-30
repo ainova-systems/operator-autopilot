@@ -31,7 +31,7 @@ export const ATTENDED_CLOSE_GRACE_MS = 5_000;
  * Writes the run directory: the contract input file and the wrapper's launch spec. `attended` is
  * an interactive operation that got its terminal; one that did not runs as an agent.
  */
-export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean; attended?: boolean; member?: string }): Promise<PreparedRun> {
+export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean; attended?: boolean; member?: string; session?: { id: string; resume: boolean }; retain?: boolean }): Promise<PreparedRun> {
   const runDir = join(manifest.runtime.stateDir, 'runs', job.id, `a${job.attempt}`);
   await rm(runDir, { recursive: true, force: true });
   await mkdir(runDir, { recursive: true });
@@ -50,6 +50,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     ...(options.threadId ? { threadId: options.threadId } : {}),
     ...(codexAgent ? { codexAgent } : {}),
     ...(options.attended ? { attended: true } : {}),
+    ...(options.session ? { session: options.session } : {}),
   });
   const input: OperationInput = {
     contract: CONTRACT_VERSION,
@@ -79,7 +80,8 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
       ...(options.attended ? { OPERATOR_ATTENDED: '1' } : {}),
     },
     timeoutMs: op.timeoutMs,
-    ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS, ...(op.keepTabMs > 0 ? { keepMs: op.keepTabMs } : {}) } } : {}),
+    ...(options.retain ? { retainedTab: true } : {}),
+    ...(options.attended ? { attended: { resultPath, graceMs: ATTENDED_CLOSE_GRACE_MS, ...(options.retain ? { retain: true } : op.keepTabMs > 0 ? { keepMs: op.keepTabMs } : {}) } } : {}),
     ...(manifest.envFile ? { envFile: manifest.envFile } : {}),
     ...(manifest.envKeys ? { envKeys: manifest.envKeys } : {}),
   };

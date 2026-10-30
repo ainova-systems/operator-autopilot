@@ -59,7 +59,8 @@ export async function resultStatus(path: string): Promise<string | null> {
  * ends. It never talks to the state backend, so a pane needs no credentials beyond what the
  * command itself loads. An attended command owns the terminal instead and stays in the wrapper's
  * process group, so the terminal's keys and resizes reach it; the wrapper ends it once its result
- * file is written, because the slot it holds goes to the next run.
+ * file is written, because the slot it holds goes to the next run. A kept or retained session is
+ * handed over instead and stays until the runtime ends it, which it never does while it works.
  */
 export async function runJobExec(runDir: string): Promise<number> {
   const launch = await readJsonFile<LaunchSpec>(runPath(runDir, 'launch'));
@@ -105,16 +106,20 @@ export async function runJobExec(runDir: string): Promise<number> {
         closing = true;
         // A noop run did nothing a person could ask about, so its session closes like any other.
         const keepMs = status === 'noop' ? 0 : attended.keepMs ?? 0;
-        if (keepMs > 0) {
-          // The pipeline goes on now; the session stays for questions until keepTab runs out.
+        // A retained session stays until the runtime ends it: the next step of its operation for the
+        // subject continues it, or the subject ends.
+        const retain = status !== 'noop' && attended.retain === true;
+        if (keepMs > 0 || retain) {
+          // The pipeline goes on now; the session stays for questions.
           setTimeout(() => {
             released = true;
             const exit: ExitInfo = { exitCode: null, signal: null, timedOut: false, finishedAt: new Date().toISOString(), released: true };
             void writeJsonAtomic(runPath(runDir, 'exit'), exit).catch((error: unknown) => process.stderr.write(`operator: exit.json write failed: ${(error as Error).message}\n`));
-            const kept = `\noperator: result handed over - the pipeline continues; this session stays open ${Math.round(keepMs / 60_000)} min for questions\n`;
+            const kept = retain
+              ? '\noperator: result handed over - the pipeline continues; this session stays open until the next step of this operation or the end of its subject\n'
+              : `\noperator: result handed over - the pipeline continues; this session stays open ${Math.round(keepMs / 60_000)} min for questions, longer while it works\n`;
             process.stdout.write(kept);
             output.write(kept);
-            setTimeout(end, keepMs).unref();
           }, attended.graceMs).unref();
           return;
         }
@@ -144,7 +149,7 @@ export async function runJobExec(runDir: string): Promise<number> {
   });
 
   clearInterval(heartbeat);
-  const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and closes this tab\n`;
+  const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;
   process.stdout.write(footer);
   output.write(footer);
   await new Promise<void>((resolveEnd) => output.end(resolveEnd));

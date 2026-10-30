@@ -62,3 +62,16 @@ test('a next request and a wait may name the workspace member their operation ru
   if (bad.ok) return;
   assert.match(bad.errors.join('\n'), /next\[0\]\.member: expected a workspace member name/);
 });
+
+test('endSubjects names subjects whose work is over, and a result without it is unchanged', () => {
+  const outcome = parseResult({ contract: 1, status: 'done', endSubjects: ['pr-7', 'pr-8', 'pr-7'] }, 's');
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) assert.deepEqual(outcome.value.endSubjects, ['pr-7', 'pr-8']);
+  const plain = parseResult({ contract: 1, status: 'done' }, 's');
+  assert.equal(plain.ok && plain.value.endSubjects, undefined);
+  const empty = parseResult({ contract: 1, status: 'noop', endSubjects: [] }, 's');
+  assert.equal(empty.ok && empty.value.endSubjects, undefined);
+  const bad = parseResult({ contract: 1, status: 'done', endSubjects: ['pr-7', ''] }, 's');
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.deepEqual(bad.errors, ['endSubjects: expected an array of non-empty strings']);
+});

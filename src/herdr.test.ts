@@ -51,3 +51,13 @@ test('a failed herdr call is read for the reason it prints', () => {
   assert.equal(herdrRefusal({ stdout: '', stderr: 'socket closed' }), undefined);
   assert.equal(herdrRefusal(new Error('spawn herdr ENOENT')), undefined);
 });
+
+test('a pane herdr no longer has does not exist; a herdr that does not answer is reported', async () => {
+  const refusing = (reason: string) => createHerdr(async () => { throw new HerdrRefusal(reason, `refused: ${reason}`); });
+  assert.equal(await refusing('pane_not_found').paneExists('wA:p9'), false);
+  assert.equal(await refusing('tab_not_found').paneExists('wA:p9'), false);
+  await assert.rejects(refusing('server_unavailable').paneExists('wA:p9'), /server_unavailable/);
+  const calls: string[][] = [];
+  assert.equal(await createHerdr(async (args) => { calls.push(args); return '{"result":{"pane":{"pane_id":"wA:p1"}}}'; }).paneExists('wA:p1'), true);
+  assert.deepEqual(calls, [['pane', 'get', 'wA:p1']]);
+});

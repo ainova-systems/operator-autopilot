@@ -17,7 +17,10 @@ export interface LaunchSpec {
    * An interactive run: the command owns the terminal, and the wrapper ends it `graceMs` after
    * a result file appears at `resultPath`.
    */
-  attended?: { resultPath: string; graceMs: number; keepMs?: number };
+  /** `retain`: after the result the session stays open, with no limit, until the runtime ends it. */
+  attended?: { resultPath: string; graceMs: number; keepMs?: number; retain?: boolean };
+  /** The run's herdr tab outlives it: a per-subject tab the next run of the operation reuses. */
+  retainedTab?: boolean;
 }
 
 export interface WrapperInfo { pid: number; host: string; startedAt: string }

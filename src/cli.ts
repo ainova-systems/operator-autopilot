@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { isMemberName, type JsonObject } from './contract.ts';
-import { Daemon } from './daemon.ts';
+import { Daemon, SUBJECT_TABS_COLLECTION, type SubjectTab } from './daemon.ts';
 import { parseDuration } from './duration.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
@@ -23,7 +23,7 @@ import { validateProject } from './validate.ts';
 import { WaitStore } from './waits.ts';
 
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', CONTROL_COLLECTION]);
+const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', SUBJECT_TABS_COLLECTION, CONTROL_COLLECTION]);
 const PAUSE_POLL_MS = 5_000;
 
 const HELP = `operator ${VERSION} - runs a project's workflow operations on timers and triggers
@@ -38,13 +38,14 @@ Commands:
   jobs                             List jobs (newest last)
   job <id>                         Show one job record
   waits                            List open waits
+  tabs                             List per-subject herdr tabs: subject, operation, member, tab and session
   pause                            Start no new job while running ones finish; --wait until none runs.
                                    The service resumes by itself when it starts again
   resume                           End a pause
   service <install|uninstall|status> <project>
                                    Run the daemon as the systemd user service operator@<project> (Linux)
   state <get|put|list|delete> <collection> [key]
-                                   Project state for scripts and skills (reserved: jobs, waits, threads, deliveries, tabs, control)
+                                   Project state for scripts and skills (reserved: jobs, waits, threads, deliveries, tabs, subject-tabs, control)
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
 
 Options:
@@ -251,6 +252,13 @@ async function commandWaits(values: Values): Promise<number> {
 }
 
 /** Pauses the project; with --wait returns once no job runs (0), or after --timeout (3). */
+async function commandTabs(values: Values): Promise<number> {
+  const manifest = load(values);
+  const tabs = (await openForCommand(manifest).docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)).map((item) => item.value).sort((a, b) => a.since.localeCompare(b.since));
+  print(values, tabs, () => tabs.map((t) => `${t.workflow}  ${t.subject || '-'}  ${t.operation}  member ${t.member ?? '-'}  tab ${t.tabId}  pane ${t.paneId}  session ${t.sessionId ?? '-'}  last ${t.jobId}  since ${t.since}`).join('\n') || 'no per-subject tabs');
+  return 0;
+}
+
 async function commandPause(values: Values): Promise<number> {
   const manifest = load(values);
   const docs = openForCommand(manifest).docs;
@@ -377,6 +385,7 @@ export async function main(argv: string[]): Promise<number> {
       case 'jobs': return await commandJobs(values, rest, false);
       case 'job': return await commandJobs(values, rest, true);
       case 'waits': return await commandWaits(values);
+      case 'tabs': return await commandTabs(values);
       case 'pause': return await commandPause(values);
       case 'resume': return await commandResume(values);
       case 'service': return await commandService(values, rest);

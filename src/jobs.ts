@@ -24,7 +24,8 @@ export interface JobRun {
   host: string;
   runDir: string;
   startedAt: string;
-  placement: { kind: 'headless' | 'herdr'; workspace?: string; tabId?: string; paneId?: string; degraded?: string };
+  /** `retained`: a per-subject tab, which outlives the run and is closed only when its subject ends. */
+  placement: { kind: 'headless' | 'herdr'; workspace?: string; tabId?: string; paneId?: string; degraded?: string; retained?: boolean };
   /** A limit pool held alongside the operation's main pool, e.g. an engine's concurrency. */
   limitSlot?: SlotHold;
   slot?: SlotHold;
