@@ -119,3 +119,20 @@ test('a done or cancelled item no longer changes, not even its title, body or pr
   await assert.rejects(updateQueueItem(docs, item.id, { title: ' ' }, closed.etag), /title cannot be empty/);
   await assert.rejects(takeQueueItem(docs, item.id, 'run with space'), /run id/);
 });
+
+test('a store error is reported even when colliding ids are tried, and a write answers the item it wrote', async () => {
+  const docs = await store();
+  const outage = new Error('store answered 500');
+  // Every create lands someone else's item at that id, then errors: the error is what the caller sees.
+  const colliding: DocStore = { ...docs, async create(collection, key, value) { await docs.create(collection, key, { ...(value as object), title: 'Another writer' }); throw outage; } };
+  await assert.rejects(addQueueItem(colliding, { title: 'Fix a lost wait', body: 'spec' }), /store answered 500/);
+  // Another writer changes the item between this write and its read-back: the answer is this write's item.
+  const item = await addQueueItem(docs, { title: 'Fix a stale claim', body: 'spec' });
+  const overtaken: DocStore = { ...docs, async replace(collection, key, value, options) {
+    const outcome = await docs.replace(collection, key, value, options);
+    await docs.replace(collection, key, { ...(value as object), priority: 'low' });
+    return outcome;
+  } };
+  const taken = await takeQueueItem(overtaken, item.id, 'run-a');
+  assert.deepEqual(taken.ok ? [taken.item.status, taken.item.priority, taken.etag] : taken, ['taken', 'medium', undefined]);
+});

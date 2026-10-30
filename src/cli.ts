@@ -4,7 +4,7 @@ import { hostname, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
-import { CLAIMS_COLLECTION, isStateKey, liveClaims, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
+import { CLAIMS_COLLECTION, isStateKey, liveClaims, redactClaim, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
 import { isMemberName, type JsonObject } from './contract.ts';
 import { Daemon } from './daemon.ts';
 import { parseDuration } from './duration.ts';
@@ -355,7 +355,8 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
     case 'get': {
       const doc = await docs.get(collection, needKey());
       if (!doc) throw new OperatorError('NOT_FOUND', `no ${collection}/${key}`);
-      process.stdout.write(`${JSON.stringify(values.json ? doc : doc.value, null, 2)}\n`);
+      const value = collection === CLAIMS_COLLECTION ? redactClaim(doc.value) : doc.value;
+      process.stdout.write(`${JSON.stringify(values.json ? { ...doc, value } : value, null, 2)}\n`);
       return 0;
     }
     case 'put': {
@@ -373,7 +374,8 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
         where[entry.slice(0, at)] = entry.slice(at + 1);
       }
       const items = await docs.list(collection, { ...(values.prefix ? { prefix: values.prefix } : {}), where });
-      process.stdout.write(`${JSON.stringify(items, null, 2)}\n`);
+      const shown = collection === CLAIMS_COLLECTION ? items.map((item) => ({ ...item, value: redactClaim(item.value) })) : items;
+      process.stdout.write(`${JSON.stringify(shown, null, 2)}\n`);
       return 0;
     }
     case 'delete':
@@ -385,9 +387,10 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
   }
 }
 
-function claimText(result: ClaimResult): string {
+function claimText(subject: string, result: ClaimResult): string {
   if (result.ok) return `${result.claim.releasedAt ? 'released' : 'held'}: ${result.claim.subject} by ${result.claim.run} until ${result.claim.expiresAt}`;
   if (result.reason === 'absent') return 'no claim';
+  if (!result.holder) return `${result.reason}: ${subject} is held; the holder is unknown`;
   return `${result.reason}: ${result.holder.subject} is held by ${result.holder.run} until ${result.holder.expiresAt}`;
 }
 
@@ -404,7 +407,12 @@ async function commandClaim(values: Values, positionals: string[]): Promise<numb
       return 0;
     }
     const shown = await showClaim(store, key(subject, 'subject'));
-    print(values, shown ?? null, () => (shown ? `${shown.live ? 'held' : 'free'}: ${subject} last held by ${shown.claim.run} until ${shown.claim.expiresAt}` : 'no claim'));
+    print(values, shown, () => {
+      const state = shown.locked ? 'held' : 'free';
+      const record = shown.claim ? ` - record: ${shown.claim.run} until ${shown.claim.expiresAt}${shown.claim.releasedAt ? ', released' : ''}` : ' - no record';
+      const disagree = shown.claim && shown.live !== shown.locked ? ` (the record says ${shown.live ? 'held' : 'free'}; the lock decides)` : '';
+      return `${state}: ${subject}${record}${disagree}`;
+    });
     return 0;
   }
   if (!subject) throw new UsageError(`claim ${action} needs a subject`);
@@ -419,7 +427,7 @@ async function commandClaim(values: Values, positionals: string[]): Promise<numb
     case 'release': result = await releaseClaim(store, subject, values.run); break;
     default: throw new UsageError(`unknown claim action ${action}`);
   }
-  print(values, result, () => claimText(result));
+  print(values, result, () => claimText(subject, result));
   return result.ok ? 0 : 3;
 }
 
@@ -441,7 +449,7 @@ function queueLine(item: QueueItem): string {
 }
 
 function queueWritten(values: Values, result: QueueWrite): number {
-  print(values, result, () => (result.ok ? `${queueLine(result.item)}\netag ${result.etag}` : `${result.reason}: ${queueLine(result.item)}`));
+  print(values, result, () => (result.ok ? `${queueLine(result.item)}\netag ${result.etag ?? 'unknown: changed since by another writer'}` : `${result.reason}: ${queueLine(result.item)}`));
   return result.ok ? 0 : 3;
 }
 

@@ -28,7 +28,7 @@ test('claim take over the Ainoflow API: the Shield lock decides, and a loser rep
     { status: 201, body: { acquired: true, token: 't1' } },
     { status: 200 },
   ]);
-  const taken = await takeClaim(won.store, 'item-7', 'run-a', HOUR, now);
+  const taken = await takeClaim(won.store, 'item-7', 'run-a', HOUR, () => now);
   assert.equal(taken.ok && taken.claim.run, 'run-a');
   assert.deepEqual(won.calls, ['POST op-demo.claim.item-7 -> 201', 'PUT item-7 -> 200']);
 
@@ -37,18 +37,29 @@ test('claim take over the Ainoflow API: the Shield lock decides, and a loser rep
     { status: 200, body: { ...claim('run-b', '2026-10-30T11:00:00.000Z'), token: 't2' }, etag: '"e2"' },
     { status: 200, body: { ...claim('run-b', '2026-10-30T11:00:00.000Z'), token: 't2' }, etag: '"e2"' },
   ]);
-  const held = await takeClaim(lost.store, 'item-7', 'run-a', HOUR, now);
-  assert.equal(!held.ok && held.reason === 'held' && held.holder.run, 'run-b');
-  assert.equal(!held.ok && 'holder' in held && 'token' in held.holder, false);
+  const held = await takeClaim(lost.store, 'item-7', 'run-a', HOUR, () => now);
+  assert.equal(!held.ok && held.reason === 'held' && held.holder?.run, 'run-b');
+  assert.equal(!held.ok && held.reason === 'held' && held.holder !== undefined && 'token' in held.holder, false);
 });
 
-test('a conditional replace on a key that vanished is a conflict for the caller to read again, not a crash', async () => {
+test('a conditional replace on a key that vanished is a conflict only for callers that ask for it', async () => {
   for (const status of [404, 428]) {
-    const api = scripted([{ status }]);
-    assert.equal(await api.store.docs.replace('work-queue', 'q-1', {}, { etag: '"e1"' }), 'conflict');
+    const api = scripted([{ status }, { status }]);
+    assert.equal(await api.store.docs.replace('work-queue', 'q-1', {}, { etag: '"e1"', missingIsConflict: true }), 'conflict');
+    // Every other caller keeps the refusal it always had.
+    await assert.rejects(api.store.docs.replace('jobs', 'j-1', {}, { etag: '"e1"' }), new RegExp(`answered ${status}`));
   }
   const unconditional = scripted([{ status: 404 }]);
-  await assert.rejects(unconditional.store.docs.replace('work-queue', 'q-1', {}), /answered 404/);
+  await assert.rejects(unconditional.store.docs.replace('work-queue', 'q-1', {}, { missingIsConflict: true }), /answered 404/);
+});
+
+test('the Shield lock fails closed: an error or a lock without a token takes nothing and records nothing', async () => {
+  const down = scripted([{ status: 503 }]);
+  await assert.rejects(takeClaim(down.store, 'item-7', 'run-a', HOUR, () => now), /failed after 1 attempt/);
+  assert.deepEqual(down.calls, ['POST op-demo.claim.item-7 -> 503']);
+  const tokenless = scripted([{ status: 201, body: { acquired: true, token: null } }]);
+  await assert.rejects(takeClaim(tokenless.store, 'item-7', 'run-a', HOUR, () => now), /without a token/);
+  assert.equal(tokenless.calls.length, 1);
 });
 
 const item = (status: string, extra: Partial<QueueItem> = {}): QueueItem => ({

@@ -117,6 +117,12 @@ test('claims and the work queue answer 0 when the write took effect and 3 when a
   assert.equal(held.code, 3);
   assert.match(held.stdout, /^held: item-7 is held by run-a until /);
   assert.equal((await cli(['claim', 'take', 'item-7', '--manifest', manifest])).code, 2);
+  // The lock token stays inside the runtime, whichever command reads the claims.
+  const got = await cli(['state', 'get', 'subject-claims', 'item-7', '--manifest', manifest, '--json']);
+  assert.equal(got.code, 0, got.stderr);
+  assert.equal(JSON.parse(got.stdout).value.run, 'run-a');
+  assert.doesNotMatch(got.stdout + (await cli(['state', 'list', 'subject-claims', '--manifest', manifest])).stdout, /token/);
+  assert.match((await cli(['claim', 'show', 'item-7', '--manifest', manifest])).stdout, /^held: item-7 - record: run-a until /);
   assert.equal((await cli(['claim', 'release', 'item-7', '--run', 'run-a', '--manifest', manifest])).code, 0);
   assert.match((await cli(['claim', 'show', '--manifest', manifest])).stdout, /^no live claims/);
 

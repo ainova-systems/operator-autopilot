@@ -86,6 +86,7 @@ export async function addQueueItem(docs: DocStore, input: NewQueueItem, now: Dat
   const status = input.status ?? 'ready';
   if (!['ready', 'needs-decision', 'blocked'].includes(status)) throw new OperatorError('INVALID_QUEUE_ITEM', `a new item starts ready, needs-decision or blocked, not ${status}`);
   const at = now.toISOString();
+  let lastError: unknown;
   for (let attempt = 0; attempt < ADD_ATTEMPTS; attempt += 1) {
     const item: QueueItem = {
       id: newId(now),
@@ -105,9 +106,11 @@ export async function addQueueItem(docs: DocStore, input: NewQueueItem, now: Dat
       const there = await docs.get<QueueItem>(QUEUE_COLLECTION, item.id);
       if (!there) throw error;
       if (JSON.stringify(there.value) === JSON.stringify(item)) return item;
+      lastError = error;
     }
   }
-  throw new OperatorError('QUEUE_CONTENDED', `no free item id after ${ADD_ATTEMPTS} attempts`);
+  // Every id was taken by another writer; a store error met on the way is the one to report.
+  throw lastError ?? new OperatorError('QUEUE_CONTENDED', `no free item id after ${ADD_ATTEMPTS} attempts`);
 }
 
 /** Items, most urgent first, oldest first within a priority. */
@@ -124,7 +127,8 @@ export async function getQueueItem(docs: DocStore, id: string): Promise<StoredDo
   return doc;
 }
 
-export type QueueWrite = { ok: true; item: QueueItem; etag: string } | { ok: false; reason: 'conflict' | 'not-takeable'; item: QueueItem };
+/** A success carries the item as written and its etag, absent when another writer changed it since. */
+export type QueueWrite = { ok: true; item: QueueItem; etag?: string } | { ok: false; reason: 'conflict' | 'not-takeable'; item: QueueItem };
 
 /**
  * Writes `item` over the version read at `etag`. A conflict is read again: a store that made the
@@ -132,9 +136,10 @@ export type QueueWrite = { ok: true; item: QueueItem; etag: string } | { ok: fal
  * this very item, which is the write's success, not a loss. The answer carries the item's new etag.
  */
 async function write(docs: DocStore, item: QueueItem, etag: string): Promise<QueueWrite> {
-  const outcome = await docs.replace(QUEUE_COLLECTION, item.id, item, { etag });
+  const outcome = await docs.replace(QUEUE_COLLECTION, item.id, item, { etag, missingIsConflict: true });
   const now = await getQueueItem(docs, item.id);
-  if (outcome === 'written' || sameItem(now.value, item)) return { ok: true, item: now.value, etag: now.etag };
+  if (sameItem(now.value, item)) return { ok: true, item, etag: now.etag };
+  if (outcome === 'written') return { ok: true, item };
   return { ok: false, reason: 'conflict', item: now.value };
 }
 

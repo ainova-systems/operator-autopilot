@@ -106,22 +106,26 @@ it. An existing env file is kept as it is. Without linger the service stops when
 once no other project uses it; running jobs are detached and finish on their own, so `operator pause
 --wait` first lets them end. Elsewhere, run `operator run` under the host's own service manager.
 
-**Claims and the work queue.** `operator claim` is a lease on an opaque subject: `take` wins only
-when nobody holds it, the holder's lease ran out, or the same run takes it again; `renew` and
-`release` act only for the holder, and the holder may renew its own lease that ran out while nobody
-else took the subject. Who holds a subject is decided by the state backend's atomic lock (Shield on
-Ainoflow), so two runs never both hold one; the claim record beside it only describes the holder. A
-conflict exits 3 and prints the holder. A lease lasts at most 24 hours, the lock's lifetime; renewing
-keeps a subject longer. The record's expiry is judged by the clock of the host reading it, so hosts
-sharing a namespace keep their clocks in sync. Subjects,
-run ids and item ids use letters, digits, `.`, `_`, `:` and `-`, at most 120. `operator queue` keeps
-a project's private work items (`{ id, title, body, priority, status, source, createdAt, updatedAt,
-takenBy: { run, ref } }`) in its own namespace: `take` moves a `ready` or `needs-decision` item to
-`taken` for one run, with an opaque `--ref` to what the run delivers it in; `update` needs the
-`--if-match` etag from `get` and answers the new one; statuses follow fixed transitions, and a
-`done` or `cancelled` item no longer changes. Both live in reserved collections that `operator state` cannot write. A key that may only
-create queue items, for another project's sessions filing findings, is a property of the state
-provider's key, not something the runtime enforces.
+**Claims and the work queue.** `operator claim` is a lease on an opaque subject. The state
+backend's atomic lock (Shield on Ainoflow) decides who holds it, so two runs never both hold one:
+`take` wins only when the lock is free or the same run already holds it, and a conflict exits 3 and
+names the holder, or says it is unknown while the winner is still writing its record. That record
+only describes the holder, and its expiry is advisory; `claim show` reports both and says when they
+disagree. `renew` and `release` act only for the holder, and the holder may renew its own lease that
+ran out while nobody else took the subject. A lease is whole seconds and at most 24 hours, the lock's
+lifetime; renewing keeps a subject longer, up to the end of the lock's day, after which the holder
+takes it again like anyone else. `release` shortens the lock to one second by its token and lets it
+lapse, since the backend has no token-checked delete; the lock token itself is never printed, not
+even by `operator state`. The record's expiry is judged by the clock of the host reading it, so
+hosts sharing a namespace keep their clocks in sync. Subjects, run ids and item ids use letters,
+digits, `.`, `_`, `:` and `-`, at most 120. `operator queue` keeps a project's private work items
+(`{ id, title, body, priority, status, source, createdAt, updatedAt, takenBy: { run, ref } }`) in its
+own namespace: `take` moves a `ready` or `needs-decision` item to `taken` for one run, with an opaque
+`--ref` to what the run delivers it in; `update` needs the `--if-match` etag from `get` and answers
+the new one; statuses follow fixed transitions, and a `done` or `cancelled` item no longer changes.
+Both live in reserved collections that `operator state` cannot write. A key that may only create
+queue items, for another project's sessions filing findings, is a property of the state provider's
+key, not something the runtime enforces.
 
 `fixtures/demo` is a complete
 example project: a discovery script, a stand-in agent placed in a herdr tab, a follow-on step and a

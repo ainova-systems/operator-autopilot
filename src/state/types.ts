@@ -12,8 +12,12 @@ export interface DocStore {
   get<T>(collection: string, key: string): Promise<StoredDoc<T> | undefined>;
   /** Create-only: answers `exists` when the key is already taken, which is how dedupe works. */
   create<T>(collection: string, key: string, value: T, ttlMs?: number): Promise<'created' | 'exists'>;
-  /** With `etag`, writes only if the document is unchanged and answers `conflict` otherwise. */
-  replace<T>(collection: string, key: string, value: T, options?: { etag?: string; ttlMs?: number }): Promise<'written' | 'conflict'>;
+  /**
+   * With `etag`, writes only if the document is unchanged and answers `conflict` otherwise. With
+   * `missingIsConflict`, a document that vanished meanwhile is a conflict too, for callers that read
+   * again after one; without it a provider may refuse that write as an error.
+   */
+  replace<T>(collection: string, key: string, value: T, options?: { etag?: string; ttlMs?: number; missingIsConflict?: boolean }): Promise<'written' | 'conflict'>;
   list<T>(collection: string, filter?: { prefix?: string; where?: Record<string, string> }): Promise<{ key: string; value: T }[]>;
   delete(collection: string, key: string): Promise<boolean>;
 }

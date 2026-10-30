@@ -5,24 +5,23 @@ import type { DocStore, LockStore, StoredDoc } from './state/types.ts';
 /**
  * Subject claims. Who holds a subject is decided by the state backend's lock, which is atomic: of
  * two simultaneous takers exactly one acquires it. The record in this collection only describes the
- * holder - run, times and the lock token it renews and releases with - so a store whose document
- * writes race cannot make two runs hold one subject. It is the runtime's own collection, so
- * `operator state` cannot write it.
+ * holder - run, times and the lock token it renews and ends with - and its expiry is advisory. It is
+ * the runtime's own collection, so `operator state` cannot write it and never prints the token.
  */
 export const CLAIMS_COLLECTION = 'subject-claims';
 // A released or expired claim stays readable this long, so `show` can still say who held it.
 const CLAIM_RETENTION_MS = 3_600_000;
 /** A lock lives at most a day from its acquisition, so a lease is at most a day; renew it sooner. */
 export const MAX_CLAIM_TTL_MS = 86_400_000;
-// How long a renewal that only proves ownership before a release keeps the lock.
-const PROVE_MS = 1000;
+// The shortest lease the lock takes. Ending a claim shortens its lock to this by token and lets it
+// lapse: the backend has no token-checked delete, and a delete by key could remove the next holder's.
+const END_MS = 1000;
 // A holder that just acquired writes its record right after; a reader waits this long for it.
 const RECORD_WAIT_MS = [100, 250, 500];
 
 /**
- * Who holds a subject, until when. A claim is a lease: it counts only while `expiresAt` is in the
- * future, and a released one is an expired one. The subject is opaque to the runtime. Expiry is
- * judged by the clock of whoever reads it, so the hosts sharing a namespace keep their clocks in sync.
+ * Who holds a subject, until when. `expiresAt` is advisory: the lock decides. It is judged by the
+ * clock of whoever reads it, so the hosts sharing a namespace keep their clocks in sync.
  */
 export interface ClaimRecord {
   subject: string;
@@ -33,15 +32,26 @@ export interface ClaimRecord {
   releasedAt?: string;
 }
 
-/** The stored record also carries the lock token, which never leaves this module. */
+/** The stored record also carries the lock token and when that lock was acquired. */
 interface StoredClaim extends ClaimRecord {
   token: string;
+  lockedAt: string;
 }
 
 export type ClaimResult =
   | { ok: true; claim: ClaimRecord }
-  | { ok: false; reason: 'held' | 'not-holder'; holder: ClaimRecord }
+  /** `holder` is absent when the lock is held but no live record says by whom. */
+  | { ok: false; reason: 'held'; holder?: ClaimRecord }
+  | { ok: false; reason: 'not-holder'; holder: ClaimRecord }
   | { ok: false; reason: 'absent' };
+
+export interface ClaimView {
+  claim?: ClaimRecord;
+  /** What the record says. */
+  live: boolean;
+  /** What the lock says; the two disagree only briefly, or after a crash between them. */
+  locked: boolean;
+}
 
 /** Subjects and run ids become state keys, so they keep to the characters every provider accepts. */
 export function isStateKey(value: string): boolean {
@@ -53,9 +63,10 @@ function checkKey(value: string, what: string, code: string): string {
   return value;
 }
 
+/** A lease in whole seconds, as the lock counts it, so the record and the lock agree. */
 export function checkTtl(ttlMs: number): number {
   if (!(ttlMs > 0) || ttlMs > MAX_CLAIM_TTL_MS) throw new OperatorError('INVALID_TTL', `a claim lease lasts at most 24h, got ${ttlMs}ms; renew it to keep it longer`);
-  return ttlMs;
+  return Math.ceil(ttlMs / 1000) * 1000;
 }
 
 export function claimIsLive(claim: ClaimRecord, now: Date = new Date()): boolean {
@@ -67,123 +78,156 @@ export interface ClaimStore {
   locks: LockStore;
 }
 
-const lockKey = (subject: string): string => `claim.${subject}`;
-const publicView = ({ token: _token, ...claim }: StoredClaim): ClaimRecord => claim;
-const unknownHolder = (subject: string, now: Date): ClaimRecord => ({ subject, run: 'unknown', takenAt: now.toISOString(), renewedAt: now.toISOString(), expiresAt: now.toISOString() });
+/** The time source; tests move it, everything else reads the wall clock when the answer arrives. */
+export type Clock = () => Date;
+const wallClock: Clock = () => new Date();
 
-function checked(subject: string, run?: string, ttlMs?: number): void {
+const lockKey = (subject: string): string => `claim.${subject}`;
+const publicView = ({ token: _token, lockedAt: _lockedAt, ...claim }: StoredClaim): ClaimRecord => claim;
+
+/** Strips what only this module may see from a stored record, for any reader of the collection. */
+export function redactClaim(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  const { token: _token, ...rest } = value as Record<string, unknown>;
+  return rest;
+}
+
+function checked(subject: string, run?: string): void {
   checkKey(subject, 'subject', 'INVALID_SUBJECT');
   if (run !== undefined) checkKey(run, 'run id', 'INVALID_RUN_ID');
-  if (ttlMs !== undefined) checkTtl(ttlMs);
 }
 
 async function readRecord(docs: DocStore, subject: string): Promise<StoredDoc<StoredClaim> | undefined> {
   return docs.get<StoredClaim>(CLAIMS_COLLECTION, subject);
 }
 
-async function writeRecord(docs: DocStore, record: StoredClaim, ttlMs: number): Promise<ClaimRecord> {
-  await docs.replace(CLAIMS_COLLECTION, record.subject, record, { ttlMs: ttlMs + CLAIM_RETENTION_MS });
-  return publicView(record);
+/** A lease never outlives its lock, which ends a day after it was acquired. */
+function expiry(lockedAt: string, at: Date, ttlMs: number): string {
+  return new Date(Math.min(at.getTime() + ttlMs, Date.parse(lockedAt) + MAX_CLAIM_TTL_MS)).toISOString();
 }
 
-/** The lock is held but its holder's record may not be written yet: wait briefly for it. */
-async function holderOf(docs: DocStore, subject: string, now: Date): Promise<StoredDoc<StoredClaim> | undefined> {
-  for (const wait of [0, ...RECORD_WAIT_MS]) {
-    if (wait) await sleep(wait);
-    const record = await readRecord(docs, subject);
-    if (record && claimIsLive(record.value, now)) return record;
-  }
-  return undefined;
+/** Ends a lock this run holds, by its token: shortened to the minimum, it lapses on its own. */
+async function endLock(locks: LockStore, subject: string, token: string): Promise<boolean> {
+  return (await locks.renew(lockKey(subject), token, END_MS)) !== 'lost';
 }
 
 /** Acquires the subject's lock for `run` and records it; undefined when another run holds the lock. */
-async function acquire(store: ClaimStore, subject: string, run: string, ttlMs: number, now: Date, takenAt?: string): Promise<ClaimRecord | undefined> {
+async function acquire(store: ClaimStore, subject: string, run: string, ttlMs: number, clock: Clock, takenAt?: string): Promise<ClaimRecord | undefined> {
   const lease = await store.locks.acquire(lockKey(subject), ttlMs, run);
   if (!lease.acquired) return undefined;
-  const at = now.toISOString();
-  return writeRecord(store.docs, { subject, run, token: lease.token, takenAt: takenAt ?? at, renewedAt: at, expiresAt: new Date(now.getTime() + ttlMs).toISOString() }, ttlMs);
-}
-
-/**
- * Extends `record`'s lock by its token. A lock past its lifetime is let go and acquired again, so a
- * holder keeps a subject longer than a day by renewing; another run that takes it in that instant wins.
- */
-async function extend(store: ClaimStore, record: StoredClaim, ttlMs: number, now: Date): Promise<ClaimRecord | undefined> {
-  const outcome = await store.locks.renew(lockKey(record.subject), record.token, ttlMs);
-  if (outcome === 'renewed') {
-    const at = now.toISOString();
-    return writeRecord(store.docs, { ...record, renewedAt: at, expiresAt: new Date(now.getTime() + ttlMs).toISOString() }, ttlMs);
+  const at = clock();
+  const lockedAt = at.toISOString();
+  const record: StoredClaim = { subject, run, token: lease.token, lockedAt, takenAt: takenAt ?? lockedAt, renewedAt: lockedAt, expiresAt: expiry(lockedAt, at, ttlMs) };
+  try {
+    await store.docs.replace(CLAIMS_COLLECTION, subject, record, { ttlMs: ttlMs + CLAIM_RETENTION_MS });
+  } catch (error) {
+    // A lock nobody can name a holder for would block the subject for the whole lease.
+    await endLock(store.locks, subject, lease.token).catch(() => undefined);
+    throw error;
   }
-  if (outcome === 'lifetime-exceeded') await store.locks.release(lockKey(record.subject));
-  // Lost: the lock ran out. Nobody holding it now means this run may take it again.
-  return acquire(store, record.subject, record.run, ttlMs, now, record.takenAt);
-}
-
-async function held(store: ClaimStore, subject: string, now: Date): Promise<ClaimResult> {
-  const holder = await holderOf(store.docs, subject, now);
-  return { ok: false, reason: 'held', holder: holder ? publicView(holder.value) : unknownHolder(subject, now) };
+  return publicView(record);
 }
 
 /**
- * Takes the subject for `run`: succeeds when nobody holds it, the holder's lease ran out, or `run`
- * already holds it (which renews it). The lock decides; of two simultaneous takers exactly one wins.
+ * Extends `record`'s lock by its token, up to the end of the lock's one-day life. A lock that ran
+ * out is acquired again only while nobody else holds it, keeping when the claim was first taken.
  */
-export async function takeClaim(store: ClaimStore, subject: string, run: string, ttlMs: number, now: Date = new Date()): Promise<ClaimResult> {
-  checked(subject, run, ttlMs);
-  const taken = await acquire(store, subject, run, ttlMs, now);
+async function extend(store: ClaimStore, record: StoredClaim, ttlMs: number, clock: Clock): Promise<ClaimRecord | undefined> {
+  const started = clock();
+  const room = Date.parse(record.lockedAt) + MAX_CLAIM_TTL_MS - started.getTime();
+  if (room > END_MS) {
+    const outcome = await store.locks.renew(lockKey(record.subject), record.token, Math.min(ttlMs, Math.floor(room / 1000) * 1000));
+    if (outcome === 'renewed') {
+      const at = clock();
+      const renewed: StoredClaim = { ...record, renewedAt: at.toISOString(), expiresAt: expiry(record.lockedAt, at, ttlMs) };
+      await store.docs.replace(CLAIMS_COLLECTION, record.subject, renewed, { ttlMs: ttlMs + CLAIM_RETENTION_MS });
+      return publicView(renewed);
+    }
+    if (outcome === 'lifetime-exceeded') return undefined;
+  } else if (await store.locks.exists(lockKey(record.subject))) {
+    // The lock is at the end of its life and still stands: it lapses on its own, after which this
+    // run takes the subject again like anyone else.
+    return undefined;
+  }
+  return acquire(store, record.subject, record.run, ttlMs, clock, record.takenAt);
+}
+
+async function held(store: ClaimStore, subject: string, clock: Clock): Promise<ClaimResult> {
+  for (const wait of [0, ...RECORD_WAIT_MS]) {
+    if (wait) await sleep(wait);
+    const record = await readRecord(store.docs, subject);
+    if (record && claimIsLive(record.value, clock())) return { ok: false, reason: 'held', holder: publicView(record.value) };
+  }
+  return { ok: false, reason: 'held' };
+}
+
+/**
+ * Takes the subject for `run`: succeeds when the lock is free, or when `run` already holds it
+ * (which renews it). The lock decides; of two simultaneous takers exactly one wins. A lease just
+ * released is waited for, since a released lock lapses a moment later.
+ */
+export async function takeClaim(store: ClaimStore, subject: string, run: string, ttlMs: number, clock: Clock = wallClock): Promise<ClaimResult> {
+  checked(subject, run);
+  const ttl = checkTtl(ttlMs);
+  const taken = await acquire(store, subject, run, ttl, clock);
   if (taken) return { ok: true, claim: taken };
   const record = await readRecord(store.docs, subject);
   if (record && record.value.run === run && record.value.releasedAt === undefined) {
-    const renewed = await extend(store, record.value, ttlMs, now);
+    const renewed = await extend(store, record.value, ttl, clock);
     if (renewed) return { ok: true, claim: renewed };
   }
-  return held(store, subject, now);
+  if (record?.value.releasedAt !== undefined && Date.now() - Date.parse(record.value.releasedAt) < 2 * END_MS) {
+    await sleep(END_MS + 100);
+    const retaken = await acquire(store, subject, run, ttl, clock);
+    if (retaken) return { ok: true, claim: retaken };
+  }
+  return held(store, subject, clock);
 }
 
 /**
  * Extends the lease `run` holds; refused when another run holds the subject or nobody does. The
  * holder's own lease that ran out while nobody else took the subject is renewed too.
  */
-export async function renewClaim(store: ClaimStore, subject: string, run: string, ttlMs: number, now: Date = new Date()): Promise<ClaimResult> {
-  checked(subject, run, ttlMs);
+export async function renewClaim(store: ClaimStore, subject: string, run: string, ttlMs: number, clock: Clock = wallClock): Promise<ClaimResult> {
+  checked(subject, run);
+  const ttl = checkTtl(ttlMs);
   const record = await readRecord(store.docs, subject);
   if (!record || record.value.releasedAt !== undefined) return { ok: false, reason: 'absent' };
-  if (record.value.run !== run) return { ok: false, reason: claimIsLive(record.value, now) ? 'held' : 'not-holder', holder: publicView(record.value) };
-  const renewed = await extend(store, record.value, ttlMs, now);
-  return renewed ? { ok: true, claim: renewed } : held(store, subject, now);
+  if (record.value.run !== run) return claimIsLive(record.value, clock()) ? { ok: false, reason: 'held', holder: publicView(record.value) } : { ok: false, reason: 'not-holder', holder: publicView(record.value) };
+  const renewed = await extend(store, record.value, ttl, clock);
+  return renewed ? { ok: true, claim: renewed } : held(store, subject, clock);
 }
 
 /**
- * Gives the subject up. The lock is deleted only after its token proved this run still holds it,
- * so a run whose lease already passed to another run never removes the new holder's lock; and the
- * record is marked released only if it is still this run's.
+ * Gives the subject up. The lock is ended by its token, so a run whose lease already passed to
+ * another run never touches the new holder's lock; once that end succeeded the release did, and
+ * the record is marked released only if it is still this run's.
  */
-export async function releaseClaim(store: ClaimStore, subject: string, run: string, now: Date = new Date()): Promise<ClaimResult> {
+export async function releaseClaim(store: ClaimStore, subject: string, run: string, clock: Clock = wallClock): Promise<ClaimResult> {
   checked(subject, run);
   const record = await readRecord(store.docs, subject);
   if (!record || record.value.releasedAt !== undefined) return { ok: false, reason: 'absent' };
   if (record.value.run !== run) return { ok: false, reason: 'not-holder', holder: publicView(record.value) };
-  // Renewing by token proves the lock is still this run's (one past its lifetime is too); a lost
-  // one has run out or passed on, and is left alone.
-  if ((await store.locks.renew(lockKey(subject), record.value.token, PROVE_MS)) !== 'lost') await store.locks.release(lockKey(subject));
-  const at = now.toISOString();
+  const ended = await endLock(store.locks, subject, record.value.token);
+  const at = clock().toISOString();
   const released: StoredClaim = { ...record.value, expiresAt: at, releasedAt: at };
-  if ((await store.docs.replace(CLAIMS_COLLECTION, subject, released, { etag: record.etag, ttlMs: CLAIM_RETENTION_MS })) === 'conflict') {
-    // The record changed meanwhile: a new holder wrote it, or this very release did and its answer
-    // was lost. Only the second is this run's release.
-    const current = await readRecord(store.docs, subject);
-    if (!current || current.value.run !== run || current.value.releasedAt !== at) return { ok: false, reason: 'not-holder', holder: current ? publicView(current.value) : publicView(released) };
-  }
-  return { ok: true, claim: publicView(released) };
+  const written = await store.docs.replace(CLAIMS_COLLECTION, subject, released, { etag: record.etag, ttlMs: CLAIM_RETENTION_MS, missingIsConflict: true });
+  if (written === 'written' || ended) return { ok: true, claim: publicView(released) };
+  // Neither the lock nor the record was this run's any more: another run holds the subject now.
+  const current = await readRecord(store.docs, subject);
+  return { ok: false, reason: 'not-holder', holder: current ? publicView(current.value) : publicView(released) };
 }
 
-export async function showClaim(store: ClaimStore, subject: string, now: Date = new Date()): Promise<{ claim: ClaimRecord; live: boolean } | undefined> {
+/** The record and what the lock says; a disagreement means a holder mid-write or a crash between them. */
+export async function showClaim(store: ClaimStore, subject: string, clock: Clock = wallClock): Promise<ClaimView> {
   checked(subject);
   const record = await readRecord(store.docs, subject);
-  return record ? { claim: publicView(record.value), live: claimIsLive(record.value, now) } : undefined;
+  const locked = await store.locks.exists(lockKey(subject));
+  return record ? { claim: publicView(record.value), live: claimIsLive(record.value, clock()), locked } : { live: false, locked };
 }
 
-/** Every subject held right now. */
-export async function liveClaims(store: ClaimStore, now: Date = new Date()): Promise<ClaimRecord[]> {
+/** Every subject whose record says it is held. */
+export async function liveClaims(store: ClaimStore, clock: Clock = wallClock): Promise<ClaimRecord[]> {
+  const now = clock();
   return (await store.docs.list<StoredClaim>(CLAIMS_COLLECTION)).map((item) => publicView(item.value)).filter((claim) => claimIsLive(claim, now));
 }

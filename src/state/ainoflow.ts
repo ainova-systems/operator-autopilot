@@ -107,7 +107,7 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
       if (response.status === 409) return 'exists';
       return fail('POST', path, response);
     },
-    async replace<T>(collection: string, key: string, value: T, replaceOptions: { etag?: string; ttlMs?: number } = {}): Promise<'written' | 'conflict'> {
+    async replace<T>(collection: string, key: string, value: T, replaceOptions: { etag?: string; ttlMs?: number; missingIsConflict?: boolean } = {}): Promise<'written' | 'conflict'> {
       const path = itemPath(collection, key);
       const headers: Record<string, string> = replaceOptions.etag === undefined ? {} : { 'If-Match': replaceOptions.etag.startsWith('"') || replaceOptions.etag.startsWith('W/') ? replaceOptions.etag : `"${replaceOptions.etag}"` };
       const response = await call('PUT', path, { query: ttlQuery(replaceOptions.ttlMs), headers, body: value });
@@ -115,7 +115,7 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
       if (response.status === 409 || response.status === 412) return 'conflict';
       // A conditional write on a key that vanished meanwhile (its TTL ran out) did not apply: the
       // caller reads again, exactly as after any other lost compare-and-set.
-      if (replaceOptions.etag !== undefined && (response.status === 404 || response.status === 428)) return 'conflict';
+      if (replaceOptions.missingIsConflict === true && replaceOptions.etag !== undefined && (response.status === 404 || response.status === 428)) return 'conflict';
       return fail('PUT', path, response);
     },
     async list<T>(collection: string, filter: { prefix?: string; where?: Record<string, string> } = {}): Promise<{ key: string; value: T }[]> {
@@ -149,7 +149,10 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
       const response = await call('POST', path, { query: { ttl: seconds(ttlMs), returnSuccess: true, reference } });
       if (response.status === 200 || response.status === 201) {
         const body = response.body as { acquired?: boolean; token?: string | null };
-        return body.acquired === true && typeof body.token === 'string' ? { acquired: true, token: body.token } : { acquired: false };
+        if (body.acquired !== true) return { acquired: false };
+        // A lock nobody holds a token for could never be renewed or ended: refuse it rather than run unguarded.
+        if (typeof body.token !== 'string' || body.token === '') throw new OperatorError('AINOFLOW_PROTOCOL', `Shield acquired ${key} without a token`);
+        return { acquired: true, token: body.token };
       }
       return fail('POST', path, response);
     },
