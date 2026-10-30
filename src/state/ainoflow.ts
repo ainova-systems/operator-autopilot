@@ -113,6 +113,9 @@ export function createAinoflowBackend(options: AinoflowOptions): StateBackend {
       const response = await call('PUT', path, { query: ttlQuery(replaceOptions.ttlMs), headers, body: value });
       if (response.status === 200 || response.status === 201) return 'written';
       if (response.status === 409 || response.status === 412) return 'conflict';
+      // A conditional write on a key that vanished meanwhile (its TTL ran out) did not apply: the
+      // caller reads again, exactly as after any other lost compare-and-set.
+      if (replaceOptions.etag !== undefined && (response.status === 404 || response.status === 428)) return 'conflict';
       return fail('PUT', path, response);
     },
     async list<T>(collection: string, filter: { prefix?: string; where?: Record<string, string> } = {}): Promise<{ key: string; value: T }[]> {

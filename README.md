@@ -108,12 +108,16 @@ once no other project uses it; running jobs are detached and finish on their own
 
 **Claims and the work queue.** `operator claim` is a lease on an opaque subject: `take` wins only
 when nobody holds it, the holder's lease ran out, or the same run takes it again; `renew` and
-`release` act only for the holder, and every write is compare-and-set, so two runs never both hold
-a subject. A conflict exits 3 and prints the holder. `operator queue` keeps a project's private work
-items (`{ id, title, body, priority, status, source, createdAt, updatedAt, takenBy }`) in its own
-namespace: `take` moves a `ready` or `needs-decision` item to `taken` for one run, `update` needs the
-`--if-match` etag from `get`, and statuses follow fixed transitions (`done` and `cancelled` are
-final). Both live in reserved collections that `operator state` cannot write. A key that may only
+`release` act only for the holder, and the holder may renew its own lease that ran out while nobody
+else took the subject. Every write is compare-and-set, so two runs never both hold a subject; a
+conflict exits 3 and prints the holder. A lease lasts at most 30 days, and its expiry is judged by
+the clock of the host reading it, so hosts sharing a namespace keep their clocks in sync. Subjects,
+run ids and item ids use letters, digits, `.`, `_`, `:` and `-`, at most 120. `operator queue` keeps
+a project's private work items (`{ id, title, body, priority, status, source, createdAt, updatedAt,
+takenBy: { run, ref } }`) in its own namespace: `take` moves a `ready` or `needs-decision` item to
+`taken` for one run, with an opaque `--ref` to what the run delivers it in; `update` needs the
+`--if-match` etag from `get` and answers the new one; statuses follow fixed transitions, and a
+`done` or `cancelled` item no longer changes. Both live in reserved collections that `operator state` cannot write. A key that may only
 create queue items, for another project's sessions filing findings, is a property of the state
 provider's key, not something the runtime enforces.
 

@@ -127,13 +127,39 @@ test('claims and the work queue answer 0 when the write took effect and 3 when a
   const id = JSON.parse(added.stdout).id as string;
   assert.equal(JSON.parse((await cli(['queue', 'list', '--status', 'ready', '--manifest', manifest, '--json'])).stdout)[0].body, 'The wait is lost after a restart.');
   const read = JSON.parse((await cli(['queue', 'get', id, '--manifest', manifest, '--json'])).stdout) as { etag: string };
-  assert.equal((await cli(['queue', 'take', id, '--run', 'run-a', '--pr', 'pr-3', '--manifest', manifest])).code, 0);
+  assert.equal((await cli(['queue', 'take', id, '--run', 'run-a', '--ref', 'change-3', '--manifest', manifest])).code, 0);
   assert.equal((await cli(['queue', 'take', id, '--run', 'run-b', '--manifest', manifest])).code, 3);
   const stale = await cli(['queue', 'update', id, '--status', 'done', '--if-match', read.etag, '--manifest', manifest]);
   assert.equal(stale.code, 3);
   assert.match(stale.stdout, /^conflict: /);
   assert.equal((await cli(['queue', 'update', id, '--status', 'done', '--manifest', manifest])).code, 2);
   assert.equal((await cli(['queue', 'add', '--title', 'x', '--body-file', body, '--priority', 'urgent', '--manifest', manifest])).code, 1);
+});
+
+test('claim and queue misuse is refused before anything is written', async () => {
+  const p = await createTestProject();
+  projects.push(p);
+  const manifest = join(p.root, 'operator.yaml');
+  const help = (await cli(['--help'])).stdout;
+  // The global options read as one block; the claim and queue usage follows them.
+  assert.ok(help.indexOf('--log-level') < help.indexOf('Claims and queue:') && help.indexOf('-v, --version') < help.indexOf('Claims and queue:'));
+  assert.equal((await cli(['claim', 'take', 'a/b', '--run', 'run-a', '--manifest', manifest])).code, 2);
+  assert.equal((await cli(['claim', 'take', 'item-1', '--run', 'run a', '--manifest', manifest])).code, 2);
+  const tooLong = await cli(['claim', 'take', 'item-1', '--run', 'run-a', '--ttl', '400d', '--manifest', manifest]);
+  assert.equal(tooLong.code, 1);
+  assert.match(tooLong.stderr, /at most 30d/);
+  const empty = join(p.root, 'empty.md');
+  await writeFile(empty, '  \n');
+  assert.equal((await cli(['queue', 'add', '--title', 'Fix it', '--body-file', empty, '--manifest', manifest])).code, 2);
+  assert.equal((await cli(['queue', 'add', '--title', 'Fix it', '--body-file', '', '--manifest', manifest])).code, 2);
+  assert.equal((await cli(['queue', 'add', '--title', ' ', '--body-file', empty, '--manifest', manifest])).code, 2);
+  const spec = join(p.root, 'spec.md');
+  await writeFile(spec, 'spec');
+  const id = JSON.parse((await cli(['queue', 'add', '--title', 'Fix it', '--body-file', spec, '--manifest', manifest, '--json'])).stdout).id as string;
+  const read = JSON.parse((await cli(['queue', 'get', id, '--manifest', manifest, '--json'])).stdout) as { etag: string };
+  assert.equal((await cli(['queue', 'update', id, '--title', '', '--if-match', read.etag, '--manifest', manifest])).code, 2);
+  assert.equal((await cli(['queue', 'take', id, '--run', 'run a', '--manifest', manifest])).code, 2);
+  assert.equal(JSON.parse((await cli(['queue', 'get', id, '--manifest', manifest, '--json'])).stdout).status, 'ready');
 });
 
 test('pause waits until no job runs, says so, and resume ends it', async () => {

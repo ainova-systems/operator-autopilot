@@ -4,7 +4,7 @@ import { hostname, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
-import { CLAIMS_COLLECTION, liveClaims, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
+import { CLAIMS_COLLECTION, isStateKey, liveClaims, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
 import { isMemberName, type JsonObject } from './contract.ts';
 import { Daemon } from './daemon.ts';
 import { parseDuration } from './duration.ts';
@@ -52,7 +52,7 @@ Commands:
   claim <take|renew|release|show> [subject] --run <id> [--ttl 1h]
                                    A compare-and-set lease on an opaque subject; show without a subject lists live claims
   queue <add|list|get|take|update> [id]
-                                   The project's private work queue (see Queue options)
+                                   The project's private work queue (see Claims and queue)
   job-exec <run-dir>               Internal: the job wrapper the daemon starts
 
 Options:
@@ -74,20 +74,24 @@ Options:
   --wait                pause: return once no job runs
   --timeout <duration>  pause --wait: give up after this long (default: wait as long as it takes)
   --run <id>            claim, queue take: the run taking or holding it
+  --ref <r>             queue take: an opaque reference to what the run delivers the item in
   --ttl <duration>      claim take/renew: how long the lease lasts (default 1h)
   --env-file <path>     service install: secrets file the service reads (OPERATOR_ENV_FILE)
   --no-start            service install: enable the service without starting it now
   --json                Machine-readable output
-
-Queue options:
-  queue add --title <t> --body-file <f|-> [--priority critical|high|medium|low]
-            [--status ready|needs-decision|blocked] [--source-kind owner|project-session] [--source-ref r]
-  queue list [--status s]  |  queue get <id>
-  queue take <id> --run <id> [--pr <ref>]          ready or needs-decision -> taken
-  queue update <id> --if-match <etag> [--status s] [--title t] [--body-file f|-] [--priority p]
   --log-level <level>   debug, info, warn or error (default info)
   -h, --help            This help
   -v, --version         Print the version
+
+Claims and queue:
+  Subjects, run ids and item ids use letters, digits, '.', '_', ':' and '-' (at most 120).
+  A claim lasts at most 30d; expiry is judged by the reading host's clock.
+  claim take|renew|release <subject> --run <id> [--ttl 1h]   exit 3 when another run holds it
+  queue add --title <t> --body-file <f|-> [--priority critical|high|medium|low]
+            [--status ready|needs-decision|blocked] [--source-kind owner|project-session] [--source-ref r]
+  queue list [--status s]  |  queue get <id>
+  queue take <id> --run <id> [--ref <r>]           ready or needs-decision -> taken; --ref is opaque
+  queue update <id> --if-match <etag> [--status s] [--title t] [--body-file f|-] [--priority p]
 `;
 
 const options = {
@@ -116,7 +120,7 @@ const options = {
   priority: { type: 'string' },
   'source-kind': { type: 'string' },
   'source-ref': { type: 'string' },
-  pr: { type: 'string' },
+  ref: { type: 'string' },
   'no-start': { type: 'boolean' },
   json: { type: 'boolean' },
   'log-level': { type: 'string' },
@@ -399,12 +403,14 @@ async function commandClaim(values: Values, positionals: string[]): Promise<numb
       print(values, claims, () => claims.map((c) => `${c.subject}  ${c.run}  until ${c.expiresAt}`).join('\n') || 'no live claims');
       return 0;
     }
-    const shown = await showClaim(docs, subject);
+    const shown = await showClaim(docs, key(subject, 'subject'));
     print(values, shown ?? null, () => (shown ? `${shown.live ? 'held' : 'free'}: ${subject} last held by ${shown.claim.run} until ${shown.claim.expiresAt}` : 'no claim'));
     return 0;
   }
   if (!subject) throw new UsageError(`claim ${action} needs a subject`);
   if (!values.run) throw new UsageError(`claim ${action} needs --run <id>`);
+  key(subject, 'subject');
+  key(values.run, '--run');
   const ttlMs = parseDuration(values.ttl ?? DEFAULT_CLAIM_TTL, '--ttl');
   let result: ClaimResult;
   switch (action) {
@@ -418,15 +424,24 @@ async function commandClaim(values: Values, positionals: string[]): Promise<numb
 }
 
 async function readBody(path: string): Promise<string> {
-  return path === '-' ? readStdin() : readFileSync(path, 'utf8');
+  if (path === '') throw new UsageError('--body-file needs a path, or - for stdin');
+  const body = path === '-' ? await readStdin() : readFileSync(path, 'utf8');
+  if (!body.trim()) throw new UsageError(`the body read from ${path === '-' ? 'stdin' : path} is empty`);
+  return body;
+}
+
+/** Subjects and run ids become state keys; a malformed one is a usage error, before any call. */
+function key(value: string, what: string): string {
+  if (!isStateKey(value)) throw new UsageError(`${what} ${JSON.stringify(value)} may only use letters, digits, '.', '_', ':' and '-' (at most 120)`);
+  return value;
 }
 
 function queueLine(item: QueueItem): string {
-  return [item.id, item.status.padEnd(14), item.priority.padEnd(8), item.title, item.takenBy ? `(taken by ${item.takenBy.run}${item.takenBy.pr ? `, ${item.takenBy.pr}` : ''})` : ''].join('  ').trimEnd();
+  return [item.id, item.status.padEnd(14), item.priority.padEnd(8), item.title, item.takenBy ? `(taken by ${item.takenBy.run}${item.takenBy.ref ? `, ${item.takenBy.ref}` : ''})` : ''].join('  ').trimEnd();
 }
 
 function queueWritten(values: Values, result: QueueWrite): number {
-  print(values, result, () => (result.ok ? queueLine(result.item) : `${result.reason}: ${queueLine(result.item)}`));
+  print(values, result, () => (result.ok ? `${queueLine(result.item)}\netag ${result.etag}` : `${result.reason}: ${queueLine(result.item)}`));
   return result.ok ? 0 : 3;
 }
 
@@ -439,7 +454,7 @@ async function commandQueue(values: Values, positionals: string[]): Promise<numb
   const needId = (): string => { if (!id) throw new UsageError(`queue ${action} needs an item id`); return id; };
   switch (action) {
     case 'add': {
-      if (!values.title || !values['body-file']) throw new UsageError('queue add needs --title and --body-file');
+      if (!values.title?.trim() || values['body-file'] === undefined) throw new UsageError('queue add needs --title and --body-file');
       if (values['source-ref'] !== undefined && values['source-kind'] === undefined) throw new UsageError('--source-ref goes with --source-kind');
       const item = await addQueueItem(docs, {
         title: values.title,
@@ -463,14 +478,15 @@ async function commandQueue(values: Values, positionals: string[]): Promise<numb
     }
     case 'take': {
       if (!values.run) throw new UsageError('queue take needs --run <id>');
-      return queueWritten(values, await takeQueueItem(docs, needId(), values.run, values.pr));
+      return queueWritten(values, await takeQueueItem(docs, needId(), key(values.run, '--run'), values.ref));
     }
     case 'update': {
       if (!values['if-match']) throw new UsageError('queue update needs --if-match <etag> from queue get');
+      if (values.title !== undefined && !values.title.trim()) throw new UsageError('--title cannot be empty');
       return queueWritten(values, await updateQueueItem(docs, needId(), {
         ...(values.status ? { status: queueStatus(values.status) } : {}),
         ...(values.title !== undefined ? { title: values.title } : {}),
-        ...(values['body-file'] ? { body: await readBody(values['body-file']) } : {}),
+        ...(values['body-file'] !== undefined ? { body: await readBody(values['body-file']) } : {}),
         ...(values.priority ? { priority: queuePriority(values.priority) } : {}),
       }, values['if-match']));
     }

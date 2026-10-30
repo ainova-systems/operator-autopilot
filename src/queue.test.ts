@@ -30,14 +30,15 @@ test('an added item has the full shape and the list puts the most urgent and old
   });
   assert.deepEqual((await listQueue(docs)).map((item) => item.id), [highOlder.id, high.id, low.id]);
   assert.deepEqual((await listQueue(docs, 'ready')).length, 3);
-  await assert.rejects(addQueueItem(docs, { title: 'x', body: '', status: 'taken' }), /starts ready, needs-decision or blocked/);
-  await assert.rejects(addQueueItem(docs, { title: '  ', body: '' }), /needs a title/);
+  await assert.rejects(addQueueItem(docs, { title: 'x', body: 'spec', status: 'taken' }), /starts ready, needs-decision or blocked/);
+  await assert.rejects(addQueueItem(docs, { title: '  ', body: 'spec' }), /title cannot be empty/);
+  await assert.rejects(addQueueItem(docs, { title: 'Fix it', body: ' \n' }), /body cannot be empty/);
 });
 
 test('two runs taking the same item: exactly one wins, and only ready or needs-decision items can be taken', async () => {
   const docs = await store();
   const item = await addQueueItem(docs, { title: 'Fix a lost wait', body: 'spec' });
-  const results = await Promise.all(['run-a', 'run-b', 'run-c'].map((run) => takeQueueItem(docs, item.id, run, `pr-${run}`)));
+  const results = await Promise.all(['run-a', 'run-b', 'run-c'].map((run) => takeQueueItem(docs, item.id, run, `change-${run}`)));
   const winners = results.filter((result) => result.ok);
   assert.equal(winners.length, 1);
   const stored = (await getQueueItem(docs, item.id)).value;
@@ -63,12 +64,12 @@ test('an update with a stale etag changes nothing, and status changes follow the
   const fresh = await getQueueItem(docs, item.id);
   await assert.rejects(updateQueueItem(docs, item.id, { status: 'taken' }, fresh.etag), /queue take/);
   await assert.rejects(updateQueueItem(docs, item.id, { status: 'done' }, fresh.etag), /cannot move from ready to done/);
-  await takeQueueItem(docs, item.id, 'run-a', 'pr-1');
+  await takeQueueItem(docs, item.id, 'run-a', 'change-1');
   const taken = await getQueueItem(docs, item.id);
   const done = await updateQueueItem(docs, item.id, { status: 'done' }, taken.etag);
-  assert.deepEqual(done.ok && done.item.takenBy, { run: 'run-a', pr: 'pr-1' });
+  assert.deepEqual(done.ok && done.item.takenBy, { run: 'run-a', ref: 'change-1' });
   const closed = await getQueueItem(docs, item.id);
-  await assert.rejects(updateQueueItem(docs, item.id, { status: 'ready' }, closed.etag), /cannot move from done to ready/);
+  await assert.rejects(updateQueueItem(docs, item.id, { status: 'ready' }, closed.etag), /is done, which is final/);
 });
 
 test('an item handed back to the queue forgets who took it', async () => {
@@ -91,4 +92,30 @@ test('an add the store answers with an error is kept when it landed, and fails w
   assert.equal((await getQueueItem(docs, item.id)).value.title, 'Fix a lost wait');
   const failing: DocStore = { ...docs, async create() { throw outage; } };
   await assert.rejects(addQueueItem(failing, { title: 'Fix a stale claim', body: 'spec' }), /store answered 500/);
+});
+
+test('a take or update the store made but reported lost succeeds, and every success carries the item\'s new etag', async () => {
+  const docs = await store();
+  const lying: DocStore = { ...docs, async replace(collection, key, value, options) { await docs.replace(collection, key, value, options); return 'conflict'; } };
+  const item = await addQueueItem(docs, { title: 'Fix a lost wait', body: 'spec' });
+  const taken = await takeQueueItem(lying, item.id, 'run-a', 'change-1');
+  assert.equal(taken.ok && taken.etag, (await getQueueItem(docs, item.id)).etag);
+  const read = await getQueueItem(docs, item.id);
+  const done = await updateQueueItem(lying, item.id, { status: 'done' }, read.etag);
+  assert.equal(done.ok && done.item.status, 'done');
+  assert.equal(done.ok && done.etag, (await getQueueItem(docs, item.id)).etag);
+});
+
+test('a done or cancelled item no longer changes, not even its title, body or priority', async () => {
+  const docs = await store();
+  const item = await addQueueItem(docs, { title: 'Fix a lost wait', body: 'spec' });
+  const read = await getQueueItem(docs, item.id);
+  await updateQueueItem(docs, item.id, { status: 'cancelled' }, read.etag);
+  const closed = await getQueueItem(docs, item.id);
+  for (const change of [{ title: 'Renamed' }, { body: 'new spec' }, { priority: 'low' as const }, { status: 'cancelled' as const }]) {
+    await assert.rejects(updateQueueItem(docs, item.id, change, closed.etag), /is cancelled, which is final/);
+  }
+  assert.equal((await getQueueItem(docs, item.id)).value.title, 'Fix a lost wait');
+  await assert.rejects(updateQueueItem(docs, item.id, { title: ' ' }, closed.etag), /title cannot be empty/);
+  await assert.rejects(takeQueueItem(docs, item.id, 'run with space'), /run id/);
 });

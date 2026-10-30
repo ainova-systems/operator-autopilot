@@ -115,3 +115,26 @@ test('a create the store answers with an error is read again: a record another t
   const unreachable: DocStore = { ...docs, async get(collection, key) { reads += 1; if (reads > 1) throw new Error('store unreachable'); return docs.get(collection, key); }, async create() { throw outage; } };
   await assert.rejects(takeClaim(unreachable, 'item-12', 'run-a', HOUR, now), /store unreachable/);
 });
+
+test('a write the store made but reported lost is found as this run\'s own: take and release succeed', async () => {
+  const docs = await store();
+  // The store applies one conditional write, then answers conflict, as a repeated request after a timeout does.
+  const lyingOnce = (): DocStore => {
+    let lied = false;
+    return { ...docs, async replace(collection, key, value, options) { const outcome = await docs.replace(collection, key, value, options); if (lied) return outcome; lied = true; return 'conflict'; } };
+  };
+  await takeClaim(docs, 'item-20', 'run-x', HOUR, at('2026-10-30T08:00:00Z'));
+  const taken = await takeClaim(lyingOnce(), 'item-20', 'run-a', HOUR, at('2026-10-30T10:00:00Z'));
+  assert.equal(taken.ok && taken.claim.run, 'run-a');
+  const released = await releaseClaim(lyingOnce(), 'item-20', 'run-a', at('2026-10-30T10:05:00Z'));
+  assert.equal(released.ok && released.claim.releasedAt, '2026-10-30T10:05:00.000Z');
+  assert.equal((await showClaim(docs, 'item-20', at('2026-10-30T10:06:00Z')))?.live, false);
+});
+
+test('a subject outside the key charset and a lease over 30 days are refused before anything is written', async () => {
+  const docs = await store();
+  for (const subject of ['a/b', 'a b', '..', '', 'x'.repeat(121)]) await assert.rejects(takeClaim(docs, subject, 'run-a', HOUR), /subject .* may only use/, subject);
+  await assert.rejects(takeClaim(docs, 'item-21', 'run-a', 31 * 86_400_000), /at most 30d/);
+  await assert.rejects(renewClaim(docs, 'item-21', 'run-a', 0), /at most 30d/);
+  assert.deepEqual(await liveClaims(docs), []);
+});
