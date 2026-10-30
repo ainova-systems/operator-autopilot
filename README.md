@@ -116,7 +116,9 @@ ran out while nobody else took the subject. A lease is whole seconds and at most
 lifetime; renewing keeps a subject longer, up to the end of the lock's day, after which the holder
 takes it again like anyone else. `release` shortens the lock to one second by its token and lets it
 lapse, since the backend has no token-checked delete; the lock token itself is never printed, not
-even by `operator state`. The record's expiry is judged by the clock of the host reading it, so
+even by `operator state`. A take whose answer is lost after the backend granted the lock leaves a
+lock nobody holds a token for: it cannot be ended early, so the subject reads held, with the holder
+unknown, until that lease runs out. The record's expiry is judged by the clock of the host reading it, so
 hosts sharing a namespace keep their clocks in sync. Subjects, run ids and item ids use letters,
 digits, `.`, `_`, `:` and `-`, at most 120. `operator queue` keeps a project's private work items
 (`{ id, title, body, priority, status, source, createdAt, updatedAt, takenBy: { run, ref } }`) in its

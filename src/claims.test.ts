@@ -147,7 +147,7 @@ test('a lease never outlives its lock\'s day; past it the holder takes the subje
   const first = locks.held('claim.long');
   // Near the end of the lock's life, a renewal gets only what is left, and the record says so.
   const near = await renewClaim(store, 'long', 'run-a', 12 * HOUR, tick(clock, '2026-10-30T23:59:00Z'));
-  assert.equal(near.ok && near.claim.expiresAt, '2026-10-31T00:00:00.000Z');
+  assert.equal(near.ok && near.claim.expiresAt, '2026-10-30T23:59:55.000Z');
   // Past it the lock lapsed, and the holder acquires it again under a new token.
   const again = await renewClaim(store, 'long', 'run-a', 12 * HOUR, tick(clock, '2026-10-31T00:00:30Z'));
   assert.equal(again.ok && again.claim.takenAt, '2026-10-30T00:00:00.000Z');
@@ -203,4 +203,49 @@ test('a subject outside the key charset and a lease over a day are refused befor
   await assert.rejects(renewClaim(store, 'item-21', 'run-a', 0, () => clock.now), /at most 24h/);
   assert.equal(locks.held('claim.item-21'), undefined);
   assert.deepEqual(await liveClaims(store, () => clock.now), []);
+});
+
+test('a take right after a release waits the second the released lock needs to lapse', async () => {
+  // A clock that runs with real time from a fixed start, so the released lock lapses while the take waits.
+  const started = Date.now();
+  const clock = { get now(): Date { return new Date(Date.parse('2026-10-30T10:00:00Z') + Date.now() - started); } };
+  const dir = await mkdtemp(join(tmpdir(), 'operator-claims-'));
+  dirs.push(dir);
+  const store: ClaimStore = { docs: createFileBackend(dir, 'demo').docs, locks: fakeLocks(clock) };
+  await takeClaim(store, 'next', 'run-a', HOUR, () => clock.now);
+  await releaseClaim(store, 'next', 'run-a', () => clock.now);
+  const taken = await takeClaim(store, 'next', 'run-b', HOUR, () => clock.now);
+  assert.equal(taken.ok && taken.claim.run, 'run-b');
+});
+
+test('renewals stay inside the lock\'s real day, which began a moment before the record says', async () => {
+  const { store, clock, docs } = await setup('2026-10-30T00:00:00Z');
+  // The backend stamps its lock three seconds before this host stamps the record.
+  const early: LockStore = { ...store.locks, async acquire(key, ttlMs, reference) {
+    const real = clock.now;
+    clock.now = new Date(real.getTime() - 3000);
+    try { return await store.locks.acquire(key, ttlMs, reference); } finally { clock.now = real; }
+  } };
+  const claims: ClaimStore = { docs, locks: early };
+  await takeClaim(claims, 'edge', 'run-a', 13 * HOUR, () => clock.now);
+  await renewClaim(claims, 'edge', 'run-a', 11 * HOUR, tick(clock, '2026-10-30T12:00:00Z'));
+  await renewClaim(claims, 'edge', 'run-a', HOUR, tick(clock, '2026-10-30T22:59:00Z'));
+  // Seventy seconds before the record's day ends, the lock's real day has sixty-seven left.
+  const near = await renewClaim(claims, 'edge', 'run-a', HOUR, tick(clock, '2026-10-30T23:58:50Z'));
+  assert.equal(near.ok && near.claim.expiresAt, '2026-10-30T23:59:55.000Z');
+});
+
+test('a renewal racing its own run\'s release does not bring the claim back', async () => {
+  const { store, clock, locks, docs } = await setup('2026-10-30T10:00:00Z');
+  await takeClaim(store, 'r', 'run-a', HOUR, () => clock.now);
+  // The release lands between the renewal's lock extension and its record write.
+  const racing: LockStore = { ...locks, async renew(key, token, ttlMs) {
+    const outcome = await locks.renew(key, token, ttlMs);
+    if (ttlMs > 1000) await releaseClaim(store, 'r', 'run-a', () => clock.now);
+    return outcome;
+  } };
+  const renewed = await renewClaim({ docs, locks: racing }, 'r', 'run-a', HOUR, () => clock.now);
+  assert.deepEqual(renewed, { ok: false, reason: 'absent' });
+  assert.equal((await showClaim(store, 'r', () => clock.now)).claim?.releasedAt !== undefined, true);
+  assert.equal(locks.ttlOf('claim.r'), 1000);
 });

@@ -16,6 +16,9 @@ export const MAX_CLAIM_TTL_MS = 86_400_000;
 // The shortest lease the lock takes. Ending a claim shortens its lock to this by token and lets it
 // lapse: the backend has no token-checked delete, and a delete by key could remove the next holder's.
 const END_MS = 1000;
+// The lock's own day starts when the backend acquired it, a moment before this host stamped
+// `lockedAt`; renewals stay this far inside the day so they never ask past its real end.
+const DEADLINE_MARGIN_MS = 5000;
 // A holder that just acquired writes its record right after; a reader waits this long for it.
 const RECORD_WAIT_MS = [100, 250, 500];
 
@@ -129,19 +132,27 @@ async function acquire(store: ClaimStore, subject: string, run: string, ttlMs: n
 }
 
 /**
- * Extends `record`'s lock by its token, up to the end of the lock's one-day life. A lock that ran
- * out is acquired again only while nobody else holds it, keeping when the claim was first taken.
+ * Extends the lock of the record read at `etag` by its token, up to the end of the lock's one-day
+ * life. A lock that ran out is acquired again only while nobody else holds it, keeping when the
+ * claim was first taken. `released` means this run's own release ended the claim meanwhile.
  */
-async function extend(store: ClaimStore, record: StoredClaim, ttlMs: number, clock: Clock): Promise<ClaimRecord | undefined> {
+async function extend(store: ClaimStore, record: StoredClaim, etag: string, ttlMs: number, clock: Clock): Promise<ClaimRecord | 'released' | undefined> {
   const started = clock();
-  const room = Date.parse(record.lockedAt) + MAX_CLAIM_TTL_MS - started.getTime();
+  const room = Date.parse(record.lockedAt) + MAX_CLAIM_TTL_MS - DEADLINE_MARGIN_MS - started.getTime();
   if (room > END_MS) {
     const outcome = await store.locks.renew(lockKey(record.subject), record.token, Math.min(ttlMs, Math.floor(room / 1000) * 1000));
     if (outcome === 'renewed') {
       const at = clock();
-      const renewed: StoredClaim = { ...record, renewedAt: at.toISOString(), expiresAt: expiry(record.lockedAt, at, ttlMs) };
-      await store.docs.replace(CLAIMS_COLLECTION, record.subject, renewed, { ttlMs: ttlMs + CLAIM_RETENTION_MS });
-      return publicView(renewed);
+      const renewed: StoredClaim = { ...record, renewedAt: at.toISOString(), expiresAt: new Date(Math.min(at.getTime() + ttlMs, Date.parse(record.lockedAt) + MAX_CLAIM_TTL_MS - DEADLINE_MARGIN_MS)).toISOString() };
+      if ((await store.docs.replace(CLAIMS_COLLECTION, record.subject, renewed, { etag, ttlMs: ttlMs + CLAIM_RETENTION_MS, missingIsConflict: true })) === 'written') return publicView(renewed);
+      // The record changed under this renewal. A release of this run ended the claim: the lock this
+      // renewal just extended is ended again, so the release stands and nothing is resurrected.
+      const current = await readRecord(store.docs, record.subject);
+      if (current?.value.run === record.run && current.value.releasedAt !== undefined) {
+        await endLock(store.locks, record.subject, record.token);
+        return 'released';
+      }
+      return current?.value.run === record.run ? publicView(current.value) : undefined;
     }
     if (outcome === 'lifetime-exceeded') return undefined;
   } else if (await store.locks.exists(lockKey(record.subject))) {
@@ -173,10 +184,10 @@ export async function takeClaim(store: ClaimStore, subject: string, run: string,
   if (taken) return { ok: true, claim: taken };
   const record = await readRecord(store.docs, subject);
   if (record && record.value.run === run && record.value.releasedAt === undefined) {
-    const renewed = await extend(store, record.value, ttl, clock);
-    if (renewed) return { ok: true, claim: renewed };
+    const renewed = await extend(store, record.value, record.etag, ttl, clock);
+    if (renewed && renewed !== 'released') return { ok: true, claim: renewed };
   }
-  if (record?.value.releasedAt !== undefined && Date.now() - Date.parse(record.value.releasedAt) < 2 * END_MS) {
+  if (record?.value.releasedAt !== undefined && clock().getTime() - Date.parse(record.value.releasedAt) < 2 * END_MS) {
     await sleep(END_MS + 100);
     const retaken = await acquire(store, subject, run, ttl, clock);
     if (retaken) return { ok: true, claim: retaken };
@@ -194,7 +205,8 @@ export async function renewClaim(store: ClaimStore, subject: string, run: string
   const record = await readRecord(store.docs, subject);
   if (!record || record.value.releasedAt !== undefined) return { ok: false, reason: 'absent' };
   if (record.value.run !== run) return claimIsLive(record.value, clock()) ? { ok: false, reason: 'held', holder: publicView(record.value) } : { ok: false, reason: 'not-holder', holder: publicView(record.value) };
-  const renewed = await extend(store, record.value, ttl, clock);
+  const renewed = await extend(store, record.value, record.etag, ttl, clock);
+  if (renewed === 'released') return { ok: false, reason: 'absent' };
   return renewed ? { ok: true, claim: renewed } : held(store, subject, clock);
 }
 

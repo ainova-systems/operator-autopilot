@@ -14,7 +14,7 @@ import type { Manifest, OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
 import { Pools } from './pools.ts';
 import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
-import type { StateBackend } from './state/types.ts';
+import type { Acquired, StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
 import { WaitStore } from './waits.ts';
 
@@ -351,18 +351,26 @@ export class Daemon {
       const member = decision.member ?? this.pools.member(hold);
       if (member) { cwd = member.cwd; herdrWorkspace = member.herdr; }
     }
-    if (op.limit) {
-      const decision = await this.pools.acquire(op.limit, job.id);
-      if (!decision.granted) {
-        if (hold) await this.pools.release(job.id, hold);
-        await queue(decision.waitingFor, decision.retryAfterMs);
-        return;
-      }
-      limitHold = decision.hold;
-    }
-
     const leaseKey = `run.${job.id}`;
-    const lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
+    let lease: Acquired;
+    try {
+      if (op.limit) {
+        const decision = await this.pools.acquire(op.limit, job.id);
+        if (!decision.granted) {
+          if (hold) await this.pools.release(job.id, hold);
+          await queue(decision.waitingFor, decision.retryAfterMs);
+          return;
+        }
+        limitHold = decision.hold;
+      }
+      lease = await this.backend.locks.acquire(leaseKey, this.leaseTtl, `${this.host}:${job.attempt}`);
+    } catch (error) {
+      // The state backend failed before the run was recorded: give back what this dispatch holds,
+      // or the workspace would read busy for this job until the daemon restarts.
+      if (hold) await this.pools.release(job.id, hold).catch(() => undefined);
+      if (limitHold) await this.pools.release(job.id, limitHold).catch(() => undefined);
+      throw error;
+    }
     if (!lease.acquired) {
       if (hold) await this.pools.release(job.id, hold);
       if (limitHold) await this.pools.release(job.id, limitHold);
