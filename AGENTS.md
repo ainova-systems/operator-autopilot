@@ -94,6 +94,8 @@ src/
   pause.ts        the control/pause record the daemon reads before it starts anything
   claims.ts       compare-and-set leases on opaque subjects (reserved collection subject-claims)
   queue.ts        a private work queue with fixed status transitions (reserved collection work-queue)
+  locks.ts        ends a lock only by its token (shortened to a second), never by deleting its key
+  redact.ts       strips lock, lease and slot tokens from everything a command prints
   service.ts      the systemd user unit and `operator service` install / uninstall / status
   state/          one interface; ainoflow.ts (HTTP) and file.ts (tests and dry runs only)
 fixtures/demo/    a complete example project used by tests and the live demo

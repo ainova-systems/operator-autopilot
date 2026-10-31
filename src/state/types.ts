@@ -30,7 +30,11 @@ export interface LockStore {
   /** Marks the key done; a completed key answers every later acquire as a duplicate. */
   complete(key: string, token: string): Promise<void>;
   exists(key: string): Promise<boolean>;
-  /** Releases without completing, so the key can be acquired again at once. */
+  /**
+   * Deletes the lock by key, without a token, so it can be acquired again at once. The runtime never
+   * calls it (it could remove a successor's lock that a late delete lands on): it ends its own locks
+   * by token with endOwnedLock. Kept for tests and manual cleanup.
+   */
   release(key: string): Promise<void>;
 }
 

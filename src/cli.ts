@@ -4,7 +4,7 @@ import { hostname, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
-import { CLAIMS_COLLECTION, isStateKey, liveClaims, redactClaim, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
+import { CLAIMS_COLLECTION, isStateKey, liveClaims, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
 import { isMemberName, type JsonObject } from './contract.ts';
 import { Daemon, SUBJECT_TABS_COLLECTION, type SubjectTab } from './daemon.ts';
 import { parseDuration } from './duration.ts';
@@ -17,6 +17,7 @@ import { createLogger, errorText, type LogLevel } from './log.ts';
 import { loadManifest, manifestPath, type Manifest } from './manifest.ts';
 import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
 import { addQueueItem, getQueueItem, listQueue, QUEUE_COLLECTION, queuePriority, queueSourceKind, queueStatus, takeQueueItem, updateQueueItem, type QueueItem, type QueueWrite } from './queue.ts';
+import { redactTokens } from './redact.ts';
 import { installService, serviceStatus, uninstallService } from './service.ts';
 import { capabilityProblems, checkCapabilities, openState } from './state/open.ts';
 import type { StateBackend } from './state/types.ts';
@@ -262,11 +263,11 @@ async function commandJobs(values: Values, positionals: string[], single: boolea
     if (!id) throw new UsageError('usage: operator job <id>');
     const job = await store.get(id);
     if (!job) throw new OperatorError('NOT_FOUND', `no job ${id}`);
-    process.stdout.write(`${JSON.stringify(job, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(redactTokens(job), null, 2)}\n`);
     return 0;
   }
   const jobs = await store.list(values.status as JobStatus | undefined);
-  print(values, jobs, () => jobs.map((job) => [
+  print(values, redactTokens(jobs), () => jobs.map((job) => [
     job.updatedAt.slice(0, 19), job.id, job.status.padEnd(11), `${job.workflow}/${job.operation}`, job.subject || '-', `a${job.attempt}`,
     job.waitingFor ?? job.outcome?.failure?.reason ?? job.outcome?.message ?? '',
   ].join('  ')).join('\n') || 'no jobs');
@@ -364,7 +365,7 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
     case 'get': {
       const doc = await docs.get(collection, needKey());
       if (!doc) throw new OperatorError('NOT_FOUND', `no ${collection}/${key}`);
-      const value = collection === CLAIMS_COLLECTION ? redactClaim(doc.value) : doc.value;
+      const value = redactTokens(doc.value);
       process.stdout.write(`${JSON.stringify(values.json ? { ...doc, value } : value, null, 2)}\n`);
       return 0;
     }
@@ -383,7 +384,7 @@ async function commandState(values: Values, positionals: string[]): Promise<numb
         where[entry.slice(0, at)] = entry.slice(at + 1);
       }
       const items = await docs.list(collection, { ...(values.prefix ? { prefix: values.prefix } : {}), where });
-      const shown = collection === CLAIMS_COLLECTION ? items.map((item) => ({ ...item, value: redactClaim(item.value) })) : items;
+      const shown = redactTokens(items);
       process.stdout.write(`${JSON.stringify(shown, null, 2)}\n`);
       return 0;
     }

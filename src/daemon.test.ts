@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { enqueue } from './jobs.ts';
+import { Pools } from './pools.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -401,6 +402,46 @@ test('a job that names its workspace member runs there, and waits for it rather 
   assert.equal(waiting?.waitingFor, 'workspace s2 of pool slots is busy');
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold', 'pr-2'))[0]?.status === 'done');
   for (const subject of ['pr-1', 'pr-2']) assert.equal((await jobsBy(daemon, 'hold', subject))[0]?.run?.slot?.member, 's2');
+});
+
+test('the runtime gives every lock back by its token and never deletes one by key', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  // A delete by key carries no token: landing late, it would remove the lock a successor took.
+  const deleted: string[] = [];
+  p.backend.locks.release = async (key) => { deleted.push(key); };
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  await inSlot(p, 'hold', 'pr-1', 's2', { seconds: 1 });
+  await inSlot(p, 'hold', 'pr-2', 's2', { seconds: 1 });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold')).every((job) => job.status === 'done'));
+  await (daemon as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
+  assert.deepEqual(deleted, []);
+  // Each lease was shortened by its token instead, so it lapses by itself.
+  assert.equal(await p.backend.locks.exists('leader'), true);
+  await sleep(1200);
+  assert.equal(await p.backend.locks.exists('leader'), false);
+});
+
+test('a workspace lease past its lifetime is ended by its token and taken again, never deleted', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const deleted: string[] = [];
+  const renewals: number[] = [];
+  const renew = p.backend.locks.renew.bind(p.backend.locks);
+  let past = true;
+  p.backend.locks.release = async (key) => { deleted.push(key); };
+  p.backend.locks.renew = async (key, token, ttlMs) => {
+    renewals.push(ttlMs);
+    if (past && ttlMs !== 1000) { past = false; return 'lifetime-exceeded'; }
+    return renew(key, token, ttlMs);
+  };
+  const pools = new Pools(p.manifest, p.backend, p.log);
+  const decision = await pools.acquire('slots', 'job-1', { member: 's1' });
+  assert.equal(decision.granted, true);
+  const hold = decision.granted ? decision.hold : undefined;
+  const renewed = await pools.renew('job-1', hold!);
+  assert.deepEqual(deleted, []);
+  assert.ok(renewals.includes(1000), 'the expired lease was shortened by its token');
+  assert.notEqual(renewed.token, hold!.token, 'the workspace was taken again with a new lease');
 });
 
 test('a run lease the state backend fails to grant gives the workspace back for the next job', async () => {
@@ -966,7 +1007,10 @@ test('a session on another host, or a pane not back at its shell, keeps the next
   await writeFile(wrapperPath, JSON.stringify(wrapper));
   // Free when asked, then still working once its session was ended: not back at its shell.
   statuses = ['idle', ...Array.from({ length: 200 }, () => 'working')];
-  await daemon.poll(new Date(Date.now() + 1000));
+  // The first refusal gave the run lease back by its token: let it lapse, and let the leader lease
+  // come due so this poll renews it before the pane check spends its few seconds.
+  await sleep(2100);
+  await daemon.poll();
   assert.equal((await jobsBy(daemon, 'look', 'pr-3')).find((job) => job.trigger.id === 'look-2')?.waitingFor, 'per-subject tab wT:t1 is not back at its shell');
   statuses = [];
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'look', 'pr-3')).every((job) => job.status === 'done'));

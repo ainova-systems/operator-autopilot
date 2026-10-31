@@ -1,4 +1,6 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { SlotHold } from './jobs.ts';
+import { END_MS, EndingLocks, endOwnedLock } from './locks.ts';
 import type { Logger } from './log.ts';
 import type { Manifest, WorkspaceMember } from './manifest.ts';
 import type { StateBackend } from './state/types.ts';
@@ -24,6 +26,8 @@ export class Pools {
   readonly backend: StateBackend;
   readonly log: Logger;
   readonly held = new Map<string, Map<string, SlotHold>>();
+  // Workspace leases this host gave back by token: the next job waits for one to lapse.
+  private readonly ending = new EndingLocks();
 
   constructor(manifest: Manifest, backend: StateBackend, log: Logger) {
     this.manifest = manifest;
@@ -61,7 +65,12 @@ export class Pools {
         holds.set(jobId, hold);
         return { granted: true, hold, member };
       }
-      if ([...holds.values()].some((hold) => hold.member === member.name && !hold.read) || await this.backend.locks.exists(key)) {
+      if ([...holds.values()].some((hold) => hold.member === member.name && !hold.read)) {
+        return { granted: false, waitingFor: `workspace ${member.name} of pool ${poolName} is busy`, retryAfterMs: LOCAL_RETRY_MS };
+      }
+      const lapsing = this.ending.remaining(key);
+      if (lapsing > 0) return { granted: false, waitingFor: `workspace ${member.name} of pool ${poolName} is being given back`, retryAfterMs: lapsing };
+      if (await this.backend.locks.exists(key)) {
         return { granted: false, waitingFor: `workspace ${member.name} of pool ${poolName} is busy`, retryAfterMs: LOCAL_RETRY_MS };
       }
       const lease = await this.backend.locks.acquire(key, this.manifest.runtime.leaseTtlMs, jobId);
@@ -80,9 +89,12 @@ export class Pools {
       return { granted: true, hold };
     }
     const busy = new Set([...holds.values()].filter((hold) => !hold.read).map((hold) => hold.member));
+    let lapsing = 0;
     for (const member of pool.members) {
       if (busy.has(member.name)) continue;
       const key = memberLockKey(poolName, member.name);
+      const left = this.ending.remaining(key);
+      if (left > 0) { lapsing = lapsing === 0 ? left : Math.min(lapsing, left); continue; }
       // Reading a lease is free; acquiring one is metered, so a held member is skipped unread.
       if (await this.backend.locks.exists(key)) continue;
       const lease = await this.backend.locks.acquire(key, this.manifest.runtime.leaseTtlMs, jobId);
@@ -91,7 +103,7 @@ export class Pools {
       holds.set(jobId, hold);
       return { granted: true, hold, member };
     }
-    return { granted: false, waitingFor: `every workspace of pool ${poolName} is busy (${pool.members.map((m) => m.name).join(', ')})`, retryAfterMs: LOCAL_RETRY_MS };
+    return { granted: false, waitingFor: `every workspace of pool ${poolName} is busy (${pool.members.map((m) => m.name).join(', ')})`, retryAfterMs: lapsing > 0 ? lapsing : LOCAL_RETRY_MS };
   }
 
   member(hold: SlotHold): WorkspaceMember | undefined {
@@ -104,7 +116,12 @@ export class Pools {
     if (hold.kind !== 'workspaces' || hold.read) return hold;
     const outcome = await this.backend.locks.renew(hold.key, hold.token, this.manifest.runtime.leaseTtlMs);
     if (outcome === 'renewed') return hold;
-    if (outcome === 'lifetime-exceeded') await this.backend.locks.release(hold.key);
+    // A lease past its lifetime cannot be renewed: end it by token and take the workspace again once
+    // it lapsed, never by deleting the key, which could remove a lease another holder took meanwhile.
+    if (outcome === 'lifetime-exceeded') {
+      await endOwnedLock(this.backend.locks, hold.key, hold.token);
+      await sleep(END_MS + 100);
+    }
     const lease = await this.backend.locks.acquire(hold.key, this.manifest.runtime.leaseTtlMs, jobId);
     if (!lease.acquired) {
       this.log.warn('workspace lease lost to another holder; the running job keeps its workspace', { job: jobId, pool: hold.pool, member: hold.member });
@@ -119,7 +136,6 @@ export class Pools {
     this.holds(hold.pool).delete(jobId);
     if (hold.kind === 'limit') { await this.backend.slots.release(hold.key, hold.token, { global: hold.global }); return; }
     if (hold.read) return;
-    // Shield deletes without a token; give the lease back only while this run still owns it.
-    if ((await this.backend.locks.renew(hold.key, hold.token, 1000)) === 'renewed') await this.backend.locks.release(hold.key);
+    if (await endOwnedLock(this.backend.locks, hold.key, hold.token)) this.ending.ended(hold.key);
   }
 }

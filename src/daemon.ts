@@ -10,6 +10,7 @@ import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
 import { resultWritten, signalCommand } from './job-exec.ts';
 import { jobTitle, openHerdrTab, prepareRun, runDirFor, startHeadless, startInHerdr } from './launch.ts';
+import { END_MS, EndingLocks, endOwnedLock } from './locks.ts';
 import { errorText, type Logger } from './log.ts';
 import type { Manifest, OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
@@ -113,6 +114,8 @@ export class Daemon {
   /** Number of runs this process started; tests use it to prove nothing launched twice. */
   launches = 0;
   private leader: { token: string; renewedAt: number } | undefined;
+  // Run leases this daemon ended by token, until they lapse.
+  private readonly endingLeases = new EndingLocks();
   private renewing: Promise<void> | undefined;
   private readonly timerMemo = new Map<string, string>();
   private readonly deferred = new Map<string, number>();
@@ -251,7 +254,9 @@ export class Daemon {
     const outcome = await this.backend.locks.renew('leader', this.leader.token, this.leaseTtl);
     if (outcome === 'renewed') { this.leader.renewedAt = Date.now(); return; }
     if (outcome === 'lifetime-exceeded') {
-      await this.backend.locks.release('leader');
+      // Past its lifetime the lease cannot be renewed: end it by token, let it lapse and take it again.
+      await endOwnedLock(this.backend.locks, 'leader', this.leader.token);
+      await sleep(END_MS + 100);
       const lease = await this.backend.locks.acquire('leader', this.leaseTtl, `${this.host}:${process.pid}`);
       if (lease.acquired) { await this.writeLeader(lease.token); this.log.info('leader lease re-acquired after its 24h lifetime'); return; }
     }
@@ -262,7 +267,7 @@ export class Daemon {
   private async releaseLeader(): Promise<void> {
     if (!this.leader) return;
     try {
-      await this.backend.locks.release('leader');
+      await endOwnedLock(this.backend.locks, 'leader', this.leader.token);
       await rm(this.leaderFile, { force: true });
     } catch (error) {
       this.log.warn('could not release the leader lease; it expires by itself', { error: errorText(error) });
@@ -406,6 +411,10 @@ export class Daemon {
         });
       }
     };
+    // A run lease this daemon gave back a moment ago, e.g. for a run that waited for its tab, is free
+    // once it lapsed: retry after that second rather than read it as held elsewhere and wait a lease long.
+    const lapsing = this.endingLeases.remaining(`run.${job.id}`);
+    if (lapsing > 0) { await queue('its run lease is being given back', lapsing); return; }
     if (op.pool) {
       const decision = await this.pools.acquire(op.pool, job.id, { ...(job.member ? { member: job.member } : {}), read: op.access === 'read' });
       if (!decision.granted) { await queue(decision.waitingFor, decision.retryAfterMs); return; }
@@ -876,7 +885,8 @@ export class Daemon {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
     if (run.limitSlot) steps.push(this.pools.release(jobId, run.limitSlot));
-    if (run.lease) steps.push(releaseOwnedLease(this.backend, run.lease.key, run.lease.token));
+    const lease = run.lease;
+    if (lease) steps.push(releaseOwnedLease(this.backend, lease.key, lease.token).then((ended) => { if (ended) this.endingLeases.ended(lease.key); }));
     // A freed slot may be what a deferred job was waiting for.
     this.deferred.clear();
     for (const outcome of await Promise.allSettled(steps)) {
@@ -1087,7 +1097,7 @@ export class Daemon {
   }
 }
 
-/** Releases a Shield lease only while this token still owns it, so a successor's lease survives. */
-export async function releaseOwnedLease(backend: StateBackend, key: string, token: string): Promise<void> {
-  if ((await backend.locks.renew(key, token, 1000)) === 'renewed') await backend.locks.release(key);
+/** Gives a run lease back by its token (endOwnedLock), so a successor's lease survives. */
+export async function releaseOwnedLease(backend: StateBackend, key: string, token: string): Promise<boolean> {
+  return endOwnedLock(backend.locks, key, token);
 }

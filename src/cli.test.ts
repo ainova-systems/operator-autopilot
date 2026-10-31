@@ -106,6 +106,29 @@ test('scripts cannot change the collections the runtime keeps its own records in
   }
 });
 
+test('no command prints a lock, lease or slot token from a job or from state', async () => {
+  const p = await createTestProject();
+  projects.push(p);
+  const manifest = join(p.root, 'operator.yaml');
+  const job: JobRecord = {
+    id: 'j-token', project: 'demo', workflow: 'demo', operation: 'finish', subject: 'item-1', input: {}, trigger: { id: 't', name: 'test', kind: 'manual' },
+    status: 'running', attempt: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), history: [],
+    run: { attempt: 1, host: 'h', runDir: '', startedAt: new Date().toISOString(), placement: { kind: 'headless' }, lease: { key: 'run.j-token', token: 'secret-lease' }, slot: { pool: 'p', kind: 'workspaces', key: 'k', token: 'secret-slot', global: false, member: 'm' } },
+  } as JobRecord;
+  await p.backend.docs.replace('jobs', job.id, job);
+  const outputs = [
+    await cli(['job', 'j-token', '--manifest', manifest]),
+    await cli(['jobs', '--json', '--manifest', manifest]),
+    await cli(['state', 'get', 'jobs', 'j-token', '--json', '--manifest', manifest]),
+    await cli(['state', 'list', 'jobs', '--manifest', manifest]),
+  ];
+  for (const output of outputs) {
+    assert.equal(output.code, 0, output.stderr);
+    assert.match(output.stdout, /run\.j-token/);
+    assert.doesNotMatch(output.stdout, /secret-|"token"/);
+  }
+});
+
 test('claims and the work queue answer 0 when the write took effect and 3 when another run won', async () => {
   const p = await createTestProject();
   projects.push(p);

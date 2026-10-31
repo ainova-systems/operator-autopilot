@@ -42,6 +42,9 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
+  The runtime gives every lock back - a workspace, a run lease, the leader lease - by shortening it
+  to one second with its token, never by deleting the key, which could remove a successor's lock;
+  the next job that wants it retries once that second passed, and no command prints a token.
   A `next` request (or a `wait`, for the operation it resumes) may name the `member` to run in -
   for example the workspace that holds its subject - and the job waits for that member rather than
   taking another. A follow-on in the same workspace pool stays in the member its run held unless its
