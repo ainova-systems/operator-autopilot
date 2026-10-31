@@ -1012,7 +1012,22 @@ export class Daemon {
     }
   }
 
+  /**
+   * Runs the close retries and schedules the next pass: a minute away, or the next poll when a pass
+   * completed with a pane still being confirmed. A pass that fails is retried a minute later too,
+   * not on every poll.
+   */
   private async retryTabs(now: Date): Promise<void> {
+    let confirming = false;
+    try {
+      confirming = await this.closePendingTabs(now);
+    } finally {
+      this.nextTabRetry = now.getTime() + (confirming ? this.manifest.runtime.pollMs : TAB_RETRY_MS);
+    }
+  }
+
+  /** One pass over the tabs waiting to close; answers whether a pane is still being confirmed. */
+  private async closePendingTabs(now: Date): Promise<boolean> {
     const pending = await this.backend.docs.list<TabRecord>(TABS_COLLECTION);
     let left = 0;
     let confirming = false;
@@ -1060,7 +1075,7 @@ export class Daemon {
       }
     }
     this.tabsPending = left > 0;
-    this.nextTabRetry = now.getTime() + (confirming ? this.manifest.runtime.pollMs : TAB_RETRY_MS);
+    return confirming;
   }
 
   private async sweepWaits(now: Date): Promise<void> {

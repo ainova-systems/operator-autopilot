@@ -1339,3 +1339,22 @@ test('an unknown answer nobody asked again for a few polls does not confirm a la
   await daemon.poll(new Date(t0 + 6 * 120_000 + 200));
   assert.deepEqual(closes, ['wT:t7']);
 });
+
+test('a close-retry pass that fails runs again a minute later, not on every poll', async () => {
+  const p = await project();
+  const docs = p.backend.docs;
+  let reads = 0;
+  const backend = { ...p.backend, docs: { ...docs, list: async <T>(collection: string, filter?: { prefix?: string; where?: Record<string, string> }) => {
+    if (collection === 'tabs') { reads += 1; throw new Error('storage did not answer'); }
+    return docs.list<T>(collection, filter);
+  } } };
+  const daemon = p.daemon({ backend });
+  await daemon.acquireLeader();
+  const t0 = Date.now();
+  await assert.rejects(daemon.poll(new Date(t0)), /storage did not answer/);
+  await daemon.poll(new Date(t0 + 200));
+  await daemon.poll(new Date(t0 + 30_000));
+  assert.equal(reads, 1);
+  await assert.rejects(daemon.poll(new Date(t0 + 61_000)), /storage did not answer/);
+  assert.equal(reads, 2);
+});
