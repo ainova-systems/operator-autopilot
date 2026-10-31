@@ -129,6 +129,30 @@ test('no command prints a lock, lease or slot token from a job or from state', a
   }
 });
 
+test('no command prints the lock token a subject claim holds', async () => {
+  const p = await createTestProject();
+  projects.push(p);
+  const manifest = join(p.root, 'operator.yaml');
+  const taken = await cli(['claim', 'take', 'item-1', '--run', 'r1', '--json', '--manifest', manifest]);
+  assert.equal(taken.code, 0, taken.stderr);
+  const stored = await p.backend.docs.get<{ token: string }>('subject-claims', 'item-1');
+  const token = stored?.value.token ?? '';
+  assert.ok(token.length > 0, 'the stored claim carries its lock token');
+  const outputs = [
+    taken,
+    await cli(['claim', 'show', 'item-1', '--json', '--manifest', manifest]),
+    await cli(['claim', 'show', '--json', '--manifest', manifest]),
+    await cli(['state', 'get', 'subject-claims', 'item-1', '--json', '--manifest', manifest]),
+    await cli(['state', 'list', 'subject-claims', '--manifest', manifest]),
+  ];
+  for (const output of outputs) {
+    assert.equal(output.code, 0, output.stderr);
+    assert.match(output.stdout, /item-1/);
+    assert.ok(!output.stdout.includes(token), output.stdout);
+    assert.doesNotMatch(output.stdout, /"token"/);
+  }
+});
+
 test('claims and the work queue answer 0 when the write took effect and 3 when another run won', async () => {
   const p = await createTestProject();
   projects.push(p);

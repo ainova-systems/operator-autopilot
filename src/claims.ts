@@ -102,7 +102,7 @@ function expiry(lockedAt: string, at: Date, ttlMs: number): string {
 
 /** Ends a lock this run holds, by its token (endOwnedLock). */
 async function endLock(locks: LockStore, subject: string, token: string): Promise<boolean> {
-  return endOwnedLock(locks, lockKey(subject), token);
+  return (await endOwnedLock(locks, lockKey(subject), token)) !== 'lost';
 }
 
 /** Acquires the subject's lock for `run` and records it; undefined when another run holds the lock. */

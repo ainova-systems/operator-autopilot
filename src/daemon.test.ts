@@ -416,10 +416,79 @@ test('the runtime gives every lock back by its token and never deletes one by ke
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'hold')).every((job) => job.status === 'done'));
   await (daemon as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
   assert.deepEqual(deleted, []);
-  // Each lease was shortened by its token instead, so it lapses by itself.
-  assert.equal(await p.backend.locks.exists('leader'), true);
-  await sleep(1200);
-  assert.equal(await p.backend.locks.exists('leader'), false);
+  // Each lease was shortened by its token instead, so it lapses by itself within a second or so.
+  const deadline = Date.now() + 5000;
+  while (await p.backend.locks.exists('leader')) {
+    assert.ok(Date.now() < deadline, 'the leader lease lapsed after it was given back');
+    await sleep(100);
+  }
+});
+
+test('a workspace lease past its lifetime that another holder took meanwhile is reported, not kept silently', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const told: string[] = [];
+  const pools = new Pools(p.manifest, p.backend, p.log, async (title) => { told.push(title); });
+  const decision = await pools.acquire('slots', 'job-1', { member: 's1' });
+  assert.equal(decision.granted, true);
+  if (!decision.granted) return;
+  // Past its lifetime; and once it lapses another host takes the member before this one can.
+  p.backend.locks.renew = async (_key, _token, ttlMs) => (ttlMs === 1000 ? 'renewed' : 'lifetime-exceeded');
+  p.backend.locks.acquire = async () => ({ acquired: false });
+  const kept = await pools.renew('job-1', decision.hold);
+  assert.equal(kept.token, decision.hold.token);
+  assert.deepEqual(told, ['operator: workspace lease lost']);
+  assert.ok(p.lines.some((line) => line.includes('workspace lease lost to another holder')));
+});
+
+test('a workspace this host just gave back is offered again after its last second, not after a retry', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const pools = new Pools(p.manifest, p.backend, p.log);
+  const first = await pools.acquire('slots', 'job-1', { member: 's1' });
+  assert.equal(first.granted, true);
+  if (first.granted) await pools.release('job-1', first.hold);
+  const named = await pools.acquire('slots', 'job-2', { member: 's1' });
+  assert.equal(named.granted, false);
+  if (!named.granted) {
+    assert.equal(named.waitingFor, 'workspace s1 of pool slots is being given back');
+    assert.ok(named.retryAfterMs > 0 && named.retryAfterMs <= 1100, String(named.retryAfterMs));
+  }
+  const other = await pools.acquire('slots', 'job-3');
+  assert.equal(other.granted, true, 'a member nobody is giving back is taken at once');
+  const busy = await pools.acquire('slots', 'job-4');
+  assert.equal(busy.granted, false);
+  if (!busy.granted) assert.ok(busy.retryAfterMs > 0 && busy.retryAfterMs <= 1100, 'the retry waits for the member being given back, not 15 seconds');
+});
+
+test('the leader lease past its lifetime is ended by its token and taken again once it lapsed', async () => {
+  const p = await project();
+  const renew = p.backend.locks.renew.bind(p.backend.locks);
+  let past = false;
+  p.backend.locks.renew = async (key, token, ttlMs) => (past && key === 'leader' && ttlMs !== 1000 ? ((past = false), 'lifetime-exceeded') : renew(key, token, ttlMs));
+  const daemon = p.daemon();
+  assert.equal(await daemon.acquireLeader(), true);
+  const inner = daemon as unknown as { leader: { token: string; renewedAt: number }; renewLeader(): Promise<void> };
+  const before = inner.leader.token;
+  // The backend lets the ended lease lapse late: the first attempts after it are still refused.
+  const acquire = p.backend.locks.acquire.bind(p.backend.locks);
+  let refusals = 0;
+  p.backend.locks.acquire = async (key, ttlMs, reference) => (key === 'leader' && refusals < 8 ? ((refusals += 1), { acquired: false }) : acquire(key, ttlMs, reference));
+  past = true;
+  await inner.renewLeader();
+  assert.equal(refusals, 8);
+  assert.notEqual(inner.leader.token, before);
+  assert.ok(p.lines.some((line) => line.includes('leader lease re-acquired after its 24h lifetime')));
+});
+
+test('a daemon started right after another stopped on this host leads within seconds, not a third of a lease', async () => {
+  const p = await project();
+  const first = p.daemon();
+  assert.equal(await first.acquireLeader(), true);
+  await (first as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
+  const started = Date.now();
+  const second = p.daemon();
+  assert.equal(await second.acquireLeader(), true);
+  assert.ok(Date.now() - started < 3000, `took ${Date.now() - started}ms`);
+  assert.ok(p.lines.some((line) => line.includes('the previous daemon on this host gave back as it stopped')));
 });
 
 test('a workspace lease past its lifetime is ended by its token and taken again, never deleted', async () => {
@@ -1007,10 +1076,19 @@ test('a session on another host, or a pane not back at its shell, keeps the next
   await writeFile(wrapperPath, JSON.stringify(wrapper));
   // Free when asked, then still working once its session was ended: not back at its shell.
   statuses = ['idle', ...Array.from({ length: 200 }, () => 'working')];
-  // The first refusal gave the run lease back by its token: let it lapse, and let the leader lease
-  // come due so this poll renews it before the pane check spends its few seconds.
-  await sleep(2100);
-  await daemon.poll();
+  // The first refusal gave the run lease back by its token: the next try waits for its last second.
+  await daemon.poll(new Date(Date.now() + 150));
+  const lapsing = (await jobsBy(daemon, 'look', 'pr-3')).find((job) => job.trigger.id === 'look-2');
+  assert.equal(lapsing?.waitingFor, 'its run lease is being given back');
+  // Wait until it lapsed, and renew the leader lease now so it outlasts the pane check's few seconds.
+  const deadline = Date.now() + 5000;
+  const ending = (daemon as unknown as { endingLeases: { remaining(key: string): number } }).endingLeases;
+  while (ending.remaining(`run.${lapsing?.id}`) > 0 || (await p.backend.locks.exists(`run.${lapsing?.id}`))) {
+    assert.ok(Date.now() < deadline, 'the run lease lapsed after it was given back');
+    await sleep(100);
+  }
+  await (daemon as unknown as { renewLeader(): Promise<void> }).renewLeader();
+  await daemon.poll(new Date(Date.now() + 2000));
   assert.equal((await jobsBy(daemon, 'look', 'pr-3')).find((job) => job.trigger.id === 'look-2')?.waitingFor, 'per-subject tab wT:t1 is not back at its shell');
   statuses = [];
   await pollUntil(daemon, async () => (await jobsBy(daemon, 'look', 'pr-3')).every((job) => job.status === 'done'));

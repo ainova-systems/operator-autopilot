@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - `tabs: per-subject` keeps one herdr tab and claude session per subject and operation until a result names the subject in `endSubjects` (`operator tabs` lists them), resuming a session only while claude keeps its transcript, and no tab is closed, reused or has its session ended unless herdr reports its pane idle, done, gone or twice `unknown` - a kept `keepTab` session now ends when its tab closes (also for tabs an older daemon recorded) and stays open, with the owner notified, while its pane works or is blocked.
-- Locks are given back only by their token (shortened to a second and left to lapse), never deleted by key, and `operator job`, `operator jobs` and `operator state` no longer print lease or slot tokens.
+- Locks are given back only by their token (shortened to a second and left to lapse, then taken again within seconds when still needed, including by a daemon restarted on the same host), never deleted by key, and `operator job`, `operator jobs` and `operator state` no longer print any `token` field.
 - `operator claim` takes, renews and releases a compare-and-set lease on a subject, and `operator queue` keeps a private work queue with fixed status transitions, both in reserved state collections.
 
 ## [0.7.0]
