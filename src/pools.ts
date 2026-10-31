@@ -133,6 +133,8 @@ export class Pools {
     const token = outcome === 'lifetime-exceeded'
       ? await retakeLock(this.backend.locks, hold.key, this.manifest.runtime.leaseTtlMs, jobId, undefined, this.hooks.stopping)
       : await this.backend.locks.acquire(hold.key, this.manifest.runtime.leaseTtlMs, jobId).then((lease) => (lease.acquired ? lease.token : undefined));
+    // Stopping: the retake was cut short, not lost to anyone, and the next daemon takes it from here.
+    if (token === undefined && this.hooks.stopping?.()) return hold;
     if (token === undefined) {
       // Told once per job: renewal keeps trying every third of a lease, and each try fails the same way.
       if (this.lostLeases.has(jobId)) return hold;
