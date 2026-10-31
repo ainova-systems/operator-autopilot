@@ -1306,3 +1306,36 @@ test('a renewal that is not due reads nothing more than the list', async () => {
   assert.equal(reads, 0);
   await endAll(daemon);
 });
+
+test('an ended subject\'s tab whose pane reads unknown closes within two polls, not a minute later', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async () => 'unknown' } });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3'] });
+  assert.deepEqual(closed, [], 'one unknown is not yet a shell');
+  await sleep(150);
+  await daemon.poll();
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.ok(p.lines.some((line) => line.includes('closed the tab of an ended subject')));
+});
+
+test('an unknown answer nobody asked again for a few polls does not confirm a later one', async () => {
+  const p = await project();
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  const t0 = Date.now();
+  const record = (closeAt: number) => ({ tabId: 'wT:t7', jobId: 'j-x', since: new Date(t0).toISOString(), closeAt: new Date(closeAt).toISOString(), paneId: 'wT:p7', guard: true });
+  await p.backend.docs.replace('tabs', 'wT:t7', record(t0 - 1000));
+  await daemon.poll(new Date(t0));
+  // The tab is kept on purpose for a while: nobody asks about its pane.
+  await p.backend.docs.replace('tabs', 'wT:t7', record(t0 + 86_400_000));
+  for (let i = 1; i <= 5; i += 1) await daemon.poll(new Date(t0 + i * 120_000));
+  await p.backend.docs.replace('tabs', 'wT:t7', record(t0 - 1000));
+  await daemon.poll(new Date(t0 + 6 * 120_000));
+  assert.deepEqual(closes, [], 'the old unknown is stale: this one starts a new confirmation');
+  await daemon.poll(new Date(t0 + 6 * 120_000 + 200));
+  assert.deepEqual(closes, ['wT:t7']);
+});

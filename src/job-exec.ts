@@ -14,8 +14,6 @@ const HEAD_CHARS = 4_000;
 /** What claude 2.1.308 prints when it refuses a session id. */
 const ALREADY_IN_USE = 'is already in use';
 const NO_CONVERSATION = 'No conversation found with session ID';
-/** An attended session that ends this quickly without a result was refused, not worked in. */
-const ATTENDED_REFUSAL_MS = 15_000;
 
 /** Signals the command's whole process group, so a shell's children end with it. */
 export function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -177,17 +175,14 @@ export async function runJobExec(runDir: string): Promise<number> {
       say(`operator: session ${session.id} ${exists ? 'has a transcript; resuming it' : 'has no transcript; starting it under its id'}\n`);
     }
   }
-  const startedAt = Date.now();
   let exit = await runCommand(session ? (resuming ? session.resumeArgv : session.freshArgv) : launch.argv);
   // A safety net for a session the transcript check misread: claude refusing to start an id it has,
-  // or to resume one it has not, is tried once the other way. Never after a result, a signal or a
-  // hand-over - an attended session the owner ended stays ended.
-  if (session && !stopping && !released && !exit.timedOut && exit.signal === null && exit.exitCode !== 0
+  // or to resume one it has not, is tried once the other way - only on claude's own refusal message,
+  // and never after a result, a signal or a hand-over. An attended session prints to its terminal,
+  // not to the wrapper, so nothing proves a refusal there: one the owner ended stays ended.
+  if (session && attended === undefined && !stopping && !released && !exit.timedOut && exit.signal === null && exit.exitCode !== 0
     && !(await resultWritten(String(launch.env['OPERATOR_RESULT'])))) {
-    const refused = resuming ? head.includes(NO_CONVERSATION) : head.includes(ALREADY_IN_USE);
-    // An attended session prints to its terminal, not to the wrapper; a refusal there ends it at once.
-    const quick = attended !== undefined && Date.now() - startedAt < ATTENDED_REFUSAL_MS;
-    if (refused || quick) {
+    if (resuming ? head.includes(NO_CONVERSATION) : head.includes(ALREADY_IN_USE)) {
       resuming = !resuming;
       say(`operator: claude would not ${resuming ? 'start' : 'resume'} session ${session.id}; trying once to ${resuming ? 'resume' : 'start'} it\n`);
       head = '';

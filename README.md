@@ -71,9 +71,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   the next run. The wrapper, in the pane with the session's own environment and cwd, resumes the
   session when claude has its transcript (`<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<real path of
   the cwd as letters, digits and dashes>/<id>.jsonl`), however its last run ended, and otherwise starts
-  it new under the same id - its first run never got to start it. If claude still refuses ("already
-  in use", "No conversation found"), the wrapper tries once the other way; never after a result, a
-  signal or a hand-over. A session kept after its result no longer has a timeout. `keepTab` applies to per-job tabs
+  it new under the same id - its first run never got to start it. If an agent run's claude still
+  refuses ("already in use", "No conversation found"), the wrapper tries once the other way; never
+  after a result, a signal or a hand-over, and never in an attended session, whose terminal output the
+  wrapper does not see - one the owner quit stays quit. A session kept after its result no longer has a timeout. `keepTab` applies to per-job tabs
   only.
 - **Tabs in use.** The runtime closes a tab - a kept tab whose `keepTab` ran out, a per-subject tab
   whose subject ended - or ends the session in a per-subject tab for the next run only when herdr
@@ -84,7 +85,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   subject's tab leaves the registry and waits in the close retries, and the next run stays queued,
   saying why. A session on another host, or a pane not back at its shell, also keeps the next run
   waiting. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
-  warning and one owner notification, sent again on later polls until herdr delivers it. A pane left
+  warning and one owner notification, sent again on later polls until herdr delivers it. Timing: an
+  ended subject's tab closes in the poll that ends it when its pane reads idle, done or gone, and on
+  the next poll when it reads `unknown`; a tab still in use is asked again every minute, so it closes
+  up to a minute after its pane frees. A pane left
   working or blocked keeps its tab open for as long as it stays so - the owner is told, and closes
   or frees it. A kept session is ended by closing its tab, never by its own clock; a tab an older
   daemon recorded without its pane closes as before.

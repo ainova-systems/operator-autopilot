@@ -54,6 +54,8 @@ const SUBJECT_TAB_TTL_MS = 30 * 86_400_000;
 const END_SESSION_WAIT_MS = 15_000;
 /** How long a pane whose session just ended gets to read as free before the next run is typed in. */
 const PANE_SETTLE_MS = 5_000;
+/** Polls after which an `unknown` answer nobody asked again no longer counts towards a confirmation. */
+const UNKNOWN_STALE_POLLS = 3;
 /** How long a tab may stay in use before the owner is told, when `runtime.idleNudge` is off. */
 const IN_USE_WARN_MS = 30 * 60_000;
 /** Kept tab records are renewed at most this often while their tab is still open. */
@@ -123,11 +125,12 @@ export class Daemon {
   /** Tabs whose close or reuse waits because someone works in them, since when, and whether the owner was told. */
   private readonly inUse = new Map<string, { since: number; warned: boolean; notified: boolean }>();
   /** Panes herdr last reported `unknown` for, and in which poll: a second one in a later poll reads as a shell. */
-  private readonly unknownPanes = new Map<string, number>();
+  private readonly unknownPanes = new Map<string, { first: number; last: number }>();
   /** Counts observation passes, so two answers in one pass never count as two polls. */
   private polls = 0;
   private lastSubjectTabRefresh = 0;
-  private lastTabRetry = 0;
+  /** When the close retries run next: every minute, or on the next poll while a pane is being confirmed. */
+  private nextTabRetry = 0;
   private lastPoll = 0;
   private lastWaitSweep = 0;
   private stopped = false;
@@ -321,8 +324,7 @@ export class Daemon {
       this.lastSubjectTabRefresh = now.getTime();
       await this.refreshSubjectTabs(now).catch((error: unknown) => this.log.warn('renewing per-subject tab records failed; retrying later', { error: errorText(error) }));
     }
-    if (this.tabsPending && now.getTime() - this.lastTabRetry >= TAB_RETRY_MS) {
-      this.lastTabRetry = now.getTime();
+    if (this.tabsPending && now.getTime() >= this.nextTabRetry) {
       await this.retryTabs(now);
     }
   }
@@ -561,7 +563,7 @@ export class Daemon {
       this.log.info('the per-subject tab is gone; opening a new one with a new session', { job: job.id, tab: kept.tabId });
       return { retain: true };
     }
-    if (use === 'in-use') return { retain: true, busy: `per-subject tab ${kept.tabId} is in use` };
+    if (use === 'in-use' || use === 'confirming') return { retain: true, busy: `per-subject tab ${kept.tabId} is in use` };
     if (!(await this.endSession(kept.runDir))) return { retain: true, busy: `per-subject tab ${kept.tabId} still runs a session this host cannot end` };
     // The next wrapper is typed into the pane, so the pane must be back at its shell first.
     if (!(await this.paneSettled(kept.paneId))) return { retain: true, busy: `per-subject tab ${kept.tabId} is not back at its shell` };
@@ -618,7 +620,7 @@ export class Daemon {
         const now = new Date().toISOString();
         await this.backend.docs.replace(TABS_COLLECTION, value.tabId, { tabId: value.tabId, jobId: value.jobId, since: now, refreshedAt: now, paneId: value.paneId, runDir: value.runDir, guard: true } satisfies TabRecord, { ttlMs: TAB_RECORD_TTL_MS });
         this.tabsPending = true;
-        this.lastTabRetry = 0;
+        this.nextTabRetry = 0;
         await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
         this.log.info('the tab of an ended subject closes once nobody works in it', { subject: value.subject, operation: value.operation, tab: value.tabId });
       } catch (error) {
@@ -921,9 +923,11 @@ export class Daemon {
       return { use: 'in-use', status: `unanswered (${errorText(error)})` };
     }
     if (status === 'unknown') {
-      const first = this.unknownPanes.get(paneId);
-      if (first !== undefined && first < this.polls) return { use: 'free', status };
-      this.unknownPanes.set(paneId, first ?? this.polls);
+      // An answer nobody asked again for a few polls is stale: a person may have started an agent since.
+      const seen = this.unknownPanes.get(paneId);
+      const current = seen && this.polls - seen.last <= UNKNOWN_STALE_POLLS ? seen : undefined;
+      if (current && current.first < this.polls) return { use: 'free', status };
+      this.unknownPanes.set(paneId, { first: current?.first ?? this.polls, last: this.polls });
       return { use: 'confirming', status };
     }
     this.unknownPanes.delete(paneId);
@@ -937,11 +941,11 @@ export class Daemon {
    * once, and past `runtime.idleNudge` (30m when that is off) it is a warning and one owner
    * notification; it ends when the pane is free again.
    */
-  private async tabUse(tabId: string, paneId: string | undefined, jobId: string): Promise<'free' | 'in-use' | 'gone'> {
+  private async tabUse(tabId: string, paneId: string | undefined, jobId: string): Promise<'free' | 'in-use' | 'gone' | 'confirming'> {
     // A tab recorded without its pane, by an older daemon, is closed as it always was.
     if (!paneId) return 'free';
     const { use, status } = await this.paneUse(paneId);
-    if (use === 'confirming') return 'in-use';
+    if (use === 'confirming') return use;
     if (use !== 'in-use') { this.inUse.delete(tabId); return use; }
     const now = Date.now();
     const episode = this.inUse.get(tabId);
@@ -1011,12 +1015,15 @@ export class Daemon {
   private async retryTabs(now: Date): Promise<void> {
     const pending = await this.backend.docs.list<TabRecord>(TABS_COLLECTION);
     let left = 0;
+    let confirming = false;
     for (const { key, value } of pending) {
       if (value.closeAt && Date.parse(value.closeAt) > now.getTime()) { left += 1; continue; }
       if (value.guard) {
         const held = (await this.jobs.get(value.jobId))?.status === 'running';
         const use = held ? 'in-use' : await this.tabUse(value.tabId, value.paneId, value.jobId);
-        if (use === 'in-use') {
+        // A pane being confirmed answers again on the next poll, not a minute later.
+        if (use === 'confirming') confirming = true;
+        if (use === 'in-use' || use === 'confirming') {
           left += 1;
           // A close that keeps waiting must not let its record expire into a tab nobody closes.
           await this.refreshRecord(TABS_COLLECTION, key, value, now, TAB_RECORD_TTL_MS);
@@ -1040,6 +1047,7 @@ export class Daemon {
         await this.backend.docs.delete(TABS_COLLECTION, key);
         this.tabsWarned.delete(value.tabId);
         if (value.closeAt) this.log.info('closed a run\'s herdr tab kept open for a person', { job: value.jobId, tab: value.tabId, outcome });
+        else if (value.guard) this.log.info('closed the tab of an ended subject', { job: value.jobId, tab: value.tabId, outcome });
         else this.log.info('closed a herdr tab an earlier run left open', { job: value.jobId, tab: value.tabId, outcome });
       } catch (error) {
         left += 1;
@@ -1052,6 +1060,7 @@ export class Daemon {
       }
     }
     this.tabsPending = left > 0;
+    this.nextTabRetry = now.getTime() + (confirming ? this.manifest.runtime.pollMs : TAB_RETRY_MS);
   }
 
   private async sweepWaits(now: Date): Promise<void> {

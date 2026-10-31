@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectRun } from './collect.ts';
@@ -127,4 +127,22 @@ test('a session kept after its result outlives the operation timeout, which ende
   const exit = await readJsonFile<ExitInfo>(runPath(dir, 'exit'));
   assert.equal(exit?.released, true);
   assert.equal(exit?.timedOut, false);
+});
+
+test('an attended session that quits at once without a result is never started again, whatever its exit code', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'operator-exec-'));
+  dirs.push(dir);
+  const resultPath = runPath(dir, 'result');
+  const log = join(dir, 'launches.log');
+  // The owner quits the session with Ctrl-C: a non-zero exit, nothing printed to the wrapper.
+  const quit = (flag: string) => [process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(flag)} + '\\n'); process.exit(130);`];
+  const launch: LaunchSpec = {
+    jobId: 'j1', attempt: 1, title: 'pr-7 op:plan', argv: quit('--session-id'), cwd: dir,
+    env: { OPERATOR_RESULT: resultPath, CLAUDE_CONFIG_DIR: join(dir, 'claude') }, timeoutMs: 30_000,
+    attended: { resultPath, graceMs: 200 },
+    claudeSession: { id: 's-1', resume: false, resumeArgv: quit('--resume'), freshArgv: quit('--session-id') },
+  };
+  await writeJsonAtomic(runPath(dir, 'launch'), launch);
+  await runJobExec(dir);
+  assert.deepEqual((await readFile(log, 'utf8')).trim().split('\n'), ['--session-id']);
 });
