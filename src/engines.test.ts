@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { buildCommand, findCodexThread } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
-const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0 };
+const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
 const context = { root: '/repo', cwd: '/repo', runDir: '/runs/j1/a1', inputPath: '/runs/j1/a1/input.json', resultPath: '/runs/j1/a1/result.json', workflow: 'development', operation: 'implement', subject: 'pr-7' };
 
 test('a claude operation runs its skill headlessly with a pointer prompt', () => {
@@ -61,4 +61,18 @@ test('an attended claude run starts a session with the same prompt; without its 
   assert.match(session[1] ?? '', /^Run the plan-change skill for subject pr-7\./);
   assert.deepEqual(session.slice(2), ['--permission-mode', 'auto']);
   assert.deepEqual(buildCommand(op, context).argv.slice(0, 2), ['claude', '-p']);
+});
+
+test('a claude run in a per-subject tab starts its session under a known id, and the next one resumes it', () => {
+  const op = { ...base, engine: 'claude' as const, skill: 'implement-change', model: 'opus', args: ['--permission-mode', 'auto'] };
+  const id = '1b4e28ba-2fa1-11d2-883f-0016d3cca427';
+  const first = buildCommand(op, { ...context, attended: true, session: { id, resume: false } }).argv;
+  assert.deepEqual(first.slice(2, 4), ['--session-id', id]);
+  assert.equal(first.includes('-p'), false);
+  const next = buildCommand(op, { ...context, session: { id, resume: true } }).argv;
+  assert.deepEqual(next.slice(0, 2), ['claude', '-p']);
+  assert.deepEqual(next.slice(3, 5), ['--resume', id]);
+  assert.equal(next.includes('--session-id'), false);
+  assert.deepEqual(next.slice(-4), ['--model', 'opus', '--permission-mode', 'auto']);
+  assert.equal(buildCommand(op, context).argv.some((arg) => arg === '--session-id' || arg === '--resume'), false);
 });

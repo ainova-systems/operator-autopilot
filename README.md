@@ -24,8 +24,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   (`every`, `cron`, `on`), operations and pools.
 - **Contract 1.** Every run gets an input file (`$OPERATOR_INPUT`) and writes one result file
   (`$OPERATOR_RESULT`): `status` is `done | noop | waiting | needs-input | failed`, with `evidence`,
-  `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Exit 0
-  without a valid result is a failure.
+  `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Optional
+  `endSubjects` names subjects whose work is over: their per-subject tabs close and their sessions
+  and Codex threads are forgotten; a result without it is read as before. Exit 0 without a valid
+  result is a failure.
 - **Dedupe, not exactly-once.** A job's id is derived from (workflow, operation, subject, trigger
   id); the same trigger twice is one job. A `next` request may carry a `key`: requests with the
   same operation, subject and key are one job while its record is kept, so a discovery that runs
@@ -55,6 +57,41 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   result is collected and the follow-on starts at once, while an interactive session stays live in
   the tab for a person's questions and any other run's output stays readable; then the session ends
   and the tab closes, after a daemon restart too.
+- **Per-subject tabs.** `tabs: per-subject` keeps one herdr tab per subject, operation and workspace
+  member for the whole life of the subject. The first run opens it; every later run of the same
+  operation for that subject runs in it, after the session the previous run left open there has
+  ended. A `claude` run starts its session under a runtime-chosen `--session-id`, and the next run in
+  the tab continues it with `--resume`, so a step that needs more work picks up where it stopped;
+  other operations keep tabs and sessions of their own, so a reviewer never shares the implementer's
+  context. One conversation per key: while a run of the key still works in the tab, the next one
+  waits rather than forking it. The tab stays open until a result names its subject in
+  `endSubjects`; `operator tabs` lists the tabs kept and their sessions, and the records survive a
+  daemon restart and are renewed while their tabs stay open. A tab is recorded as soon as it opens,
+  so a run that fails to start leaks none. A tab closed by hand is replaced, with a new session, by
+  the next run. The wrapper, in the pane with the session's own environment and cwd, resumes the
+  session when claude has its transcript (`<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<real path of
+  the cwd as letters, digits and dashes>/<id>.jsonl`), however its last run ended, and otherwise starts
+  it new under the same id - its first run never got to start it. If an agent run's claude still
+  refuses ("already in use", "No conversation found"), the wrapper tries once the other way; never
+  after a result, a signal or a hand-over, and never in an attended session, whose terminal output the
+  wrapper does not see - one the owner quit stays quit. A session kept after its result no longer has a timeout. `keepTab` applies to per-job tabs
+  only.
+- **Tabs in use.** The runtime closes a tab - a kept tab whose `keepTab` ran out, a per-subject tab
+  whose subject ended - or ends the session in a per-subject tab for the next run only when herdr
+  reports the pane `idle`, `done`, gone, or `unknown` on two polls in a row (herdr reports `unknown`
+  for a shell, but also for an agent a person just started before it detects it). `working`,
+  `blocked` or a herdr that does not answer mean someone, usually the owner talking to the session after its
+  result, may be doing work that closing it would cut off: the close waits for a later poll, an ended
+  subject's tab leaves the registry and waits in the close retries, and the next run stays queued,
+  saying why. A session on another host, or a pane not back at its shell, also keeps the next run
+  waiting. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
+  warning and one owner notification, sent again on later polls until herdr delivers it. Timing: an
+  ended subject's tab closes in the poll that ends it when its pane reads idle, done or gone, and on
+  the next poll when it reads `unknown`; a tab still in use is asked again every minute, so it closes
+  up to a minute after its pane frees. A pane left
+  working or blocked keeps its tab open for as long as it stays so - the owner is told, and closes
+  or frees it. A kept session is ended by closing its tab, never by its own clock; a tab an older
+  daemon recorded without its pane closes as before.
 - **Notifications.** `notify` lists the final result statuses that raise an owner notification
   (default `needs-input` and `failed` for agent and interactive operations, none for scripts); a
   scheduled retry is not final.
@@ -76,7 +113,7 @@ operator validate --manifest operator.yaml      # manifest, scripts (--describe)
 operator run --manifest operator.yaml          # the daemon; one active daemon per project
 operator run --dry-run                          # scripts run, agents are only logged, local state
 operator trigger <workflow> <name> --subject pr-7 --key q-1 --input '{"answer":"yes"}'
-operator jobs [--status queued]  |  operator job <id>  |  operator waits
+operator jobs [--status queued]  |  operator job <id>  |  operator waits  |  operator tabs [--json]
 operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
 operator claim take|renew|release <subject> --run <id> [--ttl 1h]  |  operator claim show [subject]
 operator queue add --title t --body-file spec.md  |  queue list|get|take|update   # private work queue

@@ -46,6 +46,8 @@ export interface OperationResult {
   next: NextRequest[];
   wait?: WaitDescriptor;
   failure?: { reason: string; retryable: boolean };
+  /** Subjects whose work is over: their per-subject tabs close and their agent sessions are forgotten. */
+  endSubjects?: string[];
 }
 
 export interface OperationInput {
@@ -145,6 +147,12 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
     }
   }
 
+  let endSubjects: string[] | undefined;
+  if (raw['endSubjects'] !== undefined) {
+    if (!Array.isArray(raw['endSubjects']) || raw['endSubjects'].some((item) => typeof item !== 'string' || item === '')) errors.push('endSubjects: expected an array of non-empty strings');
+    else if (raw['endSubjects'].length > 0) endSubjects = [...new Set(raw['endSubjects'] as string[])];
+  }
+
   let failure: OperationResult['failure'];
   if (status === 'failed') {
     const rawFailure = raw['failure'];
@@ -166,6 +174,7 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
       ...(typeof message === 'string' ? { message } : {}),
       ...(wait ? { wait } : {}),
       ...(failure ? { failure } : {}),
+      ...(endSubjects ? { endSubjects } : {}),
     },
   };
 }

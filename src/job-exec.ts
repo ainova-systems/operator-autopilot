@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
+import { claudeSessionExists } from './claude-session.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
 import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type LaunchSpec, type WrapperInfo } from './runfiles.ts';
@@ -9,6 +10,10 @@ import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo
 const HEARTBEAT_MS = 5_000;
 const KILL_GRACE_MS = 10_000;
 const RESULT_POLL_MS = 1_000;
+const HEAD_CHARS = 4_000;
+/** What claude 2.1.308 prints when it refuses a session id. */
+const ALREADY_IN_USE = 'is already in use';
+const NO_CONVERSATION = 'No conversation found with session ID';
 
 /** Signals the command's whole process group, so a shell's children end with it. */
 export function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -59,7 +64,8 @@ export async function resultStatus(path: string): Promise<string | null> {
  * ends. It never talks to the state backend, so a pane needs no credentials beyond what the
  * command itself loads. An attended command owns the terminal instead and stays in the wrapper's
  * process group, so the terminal's keys and resizes reach it; the wrapper ends it once its result
- * file is written, because the slot it holds goes to the next run.
+ * file is written, because the slot it holds goes to the next run. A kept or retained session is
+ * handed over instead and stays until the runtime ends it, which it never does while it works.
  */
 export async function runJobExec(runDir: string): Promise<number> {
   const launch = await readJsonFile<LaunchSpec>(runPath(runDir, 'launch'));
@@ -81,17 +87,31 @@ export async function runJobExec(runDir: string): Promise<number> {
   process.stdout.write(banner);
   output.write(banner);
 
-  const [command, ...args] = launch.argv;
   const attended = launch.attended;
   let timedOut = false;
   let closedAfterResult = false;
   let released = false;
-  const exit = await new Promise<ExitInfo>((resolveExit) => {
+  let current: CommandInfo | undefined;
+  let stopping = false;
+  /** The start of what the command printed, where claude says why a session would not start. */
+  let head = '';
+  const forward = (signal: NodeJS.Signals): void => {
+    if (signal !== 'SIGINT') stopping = true;
+    if (current) signalCommand(current, signal);
+  };
+  process.on('SIGTERM', forward);
+  process.on('SIGHUP', forward);
+  // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
+  process.on('SIGINT', attended ? () => undefined : forward);
+  const runCommand = (argv: string[]): Promise<ExitInfo> => new Promise<ExitInfo>((resolveExit) => {
+    const [command, ...args] = argv;
     const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: attended ? 'inherit' : ['ignore', 'pipe', 'pipe'], detached: !attended });
     const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
+    current = info;
     if (info) void writeJsonAtomic(runPath(runDir, 'command'), info).catch(() => undefined);
-    child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); });
-    child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); });
+    const keep = (chunk: Buffer): void => { if (head.length < HEAD_CHARS) head += chunk.toString('utf8').slice(0, HEAD_CHARS - head.length); };
+    child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); keep(chunk); });
+    child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); keep(chunk); });
     const end = (): void => {
       if (!info) return;
       signalCommand(info, 'SIGTERM');
@@ -105,16 +125,22 @@ export async function runJobExec(runDir: string): Promise<number> {
         closing = true;
         // A noop run did nothing a person could ask about, so its session closes like any other.
         const keepMs = status === 'noop' ? 0 : attended.keepMs ?? 0;
-        if (keepMs > 0) {
-          // The pipeline goes on now; the session stays for questions until keepTab runs out.
+        // A retained session stays until the runtime ends it: the next step of its operation for the
+        // subject continues it, or the subject ends.
+        const retain = status !== 'noop' && attended.retain === true;
+        if (keepMs > 0 || retain) {
+          // The pipeline goes on now; the session stays for questions.
           setTimeout(() => {
             released = true;
+            // The run is over for the pipeline: its timeout no longer applies to a session kept for people.
+            clearTimeout(timer);
             const exit: ExitInfo = { exitCode: null, signal: null, timedOut: false, finishedAt: new Date().toISOString(), released: true };
             void writeJsonAtomic(runPath(runDir, 'exit'), exit).catch((error: unknown) => process.stderr.write(`operator: exit.json write failed: ${(error as Error).message}\n`));
-            const kept = `\noperator: result handed over - the pipeline continues; this session stays open ${Math.round(keepMs / 60_000)} min for questions\n`;
+            const kept = retain
+              ? '\noperator: result handed over - the pipeline continues; this session stays open until the next step of this operation or the end of its subject\n'
+              : `\noperator: result handed over - the pipeline continues; this session stays open ${Math.round(keepMs / 60_000)} min for questions, longer while it works\n`;
             process.stdout.write(kept);
             output.write(kept);
-            setTimeout(end, keepMs).unref();
           }, attended.graceMs).unref();
           return;
         }
@@ -124,11 +150,6 @@ export async function runJobExec(runDir: string): Promise<number> {
         setTimeout(() => { closedAfterResult = true; end(); }, attended.graceMs).unref();
       }, (error: unknown) => process.stderr.write(`operator: result check failed: ${(error as Error).message}\n`));
     }, RESULT_POLL_MS) : undefined;
-    const forward = (signal: NodeJS.Signals): void => { if (info) signalCommand(info, signal); };
-    process.on('SIGTERM', forward);
-    process.on('SIGHUP', forward);
-    // The terminal delivers Ctrl-C to an attended command itself; the wrapper must only survive it.
-    process.on('SIGINT', attended ? () => undefined : forward);
     child.on('error', (error) => {
       clearTimeout(timer);
       clearInterval(watcher);
@@ -143,8 +164,34 @@ export async function runJobExec(runDir: string): Promise<number> {
     });
   });
 
+  const say = (text: string): void => { process.stdout.write(text); output.write(text); };
+  const session = launch.claudeSession;
+  let resuming = session?.resume === true;
+  if (session) {
+    // Resume or start: decided here, with the session's own environment and cwd.
+    const exists = claudeSessionExists(launch.cwd, session.id, { ...process.env, ...launch.env });
+    if (exists !== undefined && exists !== resuming) {
+      resuming = exists;
+      say(`operator: session ${session.id} ${exists ? 'has a transcript; resuming it' : 'has no transcript; starting it under its id'}\n`);
+    }
+  }
+  let exit = await runCommand(session ? (resuming ? session.resumeArgv : session.freshArgv) : launch.argv);
+  // A safety net for a session the transcript check misread: claude refusing to start an id it has,
+  // or to resume one it has not, is tried once the other way - only on claude's own refusal message,
+  // and never after a result, a signal or a hand-over. An attended session prints to its terminal,
+  // not to the wrapper, so nothing proves a refusal there: one the owner ended stays ended.
+  if (session && attended === undefined && !stopping && !released && !exit.timedOut && exit.signal === null && exit.exitCode !== 0
+    && !(await resultWritten(String(launch.env['OPERATOR_RESULT'])))) {
+    if (resuming ? head.includes(NO_CONVERSATION) : head.includes(ALREADY_IN_USE)) {
+      resuming = !resuming;
+      say(`operator: claude would not ${resuming ? 'start' : 'resume'} session ${session.id}; trying once to ${resuming ? 'resume' : 'start'} it\n`);
+      head = '';
+      exit = await runCommand(resuming ? session.resumeArgv : session.freshArgv);
+    }
+  }
+
   clearInterval(heartbeat);
-  const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and closes this tab\n`;
+  const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;
   process.stdout.write(footer);
   output.write(footer);
   await new Promise<void>((resolveEnd) => output.end(resolveEnd));

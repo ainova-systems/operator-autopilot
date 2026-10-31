@@ -1,12 +1,13 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { enqueue } from './jobs.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import type { Herdr } from './herdr.ts';
+import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo } from './runfiles.ts';
 import { absentHerdr, createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
 import { fireTrigger } from './triggers.ts';
@@ -328,6 +329,8 @@ function hostingHerdr(notes: string[] = []): Herdr {
     createTab: async () => ({ tabId: 'wT:t1', paneId: 'wT:p1', workspaceId: 'wT' }),
     runInPane: async (_pane, command) => { spawn('sh', ['-c', command], { detached: true, stdio: 'ignore' }).unref(); },
     closeTab: async () => 'closed',
+    // A shell with no agent in it, as herdr reports a pane whose session has ended.
+    agentStatus: async () => 'unknown',
     notify: async (title, body) => { notes.push(`${title} | ${body}`); },
   };
 }
@@ -505,6 +508,7 @@ test('a kept tab outlives its finished run, which hands its result over at once,
   assert.deepEqual(closes, []);
   assert.ok(p.lines.some((line) => line.includes('stays open for a person')));
   await daemon.poll(new Date(Date.now() + 120_000));
+  await daemon.poll(new Date(Date.now() + 240_000));
   assert.deepEqual(closes, ['wT:t1']);
   assert.ok(p.lines.some((line) => line.includes('kept open for a person')));
 });
@@ -605,4 +609,752 @@ test('a working session is never nudged, and idleNudge off turns nudging off', a
     await writeFile(join(p.data, 'release'), '1');
     await pollUntil(daemon, async () => (await jobsBy(daemon, 'idle', 'pr-9'))[0]?.status === 'done', 30_000);
   }
+});
+
+const PER_SUBJECT = [
+  '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, tabs: per-subject, timeout: 5m }',
+  '      glance:   { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, tabs: per-subject, timeout: 5m }',
+  '      close:    { kind: script, command: node scripts/end-subjects.mjs }',
+  '      toil:     { kind: agent, engine: command, command: node scripts/fake-agent.mjs, placement: herdr, tabs: per-subject, timeout: 5m }',
+].join('\n');
+
+/** A herdr whose tabs are counted: each createTab is a new tab, and a closed tab's pane is gone. */
+function tabHerdr() {
+  const created: string[] = [];
+  const closed: string[] = [];
+  const herdr: Herdr = {
+    ...hostingHerdr(),
+    createTab: async () => {
+      const n = created.length + 1;
+      created.push(`wT:t${n}`);
+      return { tabId: `wT:t${n}`, paneId: `wT:p${n}`, workspaceId: 'wT' };
+    },
+    closeTab: async (tabId) => { closed.push(tabId); return 'closed'; },
+    // A closed tab's pane is gone; herdr refuses it by name.
+    agentStatus: async (paneId) => {
+      if (closed.includes(paneId.replace(':p', ':t'))) throw new HerdrRefusal('pane_not_found', `pane ${paneId} not found`);
+      return 'idle';
+    },
+  };
+  return { herdr, created, closed };
+}
+
+async function perSubjectProject(): Promise<TestProject> {
+  const p = await project({ extraOperations: PER_SUBJECT });
+  await writeFile(join(p.root, 'scripts', 'end-subjects.mjs'), [
+    "import { describeIfAsked, readInput, writeResult } from './lib.mjs';",
+    'describeIfAsked();',
+    "writeResult({ status: 'done', endSubjects: readInput().input.subjects });",
+  ].join('\n'));
+  return p;
+}
+
+/** Ends every per-subject tab the test left, as a finished pipeline would, so no session outlives it. */
+async function endAll(daemon: ReturnType<TestProject['daemon']>, id = 'end-all') {
+  const subjects = [...new Set((await daemon.backend.docs.list<{ subject: string }>('subject-tabs')).map((item) => item.value.subject))];
+  if (subjects.length > 0) await runOnce(daemon, 'close', '', id, { subjects });
+}
+
+async function runOnce(daemon: ReturnType<TestProject['daemon']>, operation: string, subject: string, id: string, input: Record<string, unknown> = {}) {
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation, subject, input, trigger: { id, name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await daemon.jobs.list()).some((job) => job.trigger.id === id && job.status !== 'queued' && job.status !== 'running'));
+  return (await daemon.jobs.list()).find((job) => job.trigger.id === id);
+}
+
+test('a per-subject operation runs every step for its subject in one tab, ending the previous session first', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  const first = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  assert.equal(first?.status, 'done');
+  assert.equal(first?.run?.placement.retained, true);
+  const firstWrapper = await readJsonFile<WrapperInfo>(runPath(first?.run?.runDir ?? '', 'wrapper'));
+  assert.equal(processAlive(firstWrapper?.pid ?? 0), true, 'the retained session stays open after its result');
+  const second = await runOnce(daemon, 'look', 'pr-3', 'look-2');
+  assert.equal(second?.status, 'done');
+  assert.deepEqual(created, ['wT:t1']);
+  assert.equal(second?.run?.placement.tabId, 'wT:t1');
+  assert.deepEqual(closed, []);
+  assert.equal(processAlive(firstWrapper?.pid ?? 0), false, 'the previous session ended before the next step took the tab');
+  const [record] = await p.backend.docs.list<{ jobId: string; tabId: string }>('subject-tabs');
+  assert.equal(record?.value.jobId, second?.id);
+  assert.ok(p.lines.some((line) => line.includes('reusing the per-subject tab')));
+  await endAll(daemon);
+});
+
+test('another operation for the same subject gets a tab of its own', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const glance = await runOnce(daemon, 'glance', 'pr-3', 'glance-1');
+  await runOnce(daemon, 'look', 'pr-4', 'look-4');
+  assert.deepEqual(created, ['wT:t1', 'wT:t2', 'wT:t3']);
+  assert.equal(glance?.run?.placement.tabId, 'wT:t2');
+  assert.equal((await p.backend.docs.list('subject-tabs')).length, 3);
+  await endAll(daemon);
+});
+
+test('a result naming ended subjects closes their tabs and ends their sessions', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  await runOnce(daemon, 'glance', 'pr-3', 'glance-1');
+  await runOnce(daemon, 'look', 'pr-4', 'look-4');
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(look?.run?.runDir ?? '', 'wrapper'));
+  const close = await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3'] });
+  assert.equal(close?.status, 'done');
+  assert.deepEqual(closed.sort(), ['wT:t1', 'wT:t2']);
+  assert.equal(processAlive(wrapper?.pid ?? 0), false);
+  const left = await p.backend.docs.list<{ subject: string }>('subject-tabs');
+  assert.deepEqual(left.map((item) => item.value.subject), ['pr-4']);
+  // A subject named again once its tabs are gone changes nothing.
+  await runOnce(daemon, 'close', '', 'close-2', { subjects: ['pr-3'] });
+  assert.equal(closed.length, 2);
+  await endAll(daemon);
+});
+
+test('a restarted daemon reuses the per-subject tab it recorded', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created } = tabHerdr();
+  const first = p.daemon({ herdr });
+  await first.acquireLeader();
+  await runOnce(first, 'look', 'pr-3', 'look-1');
+  await p.backend.locks.release('leader');
+  const second = p.daemon({ herdr });
+  assert.equal(await second.acquireLeader(), true);
+  const again = await runOnce(second, 'look', 'pr-3', 'look-2');
+  assert.equal(again?.run?.placement.tabId, 'wT:t1');
+  assert.deepEqual(created, ['wT:t1']);
+  await endAll(second);
+});
+
+test('a per-subject tab closed by hand is replaced by a new tab', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  const first = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  // Closing a tab by hand ends what runs in it.
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(first?.run?.runDir ?? '', 'wrapper'));
+  process.kill(wrapper?.pid ?? 0, 'SIGTERM');
+  closed.push('wT:t1');
+  const again = await runOnce(daemon, 'look', 'pr-3', 'look-2');
+  assert.deepEqual(created, ['wT:t1', 'wT:t2']);
+  assert.equal(again?.run?.placement.tabId, 'wT:t2');
+  assert.ok(p.lines.some((line) => line.includes('the per-subject tab is gone')));
+  await endAll(daemon);
+});
+
+test('a retained tab whose run has finished is never nudged', async () => {
+  const p = await perSubjectProject();
+  p.manifest.runtime.idleNudgeMs = 200;
+  const typed: string[] = [];
+  const { herdr } = tabHerdr();
+  const daemon = p.daemon({ herdr: {
+    ...herdr,
+    agentStatus: async () => 'done',
+    runInPane: async (pane, command) => { if (command.startsWith('operator:')) typed.push(command); else await herdr.runInPane(pane, command); },
+  } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  assert.equal(look?.run?.placement.retained, true);
+  for (let i = 0; i < 10; i += 1) { await daemon.poll(); await sleep(150); }
+  assert.deepEqual(typed, []);
+  await endAll(daemon);
+});
+
+test('a claude step in a per-subject tab starts a session under a known id, and the next step resumes it', async () => {
+  const p = await project({ extraOperations: CODE_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const { herdr } = tabHerdr();
+    const daemon = p.daemon({ herdr });
+    await daemon.acquireLeader();
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-1'))?.status, 'done');
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-2'))?.status, 'done');
+    const [first, second] = await claude.calls();
+    const id = first?.[first.indexOf('--session-id') + 1];
+    assert.match(id ?? '', /^[0-9a-f-]{36}$/);
+    assert.deepEqual(second?.slice(second.indexOf('--resume'), second.indexOf('--resume') + 2), ['--resume', id]);
+    const [record] = await p.backend.docs.list<{ sessionId?: string }>('subject-tabs');
+    assert.equal(record?.value.sessionId, id);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a kept tab is not closed when its keepTab runs out while someone works in it, and is closed once its pane is idle', async () => {
+  const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
+  const closes: string[] = [];
+  let status = 'idle';
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), agentStatus: async () => status, closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const command = await readJsonFile<CommandInfo>(runPath(look?.run?.runDir ?? '', 'command'));
+  // The owner talks to the kept session after its result; it starts working again.
+  status = 'working';
+  await daemon.poll(new Date(Date.now() + 120_000));
+  await daemon.poll(new Date(Date.now() + 240_000));
+  assert.deepEqual(closes, []);
+  assert.equal(processAlive(command?.pid ?? 0), true, 'the session working past its keepTab is left alone');
+  assert.equal(p.lines.filter((line) => line.includes('a herdr tab is in use')).length, 1);
+  status = 'idle';
+  await daemon.poll(new Date(Date.now() + 360_000));
+  assert.deepEqual(closes, ['wT:t1']);
+  assert.equal(processAlive(command?.pid ?? 0), false, 'closing the tab ended its session');
+});
+
+test('the next step for a subject waits while its tab is in use, then continues in the same tab', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created } = tabHerdr();
+  let status = 'idle';
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async () => status } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(look?.run?.runDir ?? '', 'wrapper'));
+  status = 'working';
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'look', subject: 'pr-3', input: {}, trigger: { id: 'look-2', name: 'test', kind: 'manual' } });
+  await daemon.poll();
+  const [, waiting] = await jobsBy(daemon, 'look', 'pr-3');
+  assert.equal(waiting?.status, 'queued');
+  assert.equal(waiting?.waitingFor, 'per-subject tab wT:t1 is in use');
+  assert.equal(processAlive(wrapper?.pid ?? 0), true);
+  status = 'idle';
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'look', 'pr-3')).every((job) => job.status === 'done'));
+  assert.deepEqual(created, ['wT:t1']);
+  assert.equal(processAlive(wrapper?.pid ?? 0), false);
+  await endAll(daemon);
+});
+
+test('an ended subject whose tab is in use leaves the registry at once and closes once its pane is idle', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  let status = 'idle';
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async () => status } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(look?.run?.runDir ?? '', 'wrapper'));
+  status = 'working';
+  await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3'] });
+  assert.deepEqual(closed, []);
+  assert.equal((await p.backend.docs.list('subject-tabs')).length, 0);
+  assert.equal((await p.backend.docs.list('tabs')).length, 1);
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closed, [], 'nothing names the subject again, and the pane still works');
+  assert.equal(processAlive(wrapper?.pid ?? 0), true);
+  status = 'idle';
+  await daemon.poll(new Date(Date.now() + 240_000));
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.equal(processAlive(wrapper?.pid ?? 0), false);
+  assert.equal((await p.backend.docs.list('tabs')).length, 0);
+});
+
+test('a step whose previous run of the same key still works waits for it instead of forking the conversation', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'toil', subject: 'pr-6', input: { seconds: 3 }, trigger: { id: 'toil-1', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'toil', 'pr-6'))[0]?.status === 'running');
+  const [first] = await jobsBy(daemon, 'toil', 'pr-6');
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'toil', subject: 'pr-6', input: { seconds: 1 }, trigger: { id: 'toil-2', name: 'test', kind: 'manual' } });
+  await daemon.poll();
+  const second = (await jobsBy(daemon, 'toil', 'pr-6')).find((job) => job.trigger.id === 'toil-2');
+  assert.equal(second?.status, 'queued');
+  assert.equal(second?.waitingFor, `per-subject tab wT:t1 is busy with ${first?.id}`);
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'toil', 'pr-6')).every((job) => job.status === 'done'));
+  assert.deepEqual(created, ['wT:t1']);
+  await endAll(daemon);
+});
+
+test('an ended subject whose tab a run still works in closes once that run is over', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'toil', subject: 'pr-6', input: { seconds: 3 }, trigger: { id: 'toil-1', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'toil', 'pr-6'))[0]?.status === 'running');
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'close', subject: '', input: { subjects: ['pr-6'] }, trigger: { id: 'close-1', name: 'test', kind: 'manual' } });
+  await pollUntil(daemon, async () => (await daemon.jobs.list()).find((job) => job.trigger.id === 'close-1')?.status === 'done');
+  assert.deepEqual(closed, []);
+  assert.equal((await p.backend.docs.list('subject-tabs')).length, 0);
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'toil', 'pr-6'))[0]?.status === 'done');
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closed, ['wT:t1']);
+});
+
+test('a herdr that does not answer is no permission to end a session: the close waits until it does', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  let answering = true;
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async (paneId) => { if (!answering) throw new Error('herdr did not answer'); return herdr.agentStatus(paneId); } } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(look?.run?.runDir ?? '', 'wrapper'));
+  answering = false;
+  await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3'] });
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closed, []);
+  assert.equal(processAlive(wrapper?.pid ?? 0), true);
+  answering = true;
+  await daemon.poll(new Date(Date.now() + 240_000));
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.equal(processAlive(wrapper?.pid ?? 0), false);
+});
+
+test('a tab in use past idleNudge warns and notifies the owner once per episode, and its record stays alive', async () => {
+  const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
+  p.manifest.runtime.idleNudgeMs = 300;
+  const notes: string[] = [];
+  let status = 'working';
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(notes), agentStatus: async () => status, closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const command = await readJsonFile<CommandInfo>(runPath(look?.run?.runDir ?? '', 'command'));
+  const later = Date.now() + 2 * 3_600_000;
+  await daemon.poll(new Date(later));
+  await sleep(400);
+  await daemon.poll(new Date(later + 120_000));
+  await daemon.poll(new Date(later + 240_000));
+  const inUse = (note: string) => note.includes('is still in use');
+  assert.equal(notes.filter(inUse).length, 1);
+  assert.equal(p.lines.filter((line) => line.includes(' WARN ') && line.includes('in use a long time')).length, 1);
+  const [record] = await p.backend.docs.list<{ refreshedAt: string }>('tabs');
+  assert.ok(Date.parse(record?.value.refreshedAt ?? '') >= later, 'a deferred close renews its record');
+  // The episode ends when the pane is free; a new one is a new episode.
+  status = 'idle';
+  await daemon.poll(new Date(later + 360_000));
+  assert.deepEqual(closes, ['wT:t1']);
+  assert.equal(processAlive(command?.pid ?? 0), false);
+  assert.equal(p.lines.filter((line) => line.includes('a herdr tab is in use;')).length, 1);
+});
+
+test('a per-subject tab is recorded before its run can fail to start, so a failed start leaks nothing', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created } = tabHerdr();
+  let refuse = true;
+  const daemon = p.daemon({ herdr: { ...herdr, runInPane: async (pane, command) => { if (refuse) { refuse = false; throw new Error('herdr refused the command'); } await herdr.runInPane(pane, command); } } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  assert.equal(look?.status, 'done');
+  assert.equal(look?.attempt, 2);
+  assert.deepEqual(created, ['wT:t1'], 'the interrupted attempt\'s tab is the one the retry runs in');
+  await endAll(daemon);
+});
+
+test('a session on another host, or a pane not back at its shell, keeps the next step waiting', async () => {
+  const p = await perSubjectProject();
+  const { herdr } = tabHerdr();
+  let statuses: string[] = [];
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async (paneId) => statuses.shift() ?? herdr.agentStatus(paneId) } });
+  await daemon.acquireLeader();
+  const look = await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const wrapperPath = runPath(look?.run?.runDir ?? '', 'wrapper');
+  const wrapper = await readJsonFile<WrapperInfo>(wrapperPath);
+  await writeFile(wrapperPath, JSON.stringify({ ...wrapper, host: 'another-host' }));
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'look', subject: 'pr-3', input: {}, trigger: { id: 'look-2', name: 'test', kind: 'manual' } });
+  await daemon.poll();
+  const waiting = (await jobsBy(daemon, 'look', 'pr-3')).find((job) => job.trigger.id === 'look-2');
+  assert.equal(waiting?.waitingFor, 'per-subject tab wT:t1 still runs a session this host cannot end');
+  assert.equal(processAlive(wrapper?.pid ?? 0), true);
+  await writeFile(wrapperPath, JSON.stringify(wrapper));
+  // Free when asked, then still working once its session was ended: not back at its shell.
+  statuses = ['idle', ...Array.from({ length: 200 }, () => 'working')];
+  await daemon.poll(new Date(Date.now() + 1000));
+  assert.equal((await jobsBy(daemon, 'look', 'pr-3')).find((job) => job.trigger.id === 'look-2')?.waitingFor, 'per-subject tab wT:t1 is not back at its shell');
+  statuses = [];
+  await pollUntil(daemon, async () => (await jobsBy(daemon, 'look', 'pr-3')).every((job) => job.status === 'done'));
+  await endAll(daemon);
+});
+
+test('a per-subject tab record is renewed while its tab stays open', async () => {
+  const p = await perSubjectProject();
+  const { herdr } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const later = Date.now() + 2 * 86_400_000;
+  await daemon.poll(new Date(later));
+  const [record] = await p.backend.docs.list<{ refreshedAt: string }>('subject-tabs');
+  assert.equal(Date.parse(record?.value.refreshedAt ?? ''), later);
+  await endAll(daemon);
+});
+
+test('a tab an older daemon recorded without its pane closes as before, whatever herdr says of panes', async () => {
+  const p = await project();
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), agentStatus: async () => { throw new Error('herdr did not answer'); }, closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  await p.backend.docs.replace('tabs', 'wT:t9', { tabId: 'wT:t9', jobId: 'j-old', since: new Date().toISOString(), closeAt: new Date(Date.now() - 1000).toISOString() });
+  await daemon.poll();
+  assert.deepEqual(closes, ['wT:t9']);
+});
+
+/**
+ * A stand-in claude: keeps a transcript per session where claude does, under CLAUDE_CONFIG_DIR,
+ * refuses to resume a session without one, and records its arguments. `data/claude-exit` makes it
+ * end without a result, with that exit code, once it has started (or resumed) its session.
+ */
+async function fakeClaude(p: TestProject): Promise<{ restore: () => void; calls: () => Promise<string[][]>; transcript: (id: string) => string }> {
+  const bin = join(p.root, 'bin');
+  const config = join(p.root, 'claude-config');
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, 'claude'), [
+    '#!/usr/bin/env node',
+    "const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');",
+    "const { join } = require('node:path');",
+    `const data = ${JSON.stringify(p.data)};`,
+    'const args = process.argv.slice(2);',
+    "appendFileSync(join(data, 'claude.log'), JSON.stringify(args) + '\\n');",
+    "const { realpathSync } = require('node:fs');",
+    "const store = existsSync(join(data, 'claude-store')) ? readFileSync(join(data, 'claude-store'), 'utf8') : process.env.CLAUDE_CONFIG_DIR;",
+    "const dir = join(store, 'projects', realpathSync(process.cwd()).replace(/[^a-zA-Z0-9]/g, '-'));",
+    "const resume = args.indexOf('--resume');",
+    "if (resume >= 0 && !existsSync(join(dir, args[resume + 1] + '.jsonl'))) { console.error('No conversation found with session ID: ' + args[resume + 1]); process.exit(1); }",
+    "const fresh = args.indexOf('--session-id');",
+    "if (fresh >= 0 && existsSync(join(dir, args[fresh + 1] + '.jsonl'))) { console.error('Error: Session ID ' + args[fresh + 1] + ' is already in use.'); process.exit(1); }",
+    "if (fresh >= 0) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, args[fresh + 1] + '.jsonl'), ''); }",
+    "const fail = join(data, 'claude-exit');",
+    "if (existsSync(fail)) { const code = Number(readFileSync(fail, 'utf8')); rmSync(fail); process.exit(code); }",
+    "writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({ contract: 1, status: 'done' }));",
+  ].join('\n'), { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+  process.env.PATH = `${bin}:${saved.PATH ?? ''}`;
+  process.env.CLAUDE_CONFIG_DIR = config;
+  return {
+    restore: () => {
+      process.env.PATH = saved.PATH;
+      if (saved.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.CLAUDE_CONFIG_DIR;
+    },
+    calls: async () => (await readFile(join(p.data, 'claude.log'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as string[]),
+    transcript: (id: string) => join(config, 'projects', p.root.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`),
+  };
+}
+
+const CODE_OPERATION = '      code:     { kind: agent, engine: claude, prompt: "work on {subject}", placement: herdr, tabs: per-subject, timeout: 5m }';
+
+const sessionArg = (args: string[] | undefined, flag: string): string | undefined => (args && args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
+
+test('a session whose transcript is gone starts new under the same id rather than failing to resume', async () => {
+  const p = await project({ extraOperations: CODE_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const { herdr } = tabHerdr();
+    const daemon = p.daemon({ herdr });
+    await daemon.acquireLeader();
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-1'))?.status, 'done');
+    const id = sessionArg((await claude.calls())[0], '--session-id') ?? '';
+    await rm(claude.transcript(id));
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-2'))?.status, 'done');
+    const calls = await claude.calls();
+    assert.equal(calls.length, 2, 'one run, no failed resume first');
+    assert.equal(sessionArg(calls[1], '--session-id'), id);
+    assert.equal(calls[1]?.includes('--resume'), false);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a session with a transcript is resumed even after a run that ended without a result', async () => {
+  const p = await project({ extraOperations: CODE_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const { herdr } = tabHerdr();
+    const daemon = p.daemon({ herdr });
+    await daemon.acquireLeader();
+    // A long conversation that then failed: its session exists.
+    await writeFile(join(p.data, 'claude-exit'), '1');
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-1'))?.status, 'failed');
+    const id = sessionArg((await claude.calls())[0], '--session-id');
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-2'))?.status, 'done');
+    assert.equal(sessionArg((await claude.calls())[1], '--resume'), id);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a resumed session that fails for another reason is not started again as a new one', async () => {
+  const p = await project({ extraOperations: CODE_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const { herdr } = tabHerdr();
+    const daemon = p.daemon({ herdr });
+    await daemon.acquireLeader();
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-1'))?.status, 'done');
+    // A rate limit, an outage: the session is there, the run fails.
+    await writeFile(join(p.data, 'claude-exit'), '1');
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-2'))?.status, 'failed');
+    const calls = await claude.calls();
+    assert.equal(calls.length, 2);
+    assert.ok(calls[1]?.includes('--resume'));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('an ended subject\'s tab that cannot enter the close retries stays registered, and the other subjects still end', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const docs = p.backend.docs;
+  const backend = { ...p.backend, docs: { ...docs, replace: (collection: string, key: string, value: unknown, options?: { etag?: string; ttlMs?: number }) =>
+    collection === 'tabs' && key === 'wT:t1' ? Promise.reject(new Error('storage did not answer')) : docs.replace(collection, key, value, options) } };
+  const daemon = p.daemon({ herdr: { ...herdr, closeTab: async (tabId) => { if (tabId === 'wT:t1') throw new Error('herdr did not answer'); return herdr.closeTab(tabId); } }, backend });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  await runOnce(daemon, 'look', 'pr-4', 'look-4');
+  assert.equal((await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3', 'pr-4'] }))?.status, 'done');
+  const left = await docs.list<{ subject: string; tabId: string }>('subject-tabs');
+  assert.deepEqual(left.map((item) => item.value.tabId), ['wT:t1'], 'the tab nothing could record stays where a later end finds it');
+  assert.deepEqual(closed, ['wT:t2']);
+  assert.ok(p.lines.some((line) => line.includes('could not end a subject')));
+  const wrapper = await readJsonFile<WrapperInfo>(runPath((await jobsBy(daemon, 'look', 'pr-3'))[0]?.run?.runDir ?? '', 'wrapper'));
+  process.kill(wrapper?.pid ?? 0, 'SIGTERM');
+});
+
+test('renewing a per-subject tab record never brings back one that was ended meanwhile', async () => {
+  const p = await perSubjectProject();
+  const { herdr } = tabHerdr();
+  const docs = p.backend.docs;
+  let stale: { key: string; value: unknown }[] | undefined;
+  const backend = { ...p.backend, docs: { ...docs, list: async <T>(collection: string, filter?: { prefix?: string; where?: Record<string, string> }) =>
+    (collection === 'subject-tabs' && stale ? stale : await docs.list(collection, filter)) as { key: string; value: T }[] } };
+  const daemon = p.daemon({ herdr, backend });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  // The renewal reads a list taken before the subject ended.
+  stale = await docs.list('subject-tabs');
+  await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3'] });
+  await daemon.poll(new Date(Date.now() + 2 * 86_400_000));
+  stale = undefined;
+  assert.equal((await docs.list('subject-tabs')).length, 0);
+});
+
+test('a long-use notification herdr could not deliver is sent again on a later poll, once', async () => {
+  const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
+  p.manifest.runtime.idleNudgeMs = 300;
+  const delivered: string[] = [];
+  let attempts = 0;
+  let status = 'working';
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), agentStatus: async () => status, notify: async (title) => {
+    if (!title.includes('still in use')) return;
+    attempts += 1;
+    if (attempts === 1) throw new Error('herdr did not answer');
+    delivered.push(title);
+  } } });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  const later = Date.now() + 3_600_000;
+  await daemon.poll(new Date(later));
+  await sleep(400);
+  for (let i = 1; i <= 4; i += 1) await daemon.poll(new Date(later + i * 120_000));
+  assert.equal(attempts, 2);
+  assert.equal(delivered.length, 1);
+  assert.equal(p.lines.filter((line) => line.includes('in use a long time')).length, 1);
+  status = 'idle';
+  await daemon.poll(new Date(later + 600_000));
+});
+
+test('a pane herdr reports unknown once may be an agent it has not detected yet; unknown twice is a shell', async () => {
+  const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closes, []);
+  await daemon.poll(new Date(Date.now() + 240_000));
+  assert.deepEqual(closes, ['wT:t1']);
+});
+
+test('renewing a tab record loses to a write that landed between its read and its write', async () => {
+  const p = await perSubjectProject();
+  const { herdr } = tabHerdr();
+  const docs = p.backend.docs;
+  let interleave = false;
+  const backend = { ...p.backend, docs: { ...docs, get: async <T>(collection: string, key: string) => {
+    const read = await docs.get<T>(collection, key);
+    if (interleave && collection === 'subject-tabs' && read) {
+      interleave = false;
+      // Another step - a run starting in the tab - writes the record right after the renewal read it.
+      await docs.replace(collection, key, { ...(read.value as object), jobId: 'j-concurrent' });
+    }
+    return read;
+  } } };
+  const daemon = p.daemon({ herdr, backend });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  interleave = true;
+  await daemon.poll(new Date(Date.now() + 2 * 86_400_000));
+  const [record] = await docs.list<{ jobId: string }>('subject-tabs');
+  assert.equal(record?.value.jobId, 'j-concurrent');
+  const wrapper = await readJsonFile<WrapperInfo>(runPath((await jobsBy(daemon, 'look', 'pr-3'))[0]?.run?.runDir ?? '', 'wrapper'));
+  process.kill(wrapper?.pid ?? 0, 'SIGTERM');
+});
+
+/** Runs `code` for pr-5 twice in member l1 and answers what claude was asked each time. */
+async function codeTwice(p: TestProject, herdr: Herdr, claude: Awaited<ReturnType<typeof fakeClaude>>): Promise<{ statuses: (string | undefined)[]; calls: string[][] }> {
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  const statuses: (string | undefined)[] = [];
+  for (const id of ['code-1', 'code-2']) {
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'codel', subject: 'pr-5', input: {}, trigger: { id, name: 'test', kind: 'manual' }, member: 'l1' });
+    await pollUntil(daemon, async () => ['done', 'failed'].includes((await daemon.jobs.list()).find((job) => job.trigger.id === id)?.status ?? ''));
+    statuses.push((await daemon.jobs.list()).find((job) => job.trigger.id === id)?.status);
+  }
+  return { statuses, calls: await claude.calls() };
+}
+
+async function linkedProject(target?: string): Promise<TestProject> {
+  const link = join(tmpdir(), `operator-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const p = await project({
+    pools: `  links:\n    workspaces:\n      l1: { cwd: ${link} }`,
+    extraOperations: '      codel:    { kind: agent, engine: claude, prompt: "work on {subject}", pool: links, placement: herdr, tabs: per-subject, timeout: 5m }',
+  });
+  await symlink(target ?? p.root, link);
+  links.push(link);
+  return p;
+}
+const links: string[] = [];
+after(async () => { for (const link of links) await rm(link, { force: true }); });
+
+test('a session in a symlinked cwd is found where claude keeps it, under the real path, and resumed', async () => {
+  const p = await linkedProject();
+  const claude = await fakeClaude(p);
+  try {
+    const { statuses, calls } = await codeTwice(p, tabHerdr().herdr, claude);
+    assert.deepEqual(statuses, ['done', 'done']);
+    assert.equal(sessionArg(calls[1], '--resume'), sessionArg(calls[0], '--session-id'));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('the session is looked up with the environment of the pane it runs in, not the daemon\'s', async () => {
+  const p = await linkedProject();
+  const claude = await fakeClaude(p);
+  const paneConfig = join(p.root, 'pane-claude-config');
+  try {
+    const { herdr } = tabHerdr();
+    // The herdr server started the pane with a CLAUDE_CONFIG_DIR the daemon does not have.
+    const paneHerdr: Herdr = { ...herdr, runInPane: (pane, command) => herdr.runInPane(pane, `CLAUDE_CONFIG_DIR=${paneConfig} ${command}`) };
+    const { statuses, calls } = await codeTwice(p, paneHerdr, claude);
+    assert.deepEqual(statuses, ['done', 'done']);
+    assert.equal(sessionArg(calls[1], '--resume'), sessionArg(calls[0], '--session-id'));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a session claude says is already in use is resumed instead, once', async () => {
+  const p = await linkedProject();
+  const claude = await fakeClaude(p);
+  try {
+    // claude keeps its transcripts where the wrapper does not look, so the wrapper misreads the session as new.
+    await writeFile(join(p.data, 'claude-store'), join(p.root, 'elsewhere'));
+    const { statuses, calls } = await codeTwice(p, tabHerdr().herdr, claude);
+    assert.deepEqual(statuses, ['done', 'done']);
+    const id = sessionArg(calls[0], '--session-id');
+    assert.equal(calls.length, 3);
+    assert.equal(sessionArg(calls[1], '--session-id'), id);
+    assert.equal(sessionArg(calls[2], '--resume'), id);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('two unknown answers in one poll are one, and a pane id herdr hands out again starts unconfirmed', async () => {
+  const p = await project();
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  const record = (tabId: string) => ({ tabId, jobId: 'j-x', since: new Date().toISOString(), closeAt: new Date(Date.now() - 1000).toISOString(), paneId: 'wT:p7', guard: true });
+  await p.backend.docs.replace('tabs', 'wT:t7', record('wT:t7'));
+  await p.backend.docs.replace('tabs', 'wT:t8', record('wT:t8'));
+  await daemon.poll(new Date(Date.now() + 120_000));
+  assert.deepEqual(closes, [], 'both tabs asked about the same pane in one poll: still one answer');
+  await daemon.poll(new Date(Date.now() + 240_000));
+  // Closing the first tab forgets its pane, so the second starts its own confirmation.
+  assert.deepEqual(closes, ['wT:t7']);
+  await daemon.poll(new Date(Date.now() + 360_000));
+  assert.deepEqual(closes, ['wT:t7', 'wT:t8']);
+  await p.backend.docs.replace('tabs', 'wT:t9', record('wT:t9'));
+  await daemon.poll(new Date(Date.now() + 480_000));
+  assert.deepEqual(closes, ['wT:t7', 'wT:t8'], 'the pane id is new again: its first unknown is not a shell yet');
+});
+
+test('a renewal that is not due reads nothing more than the list', async () => {
+  const p = await perSubjectProject();
+  const { herdr } = tabHerdr();
+  const docs = p.backend.docs;
+  let reads = 0;
+  const backend = { ...p.backend, docs: { ...docs, get: async <T>(collection: string, key: string) => { if (collection === 'subject-tabs') reads += 1; return docs.get<T>(collection, key); } } };
+  const daemon = p.daemon({ herdr, backend });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  // The renewal pass is due; the record itself was just renewed.
+  const later = Date.now() + 2 * 3_600_000;
+  const [kept] = await docs.list<Record<string, unknown>>('subject-tabs');
+  await docs.replace('subject-tabs', kept?.key ?? '', { ...kept?.value, refreshedAt: new Date(later).toISOString() });
+  reads = 0;
+  await daemon.poll(new Date(later));
+  assert.equal(reads, 0);
+  await endAll(daemon);
+});
+
+test('an ended subject\'s tab whose pane reads unknown closes within two polls, not a minute later', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async () => 'unknown' } });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-3', 'look-1');
+  await runOnce(daemon, 'close', '', 'close-1', { subjects: ['pr-3'] });
+  assert.deepEqual(closed, [], 'one unknown is not yet a shell');
+  await sleep(150);
+  await daemon.poll();
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.ok(p.lines.some((line) => line.includes('closed the tab of an ended subject')));
+});
+
+test('an unknown answer nobody asked again for a few polls does not confirm a later one', async () => {
+  const p = await project();
+  const closes: string[] = [];
+  const daemon = p.daemon({ herdr: { ...hostingHerdr(), closeTab: async (tabId) => { closes.push(tabId); return 'closed'; } } });
+  await daemon.acquireLeader();
+  const t0 = Date.now();
+  const record = (closeAt: number) => ({ tabId: 'wT:t7', jobId: 'j-x', since: new Date(t0).toISOString(), closeAt: new Date(closeAt).toISOString(), paneId: 'wT:p7', guard: true });
+  await p.backend.docs.replace('tabs', 'wT:t7', record(t0 - 1000));
+  await daemon.poll(new Date(t0));
+  // The tab is kept on purpose for a while: nobody asks about its pane.
+  await p.backend.docs.replace('tabs', 'wT:t7', record(t0 + 86_400_000));
+  for (let i = 1; i <= 5; i += 1) await daemon.poll(new Date(t0 + i * 120_000));
+  await p.backend.docs.replace('tabs', 'wT:t7', record(t0 - 1000));
+  await daemon.poll(new Date(t0 + 6 * 120_000));
+  assert.deepEqual(closes, [], 'the old unknown is stale: this one starts a new confirmation');
+  await daemon.poll(new Date(t0 + 6 * 120_000 + 200));
+  assert.deepEqual(closes, ['wT:t7']);
+});
+
+test('a close-retry pass that fails runs again a minute later, not on every poll', async () => {
+  const p = await project();
+  const docs = p.backend.docs;
+  let reads = 0;
+  const backend = { ...p.backend, docs: { ...docs, list: async <T>(collection: string, filter?: { prefix?: string; where?: Record<string, string> }) => {
+    if (collection === 'tabs') { reads += 1; throw new Error('storage did not answer'); }
+    return docs.list<T>(collection, filter);
+  } } };
+  const daemon = p.daemon({ backend });
+  await daemon.acquireLeader();
+  const t0 = Date.now();
+  await assert.rejects(daemon.poll(new Date(t0)), /storage did not answer/);
+  await daemon.poll(new Date(t0 + 200));
+  await daemon.poll(new Date(t0 + 30_000));
+  assert.equal(reads, 1);
+  await assert.rejects(daemon.poll(new Date(t0 + 61_000)), /storage did not answer/);
+  assert.equal(reads, 2);
 });

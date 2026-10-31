@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { CLAIMS_COLLECTION, isStateKey, liveClaims, redactClaim, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
 import { isMemberName, type JsonObject } from './contract.ts';
-import { Daemon } from './daemon.ts';
+import { Daemon, SUBJECT_TABS_COLLECTION, type SubjectTab } from './daemon.ts';
 import { parseDuration } from './duration.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
@@ -25,7 +25,7 @@ import { validateProject } from './validate.ts';
 import { WaitStore } from './waits.ts';
 
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', CONTROL_COLLECTION, CLAIMS_COLLECTION, QUEUE_COLLECTION]);
+const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', SUBJECT_TABS_COLLECTION, CONTROL_COLLECTION, CLAIMS_COLLECTION, QUEUE_COLLECTION]);
 const PAUSE_POLL_MS = 5_000;
 const DEFAULT_CLAIM_TTL = '1h';
 
@@ -41,6 +41,7 @@ Commands:
   jobs                             List jobs (newest last)
   job <id>                         Show one job record
   waits                            List open waits
+  tabs                             List per-subject herdr tabs: subject, operation, member, tab and session
   pause                            Start no new job while running ones finish; --wait until none runs.
                                    The service resumes by itself when it starts again
   resume                           End a pause
@@ -48,7 +49,7 @@ Commands:
                                    Run the daemon as the systemd user service operator@<project> (Linux)
   state <get|put|list|delete> <collection> [key]
                                    Project state for scripts and skills (reserved: jobs, waits, threads, deliveries,
-                                   tabs, control, subject-claims, work-queue)
+                                   tabs, subject-tabs, control, subject-claims, work-queue)
   claim <take|renew|release|show> [subject] --run <id> [--ttl 1h]
                                    A compare-and-set lease on an opaque subject; show without a subject lists live claims
   queue <add|list|get|take|update> [id]
@@ -276,6 +277,14 @@ async function commandWaits(values: Values): Promise<number> {
   const manifest = load(values);
   const waits = await new WaitStore(openForCommand(manifest).docs).listOpen();
   print(values, waits, () => waits.map((w) => `${w.id}  ${w.workflow}  on ${w.on}${w.key ? `:${w.key}` : ''}  subject ${w.subject || '-'}  resumes ${w.resume}  since ${w.createdAt}`).join('\n') || 'no open waits');
+  return 0;
+}
+
+/** Lists the per-subject herdr tabs the runtime keeps, with their sessions. */
+async function commandTabs(values: Values): Promise<number> {
+  const manifest = load(values);
+  const tabs = (await openForCommand(manifest).docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)).map((item) => item.value).sort((a, b) => a.since.localeCompare(b.since));
+  print(values, tabs, () => tabs.map((t) => `${t.workflow}  ${t.subject || '-'}  ${t.operation}  member ${t.member ?? '-'}  tab ${t.tabId}  pane ${t.paneId}  session ${t.sessionId ?? '-'}  last ${t.jobId}  since ${t.since}`).join('\n') || 'no per-subject tabs');
   return 0;
 }
 
@@ -524,6 +533,7 @@ export async function main(argv: string[]): Promise<number> {
       case 'jobs': return await commandJobs(values, rest, false);
       case 'job': return await commandJobs(values, rest, true);
       case 'waits': return await commandWaits(values);
+      case 'tabs': return await commandTabs(values);
       case 'pause': return await commandPause(values);
       case 'resume': return await commandResume(values);
       case 'service': return await commandService(values, rest);

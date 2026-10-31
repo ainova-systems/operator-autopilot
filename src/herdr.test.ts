@@ -51,3 +51,8 @@ test('a failed herdr call is read for the reason it prints', () => {
   assert.equal(herdrRefusal({ stdout: '', stderr: 'socket closed' }), undefined);
   assert.equal(herdrRefusal(new Error('spawn herdr ENOENT')), undefined);
 });
+
+test('a pane herdr no longer has is refused with its reason, which the daemon reads as gone', async () => {
+  const refusing = createHerdr(async () => { throw new HerdrRefusal('pane_not_found', 'refused: pane_not_found'); });
+  await assert.rejects(refusing.agentStatus('wA:p9'), (error: unknown) => error instanceof HerdrRefusal && error.reason === 'pane_not_found');
+});

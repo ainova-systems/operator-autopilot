@@ -7,6 +7,11 @@ export interface EngineCommand {
   argv: string[];
   /** Codex writes its last message here; the runtime builds the contract result from it. */
   outputPath?: string;
+  /**
+   * A claude run in a per-subject tab: the command that resumes its session and the one that starts
+   * it under its id. The wrapper, where the session runs, picks between them.
+   */
+  session?: { id: string; resume: boolean; resumeArgv: string[]; freshArgv: string[] };
 }
 
 export interface CommandContext {
@@ -25,6 +30,8 @@ export interface CommandContext {
   codexAgent?: CodexAgent;
   /** An interactive run that got its terminal: claude starts a session instead of `-p`. */
   attended?: boolean;
+  /** A claude session this run starts under a known id, or resumes when `resume` is set. */
+  session?: { id: string; resume: boolean };
 }
 
 export const DEFAULT_CLAUDE_PROMPT = 'Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
@@ -51,7 +58,13 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
     case 'claude': {
       const prompt = renderPrompt(op.prompt ?? DEFAULT_CLAUDE_PROMPT, values);
       // A session takes the prompt as its first message and stays open; -p answers once and exits.
-      return { argv: ['claude', ...(context.attended ? [] : ['-p']), prompt, ...(op.model ? ['--model', op.model] : []), ...op.args] };
+      // A per-subject tab names its session, so the next run of the operation continues it.
+      const argv = (session: string[]): string[] => ['claude', ...(context.attended ? [] : ['-p']), prompt, ...session, ...(op.model ? ['--model', op.model] : []), ...op.args];
+      if (!context.session) return { argv: argv([]) };
+      const { id, resume } = context.session;
+      const resumeArgv = argv(['--resume', id]);
+      const freshArgv = argv(['--session-id', id]);
+      return { argv: resume ? resumeArgv : freshArgv, session: { id, resume, resumeArgv, freshArgv } };
     }
     case 'codex': {
       const outputPath = join(context.runDir, 'output.json');

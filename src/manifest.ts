@@ -50,6 +50,13 @@ export interface OperationSpec {
   placement: Placement;
   /** How long a herdr tab stays open after its run ends, so a person can read it; 0 closes it at once. */
   keepTabMs: number;
+  /**
+   * `per-job` opens a tab for each run and closes it after the run (or after `keepTab`). `per-subject`
+   * keeps one tab per subject, operation and workspace member: later runs of the same operation for
+   * the subject run in it, a claude run continues the same session, and the tab stays open until a
+   * result names the subject in `endSubjects`.
+   */
+  tabs: 'per-job' | 'per-subject';
   timeoutMs: number;
   retries: number;
   retryDelayMs: number;
@@ -205,7 +212,7 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
 function readOperation(reader: Reader, name: string, value: unknown, path: string): OperationSpec | undefined {
   if (!NAME.test(name)) { reader.problem(path, 'operation names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
-  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access', 'keepTab'], path);
+  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access', 'keepTab', 'tabs'], path);
   const kind = value['kind'] as OperationKind;
   if (!KINDS.includes(kind)) { reader.problem(`${path}.kind`, `expected one of ${KINDS.join(', ')}`); return undefined; }
   const engineValue = value['engine'] ?? (kind === 'script' ? 'command' : undefined);
@@ -237,6 +244,10 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
   const placement = value['placement'] ?? 'headless';
   if (placement !== 'headless' && placement !== 'herdr') reader.problem(`${path}.placement`, 'expected headless or herdr');
   if (value['keepTab'] !== undefined && placement === 'headless') reader.problem(`${path}.keepTab`, 'keepTab keeps a herdr tab open; the placement is headless');
+  const tabs = value['tabs'] ?? 'per-job';
+  if (tabs !== 'per-job' && tabs !== 'per-subject') reader.problem(`${path}.tabs`, 'expected per-job or per-subject');
+  if (tabs === 'per-subject' && placement !== 'herdr') reader.problem(`${path}.tabs`, 'a per-subject tab is a herdr tab; the placement is headless');
+  if (tabs === 'per-subject' && value['keepTab'] !== undefined) reader.problem(`${path}.keepTab`, 'a per-subject tab stays open until its subject ends; keepTab applies to per-job tabs');
   if (kind === 'interactive' && placement === 'headless') reader.problem(`${path}.placement`, 'an interactive operation needs a terminal placement (herdr); without one reachable it runs as an agent');
   const notify = value['notify'] ?? DEFAULT_NOTIFY[kind];
   if (!Array.isArray(notify) || notify.some((status) => !RESULT_STATUSES.includes(status as ResultStatus))) reader.problem(`${path}.notify`, `expected a list of result statuses (${RESULT_STATUSES.join(', ')})`);
@@ -252,6 +263,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     thread: thread === 'per-subject' ? 'per-subject' : 'none',
     placement: placement === 'herdr' ? 'herdr' : 'headless',
     keepTabMs: reader.duration(value, 'keepTab', path, 0),
+    tabs: tabs === 'per-subject' ? 'per-subject' : 'per-job',
     timeoutMs: reader.duration(value, 'timeout', path, DEFAULT_TIMEOUT_MS[kind]),
     retries: reader.integer(value, 'retries', path, 0, 0),
     retryDelayMs: reader.duration(value, 'retryDelay', path, 60_000),
