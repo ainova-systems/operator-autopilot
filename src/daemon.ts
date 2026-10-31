@@ -10,6 +10,7 @@ import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
 import { resultWritten, signalCommand } from './job-exec.ts';
 import { jobTitle, openHerdrTab, prepareRun, runDirFor, startHeadless, startInHerdr } from './launch.ts';
+import { END_MS, EndingLocks, endOwnedLock, RETAKE_WITHIN_MS, retakeLock } from './locks.ts';
 import { errorText, type Logger } from './log.ts';
 import type { Manifest, OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
@@ -28,10 +29,19 @@ export interface DaemonOptions {
   host?: string;
 }
 
-interface LeaderFile { token: string; pid: number; host: string; acquiredAt: string }
+/**
+ * This host's leader lease. `lapsesAt` is set when a stopping daemon ended its lease by token, so a
+ * daemon starting on the same host takes the lease as soon as it lapsed instead of waiting it out.
+ */
+interface LeaderFile { token: string; pid: number; host: string; acquiredAt: string; lapsesAt?: string }
 
 const HEARTBEAT_STALE_MS = 30_000;
 const START_GRACE_MS = 60_000;
+/**
+ * How long another host's run lease may be missing before its run reads as expired: a host taking
+ * the lease again after its lifetime leaves the key absent for up to a second plus the retake window.
+ */
+const LEASE_GAP_GRACE_MS = END_MS + RETAKE_WITHIN_MS;
 const MAX_INTERRUPTIONS = 3;
 const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
@@ -113,6 +123,10 @@ export class Daemon {
   /** Number of runs this process started; tests use it to prove nothing launched twice. */
   launches = 0;
   private leader: { token: string; renewedAt: number } | undefined;
+  // Run leases this daemon ended by token, until they lapse.
+  private readonly endingLeases = new EndingLocks();
+  /** Jobs of other hosts whose run lease was found missing, and when, so a brief gap is waited out. */
+  private readonly missingLeases = new Map<string, number>();
   private renewing: Promise<void> | undefined;
   private readonly timerMemo = new Map<string, string>();
   private readonly deferred = new Map<string, number>();
@@ -146,7 +160,7 @@ export class Daemon {
     this.host = options.host ?? hostname();
     this.jobs = new JobStore(this.backend.docs, this.manifest.runtime.retentionMs);
     this.waits = new WaitStore(this.backend.docs);
-    this.pools = new Pools(this.manifest, this.backend, this.log);
+    this.pools = new Pools(this.manifest, this.backend, this.log, { notify: (title, body) => this.herdr.notify(title, body), stopping: () => this.stopped });
   }
 
   private get leaseTtl(): number { return this.manifest.runtime.leaseTtlMs; }
@@ -159,7 +173,8 @@ export class Daemon {
       if (!waitingLogged) { this.log.info('another daemon holds the leader lease; waiting for it', { project: this.manifest.project }); waitingLogged = true; }
       await sleep(Math.max(1000, this.leaseTtl / 3));
     }
-    if (this.stopped) return;
+    // Stopped while the lease was being taken: give it back now, since the loop below never runs.
+    if (this.stopped) { await this.releaseLeader(); return; }
     this.log.info('daemon started', { project: this.manifest.project, host: this.host, state: this.backend.kind, dryRun: this.dryRun, workflows: [...this.manifest.workflows.keys()].join(',') });
     await this.resumeAfterRestart();
     // The lease is renewed on its own clock, so a slow pass cannot outlive it unnoticed.
@@ -221,9 +236,23 @@ export class Daemon {
       // The previous daemon on this host died without releasing; its lease is ours to continue.
       if ((await this.backend.locks.renew('leader', previous.token, this.leaseTtl)) === 'renewed') {
         await this.writeLeader(previous.token);
-        this.log.info('adopted the leader lease of a daemon that stopped without releasing it', { previousPid: previous.pid });
+        this.log.info(previous.lapsesAt ? 'took back the leader lease the previous daemon on this host gave back as it stopped' : 'adopted the leader lease of a daemon that stopped without releasing it', { previousPid: previous.pid });
         return true;
       }
+    }
+    if (previous?.host === this.host && previous.lapsesAt) {
+      // The previous daemon here gave the lease back as it stopped: take it once that second passed,
+      // rather than reading it as another daemon's and waiting a third of a lease.
+      const token = await retakeLock(this.backend.locks, 'leader', this.leaseTtl, `${this.host}:${process.pid}`, Math.max(0, Date.parse(previous.lapsesAt) - Date.now()) + RETAKE_WITHIN_MS, () => this.stopped);
+      if (token === undefined && this.stopped) return false;
+      if (token === undefined) {
+        // Another daemon took it meanwhile: the note is spent, and later attempts wait like any other.
+        await rm(this.leaderFile, { force: true });
+        return false;
+      }
+      await this.writeLeader(token);
+      this.log.info('took the leader lease the previous daemon on this host gave back as it stopped', { previousPid: previous.pid });
+      return true;
     }
     if (await this.backend.locks.exists('leader')) return false;
     const lease = await this.backend.locks.acquire('leader', this.leaseTtl, `${this.host}:${process.pid}`);
@@ -235,7 +264,7 @@ export class Daemon {
   private async writeLeader(token: string): Promise<void> {
     this.leader = { token, renewedAt: Date.now() };
     await mkdir(this.manifest.runtime.stateDir, { recursive: true });
-    await writeJsonAtomic(this.leaderFile, { token, pid: process.pid, host: this.host, acquiredAt: new Date().toISOString() } satisfies LeaderFile);
+    await writeJsonAtomic(this.leaderFile, { token, pid: process.pid, host: this.host, acquiredAt: new Date().toISOString() } satisfies LeaderFile, 0o600);
   }
 
   /** Renews the leader lease when a third of it has passed; throws LEADER_LOST when it is gone. */
@@ -251,9 +280,13 @@ export class Daemon {
     const outcome = await this.backend.locks.renew('leader', this.leader.token, this.leaseTtl);
     if (outcome === 'renewed') { this.leader.renewedAt = Date.now(); return; }
     if (outcome === 'lifetime-exceeded') {
-      await this.backend.locks.release('leader');
-      const lease = await this.backend.locks.acquire('leader', this.leaseTtl, `${this.host}:${process.pid}`);
-      if (lease.acquired) { await this.writeLeader(lease.token); this.log.info('leader lease re-acquired after its 24h lifetime'); return; }
+      // Past its lifetime the lease cannot be renewed: end it by token and take it again as soon as
+      // it lapsed; a standby that takes it first becomes the leader, and this daemon stops.
+      await endOwnedLock(this.backend.locks, 'leader', this.leader.token);
+      const token = await retakeLock(this.backend.locks, 'leader', this.leaseTtl, `${this.host}:${process.pid}`, undefined, () => this.stopped);
+      if (token !== undefined) { await this.writeLeader(token); this.log.info('leader lease re-acquired after its 24h lifetime'); return; }
+      // Stopping anyway: the lease was given back, so there is nothing left to release.
+      if (this.stopped) { this.leader = undefined; return; }
     }
     this.leader = undefined;
     throw new OperatorError('LEADER_LOST', 'the leader lease was lost; another daemon may be running for this project');
@@ -262,8 +295,14 @@ export class Daemon {
   private async releaseLeader(): Promise<void> {
     if (!this.leader) return;
     try {
-      await this.backend.locks.release('leader');
-      await rm(this.leaderFile, { force: true });
+      const end = await endOwnedLock(this.backend.locks, 'leader', this.leader.token);
+      const previous = await readJsonFile<LeaderFile>(this.leaderFile);
+      // Only this leader's own note is touched. A shortened lease is recorded for the daemon that
+      // starts next on this host, since it lapses within a second; any other end leaves nothing to take.
+      if (previous?.token === this.leader.token) {
+        if (end === 'ended') await writeJsonAtomic(this.leaderFile, { ...previous, lapsesAt: new Date(Date.now() + END_MS).toISOString() } satisfies LeaderFile, 0o600);
+        else await rm(this.leaderFile, { force: true });
+      }
     } catch (error) {
       this.log.warn('could not release the leader lease; it expires by itself', { error: errorText(error) });
     }
@@ -307,7 +346,9 @@ export class Daemon {
     this.polls += 1;
     await this.ensureLeader();
     await this.refreshPause();
-    for (const job of await this.jobs.list('running')) {
+    const running = await this.jobs.list('running');
+    for (const id of this.missingLeases.keys()) if (!running.some((job) => job.id === id)) this.missingLeases.delete(id);
+    for (const job of running) {
       try { await this.observe(job, now); } catch (error) { this.log.error('observing a running job failed', { job: job.id, error: errorText(error) }); }
     }
     if (this.paused) await this.reportQuiet(this.paused, now);
@@ -406,6 +447,10 @@ export class Daemon {
         });
       }
     };
+    // A run lease this daemon gave back a moment ago, e.g. for a run that waited for its tab, is free
+    // once it lapsed: retry after that second rather than read it as held elsewhere and wait a lease long.
+    const lapsing = this.endingLeases.remaining(`run.${job.id}`);
+    if (lapsing > 0) { await queue('its run lease is being given back', lapsing); return; }
     if (op.pool) {
       const decision = await this.pools.acquire(op.pool, job.id, { ...(job.member ? { member: job.member } : {}), read: op.access === 'read' });
       if (!decision.granted) { await queue(decision.waitingFor, decision.retryAfterMs); return; }
@@ -642,7 +687,15 @@ export class Daemon {
     const run = job.run;
     if (!run) { await this.interrupt(job, 'running without a run record'); return; }
     if (run.host !== this.host) {
-      if (run.lease && (await this.backend.locks.exists(run.lease.key))) return;
+      if (run.lease && (await this.backend.locks.exists(run.lease.key))) { this.missingLeases.delete(job.id); return; }
+      // A host taking its run lease again after the lease's lifetime leaves the key briefly absent:
+      // the run reads as expired only once the key stayed missing longer than that.
+      const missingSince = this.missingLeases.get(job.id);
+      if (run.lease && (missingSince === undefined || now.getTime() - missingSince < LEASE_GAP_GRACE_MS)) {
+        if (missingSince === undefined) this.missingLeases.set(job.id, now.getTime());
+        return;
+      }
+      this.missingLeases.delete(job.id);
       await this.interrupt(job, `run lease from host ${run.host} expired`);
       return;
     }
@@ -672,10 +725,18 @@ export class Daemon {
     this.renewedAt.set(job.id, Date.now());
     const changes: Partial<JobRun> = {};
     if (run.lease) {
-      const outcome = await this.backend.locks.renew(run.lease.key, run.lease.token, this.leaseTtl);
-      if (outcome !== 'renewed') {
-        const lease = await this.backend.locks.acquire(run.lease.key, this.leaseTtl, `${this.host}:${job.attempt}`);
-        if (lease.acquired) changes.lease = { key: run.lease.key, token: lease.token };
+      const key = run.lease.key;
+      const outcome = await this.backend.locks.renew(key, run.lease.token, this.leaseTtl);
+      if (outcome === 'lifetime-exceeded') {
+        // Past its lifetime: end it by token and take it again as soon as it lapsed, marked as being
+        // given back meanwhile, so the gap never reads as an expired run.
+        if ((await endOwnedLock(this.backend.locks, key, run.lease.token)) === 'ended') this.endingLeases.ended(key);
+        const token = await retakeLock(this.backend.locks, key, this.leaseTtl, `${this.host}:${job.attempt}`, undefined, () => this.stopped);
+        if (token !== undefined) changes.lease = { key, token };
+        else this.log.warn('run lease past its lifetime could not be taken again', { job: job.id });
+      } else if (outcome !== 'renewed') {
+        const lease = await this.backend.locks.acquire(key, this.leaseTtl, `${this.host}:${job.attempt}`);
+        if (lease.acquired) changes.lease = { key, token: lease.token };
       }
     }
     if (run.slot) {
@@ -683,7 +744,13 @@ export class Daemon {
       if (renewed.token !== run.slot.token) changes.slot = renewed;
     }
     if (Object.keys(changes).length > 0) {
-      await this.jobs.update(job.id, (current) => (current.status === 'running' && current.run ? { ...current, run: { ...current.run, ...changes } } : undefined));
+      const updated = await this.jobs.update(job.id, (current) => (current.status === 'running' && current.run ? { ...current, run: { ...current.run, ...changes } } : undefined));
+      const lease = changes.lease;
+      if (lease && updated?.run?.lease?.token !== lease.token) {
+        // The job ended meanwhile, so nothing renews the new lease: give it back rather than leave it to its TTL.
+        await endOwnedLock(this.backend.locks, lease.key, lease.token);
+        this.log.info('gave back a run lease taken again for a job that ended meanwhile', { job: job.id });
+      }
     }
     if (run.placement.paneId) await this.watchPane(job, run.placement.paneId, run.runDir);
   }
@@ -876,7 +943,8 @@ export class Daemon {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
     if (run.limitSlot) steps.push(this.pools.release(jobId, run.limitSlot));
-    if (run.lease) steps.push(releaseOwnedLease(this.backend, run.lease.key, run.lease.token));
+    const lease = run.lease;
+    if (lease) steps.push(releaseOwnedLease(this.backend, lease.key, lease.token).then((ended) => { if (ended) this.endingLeases.ended(lease.key); }));
     // A freed slot may be what a deferred job was waiting for.
     this.deferred.clear();
     for (const outcome of await Promise.allSettled(steps)) {
@@ -1087,7 +1155,7 @@ export class Daemon {
   }
 }
 
-/** Releases a Shield lease only while this token still owns it, so a successor's lease survives. */
-export async function releaseOwnedLease(backend: StateBackend, key: string, token: string): Promise<void> {
-  if ((await backend.locks.renew(key, token, 1000)) === 'renewed') await backend.locks.release(key);
+/** Gives a run lease back by its token (endOwnedLock), so a successor's lease survives. */
+export async function releaseOwnedLease(backend: StateBackend, key: string, token: string): Promise<boolean> {
+  return (await endOwnedLock(backend.locks, key, token)) === 'ended';
 }

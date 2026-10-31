@@ -28,9 +28,10 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   }
 }
 
+// Owner-only: documents, locks and slots hold the tokens that renew or end what they hold.
 async function writeJson(path: string, value: unknown): Promise<void> {
   const temp = `${path}.${randomBytes(4).toString('hex')}.tmp`;
-  await writeFile(temp, JSON.stringify(value));
+  await writeFile(temp, JSON.stringify(value), { mode: 0o600 });
   await rename(temp, path);
 }
 

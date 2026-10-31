@@ -42,6 +42,18 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
+  The runtime gives every lock back - a workspace, a run lease, the leader lease - by shortening it
+  to one second with its token, never by deleting the key, which could remove a successor's lock;
+  the next job that wants it retries once that second passed. A lease past its 24h lifetime is
+  ended the same way and taken again within a few seconds - the leader lease, a run lease and a
+  workspace alike. While a host takes its run lease again the key is briefly missing, so a daemon
+  observing that host's job reads the run as expired only once the key stayed missing for six
+  seconds. A workspace lease lost to another host is reported to the owner once per job, and a
+  daemon that stops during a retake gives up the wait without reporting a loss.
+  A daemon restarted on the same host takes the leader lease as soon as the stopped one's second
+  passed. No command prints a token: any field named `token`, at any depth and in every
+  collection, is left out of `operator job`, `jobs`, `claim` and `state` output, and the files that
+  hold tokens (`leader.json`, the file state) are written readable by their owner only.
   A `next` request (or a `wait`, for the operation it resumes) may name the `member` to run in -
   for example the workspace that holds its subject - and the job waits for that member rather than
   taking another. A follow-on in the same workspace pool stays in the member its run held unless its

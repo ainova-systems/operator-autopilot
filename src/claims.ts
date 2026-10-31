@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { OperatorError } from './errors.ts';
+import { END_MS, endOwnedLock } from './locks.ts';
 import type { DocStore, LockStore, StoredDoc } from './state/types.ts';
 
 /**
@@ -13,9 +14,6 @@ export const CLAIMS_COLLECTION = 'subject-claims';
 const CLAIM_RETENTION_MS = 3_600_000;
 /** A lock lives at most a day from its acquisition, so a lease is at most a day; renew it sooner. */
 export const MAX_CLAIM_TTL_MS = 86_400_000;
-// The shortest lease the lock takes. Ending a claim shortens its lock to this by token and lets it
-// lapse: the backend has no token-checked delete, and a delete by key could remove the next holder's.
-const END_MS = 1000;
 // The lock's own day starts when the backend acquired it, a moment before this host stamped
 // `lockedAt`; renewals stay this far inside the day so they never ask past its real end.
 const DEADLINE_MARGIN_MS = 5000;
@@ -88,13 +86,6 @@ const wallClock: Clock = () => new Date();
 const lockKey = (subject: string): string => `claim.${subject}`;
 const publicView = ({ token: _token, lockedAt: _lockedAt, ...claim }: StoredClaim): ClaimRecord => claim;
 
-/** Strips what only this module may see from a stored record, for any reader of the collection. */
-export function redactClaim(value: unknown): unknown {
-  if (typeof value !== 'object' || value === null) return value;
-  const { token: _token, ...rest } = value as Record<string, unknown>;
-  return rest;
-}
-
 function checked(subject: string, run?: string): void {
   checkKey(subject, 'subject', 'INVALID_SUBJECT');
   if (run !== undefined) checkKey(run, 'run id', 'INVALID_RUN_ID');
@@ -109,9 +100,9 @@ function expiry(lockedAt: string, at: Date, ttlMs: number): string {
   return new Date(Math.min(at.getTime() + ttlMs, Date.parse(lockedAt) + MAX_CLAIM_TTL_MS)).toISOString();
 }
 
-/** Ends a lock this run holds, by its token: shortened to the minimum, it lapses on its own. */
+/** Ends a lock this run holds, by its token (endOwnedLock). */
 async function endLock(locks: LockStore, subject: string, token: string): Promise<boolean> {
-  return (await locks.renew(lockKey(subject), token, END_MS)) !== 'lost';
+  return (await endOwnedLock(locks, lockKey(subject), token)) !== 'lost';
 }
 
 /** Acquires the subject's lock for `run` and records it; undefined when another run holds the lock. */
