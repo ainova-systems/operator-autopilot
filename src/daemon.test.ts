@@ -1,13 +1,13 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { enqueue } from './jobs.ts';
+import { enqueue, type JobRecord } from './jobs.ts';
 import { Pools } from './pools.ts';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo } from './runfiles.ts';
 import { absentHerdr, createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
@@ -427,7 +427,7 @@ test('the runtime gives every lock back by its token and never deletes one by ke
 test('a workspace lease past its lifetime that another holder took meanwhile is reported, not kept silently', async () => {
   const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
   const told: string[] = [];
-  const pools = new Pools(p.manifest, p.backend, p.log, async (title) => { told.push(title); });
+  const pools = new Pools(p.manifest, p.backend, p.log, { notify: async (title) => { told.push(title); } });
   const decision = await pools.acquire('slots', 'job-1', { member: 's1' });
   assert.equal(decision.granted, true);
   if (!decision.granted) return;
@@ -439,6 +439,158 @@ test('a workspace lease past its lifetime that another holder took meanwhile is 
   assert.deepEqual(told, ['operator: workspace lease lost']);
   assert.ok(p.lines.some((line) => line.includes('workspace lease lost to another holder')));
 });
+
+test('a lost workspace lease is reported once per job, not on every renewal', async () => {
+  const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });
+  const told: string[] = [];
+  const pools = new Pools(p.manifest, p.backend, p.log, { notify: async (title) => { told.push(title); } });
+  const acquire = p.backend.locks.acquire.bind(p.backend.locks);
+  const renew = p.backend.locks.renew.bind(p.backend.locks);
+  const loseLeases = (lost: boolean): void => {
+    p.backend.locks.renew = lost ? async () => 'lost' : renew;
+    p.backend.locks.acquire = lost ? async () => ({ acquired: false }) : acquire;
+  };
+  const first = await pools.acquire('slots', 'job-1', { member: 's1' });
+  assert.equal(first.granted, true);
+  if (!first.granted) return;
+  loseLeases(true);
+  for (let renewal = 0; renewal < 3; renewal += 1) await pools.renew('job-1', first.hold);
+  assert.deepEqual(told, ['operator: workspace lease lost']);
+  assert.equal(p.lines.filter((line) => line.includes('workspace lease lost to another holder')).length, 1);
+  // Released, the job is forgotten: the next job that loses its lease is reported again.
+  loseLeases(false);
+  await pools.release('job-1', first.hold);
+  const second = await pools.acquire('slots', 'job-2', { member: 's2' });
+  assert.equal(second.granted, true);
+  if (!second.granted) return;
+  loseLeases(true);
+  await pools.renew('job-2', second.hold);
+  await pools.renew('job-2', second.hold);
+  assert.equal(told.length, 2);
+});
+
+test('a run lease past its lifetime is ended by its token and taken again, not left to expire', async () => {
+  const p = await project();
+  const daemon = p.daemon();
+  const key = 'run.j-life';
+  const lease = await p.backend.locks.acquire(key, 60_000, 'test');
+  assert.ok(lease.acquired);
+  if (!lease.acquired) return;
+  const now = new Date().toISOString();
+  const job = {
+    id: 'j-life', project: 'demo', workflow: 'demo', operation: 'finish', subject: 'item-1', input: {}, trigger: { id: 't', name: 'test', kind: 'manual' },
+    status: 'running', attempt: 1, createdAt: now, updatedAt: now, history: [],
+    run: { attempt: 1, host: 'h', runDir: '', startedAt: now, placement: { kind: 'headless' }, lease: { key, token: lease.token } },
+  } as JobRecord;
+  await p.backend.docs.replace('jobs', job.id, job);
+  const renew = p.backend.locks.renew.bind(p.backend.locks);
+  let past = true;
+  p.backend.locks.renew = async (k, token, ttlMs) => (past && k === key && ttlMs !== 1000 ? ((past = false), 'lifetime-exceeded') : renew(k, token, ttlMs));
+  await (daemon as unknown as { keepAlive(job: JobRecord, run: NonNullable<JobRecord['run']>): Promise<void> }).keepAlive(job, job.run!);
+  const stored = (await p.backend.docs.get<JobRecord>('jobs', job.id))?.value;
+  assert.ok(stored?.run?.lease && stored.run.lease.token !== lease.token, 'the run carries the lease taken again');
+  assert.equal(await p.backend.locks.renew(key, stored.run.lease.token, 60_000), 'renewed');
+});
+
+/** A leader note as a daemon on this host left it when it stopped, as if by a process now gone. */
+async function stoppedLeader(p: TestProject): Promise<{ path: string; token: string }> {
+  const first = p.daemon();
+  assert.equal(await first.acquireLeader(), true);
+  await (first as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
+  const path = join(p.manifest.runtime.stateDir, 'leader.json');
+  const note = await readJsonFile<{ token: string; lapsesAt?: string }>(path);
+  assert.ok(note?.lapsesAt, 'the stopped daemon recorded when its lease lapses');
+  await writeFile(path, JSON.stringify({ ...note, pid: spawnSync(process.execPath, ['-e', '']).pid }));
+  return { path, token: note.token };
+}
+
+async function leaderLapsed(p: TestProject): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (await p.backend.locks.exists('leader')) {
+    assert.ok(Date.now() < deadline, 'the leader lease lapsed after it was given back');
+    await sleep(100);
+  }
+}
+
+test('a daemon restarted on this host continues the lease inside its last second and takes it after', async () => {
+  const inside = await project();
+  const continued = await stoppedLeader(inside);
+  const early = inside.daemon();
+  assert.equal(await early.acquireLeader(), true);
+  assert.equal((early as unknown as { leader: { token: string } }).leader.token, continued.token);
+  assert.ok(inside.lines.some((line) => line.includes('took back the leader lease the previous daemon on this host gave back as it stopped')));
+
+  const after = await project();
+  const lapsed = await stoppedLeader(after);
+  await leaderLapsed(after);
+  const late = after.daemon();
+  assert.equal(await late.acquireLeader(), true);
+  assert.notEqual((late as unknown as { leader: { token: string } }).leader.token, lapsed.token);
+  assert.ok(after.lines.some((line) => line.includes('took the leader lease the previous daemon on this host gave back as it stopped')));
+});
+
+test('a restarted daemon spends the note when a standby took the lease meanwhile, and a stop ends its wait', async () => {
+  const taken = await project();
+  const note = await stoppedLeader(taken);
+  await leaderLapsed(taken);
+  assert.ok((await taken.backend.locks.acquire('leader', 60_000, 'standby')).acquired);
+  const stopping = taken.daemon();
+  const pending = stopping.acquireLeader();
+  await sleep(300);
+  stopping.stop();
+  const stoppedAt = Date.now();
+  assert.equal(await pending, false);
+  assert.ok(Date.now() - stoppedAt < 1000, 'a stop does not wait the retake window out');
+  assert.ok(existsSync(note.path), 'a stopping daemon leaves the note for the next one');
+  const waiting = taken.daemon();
+  assert.equal(await waiting.acquireLeader(), false);
+  assert.equal(existsSync(note.path), false, 'the note is spent once another daemon holds the lease');
+});
+
+test('a stopping leader records its lapse only for its own note and only when the lease was shortened', async () => {
+  const other = await project();
+  const daemon = other.daemon();
+  assert.equal(await daemon.acquireLeader(), true);
+  const path = join(other.manifest.runtime.stateDir, 'leader.json');
+  const foreign = { token: 'another', pid: 1, host: 'elsewhere', acquiredAt: new Date().toISOString() };
+  await writeFile(path, JSON.stringify(foreign));
+  await (daemon as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
+  assert.deepEqual(await readJsonFile(path), foreign);
+
+  const old = await project();
+  const renew = old.backend.locks.renew.bind(old.backend.locks);
+  old.backend.locks.renew = async (key, token, ttlMs) => (key === 'leader' && ttlMs === 1000 ? 'lifetime-exceeded' : renew(key, token, ttlMs));
+  const aged = old.daemon();
+  assert.equal(await aged.acquireLeader(), true);
+  await (aged as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
+  assert.equal(existsSync(join(old.manifest.runtime.stateDir, 'leader.json')), false, 'a lease that was not shortened leaves no note to take');
+});
+
+test('the leader note and the file state are readable by their owner only', async (t) => {
+  // Judged under a permissive umask, so the result does not come from the host's own setting.
+  const umask = process.umask(0o022);
+  t.after(() => { process.umask(umask); });
+  const p = await project();
+  const daemon = p.daemon();
+  assert.equal(await daemon.acquireLeader(), true);
+  assert.equal((await stat(join(p.manifest.runtime.stateDir, 'leader.json'))).mode & 0o777, 0o600);
+  await (daemon as unknown as { releaseLeader(): Promise<void> }).releaseLeader();
+  assert.equal((await stat(join(p.manifest.runtime.stateDir, 'leader.json'))).mode & 0o777, 0o600);
+  await p.backend.docs.replace('jobs', 'j-mode', { id: 'j-mode' });
+  const files = await findFiles(p.root, (name) => name.endsWith('.json') && name.includes('j-mode'));
+  assert.ok(files.length > 0);
+  for (const file of files) assert.equal((await stat(file)).mode & 0o777, 0o600, file);
+});
+
+async function findFiles(dir: string, match: (name: string) => boolean): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...(await findFiles(path, match)));
+    else if (match(entry.name)) found.push(path);
+  }
+  return found;
+}
 
 test('a workspace this host just gave back is offered again after its last second, not after a retry', async () => {
   const p = await project({ pools: SLOT_POOL, extraOperations: SLOT_OPERATIONS });

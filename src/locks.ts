@@ -27,14 +27,15 @@ export async function endOwnedLock(locks: LockStore, key: string, token: string)
 /**
  * Takes a lock again after this holder ended it: tries every RETAKE_EVERY_MS until the old lease
  * lapsed and a new one is granted, for at most `withinMs`. Undefined when another holder took the
- * key meanwhile, or the old lease did not lapse in time.
+ * key meanwhile, the old lease did not lapse in time, or `stopping` answers true (a stopping process
+ * does not wait the window out).
  */
-export async function retakeLock(locks: LockStore, key: string, ttlMs: number, reference: string, withinMs = RETAKE_WITHIN_MS): Promise<string | undefined> {
+export async function retakeLock(locks: LockStore, key: string, ttlMs: number, reference: string, withinMs = RETAKE_WITHIN_MS, stopping: () => boolean = () => false): Promise<string | undefined> {
   const deadline = Date.now() + withinMs;
   for (;;) {
     const lease = await locks.acquire(key, ttlMs, reference);
     if (lease.acquired) return lease.token;
-    if (Date.now() >= deadline) return undefined;
+    if (Date.now() >= deadline || stopping()) return undefined;
     await sleep(RETAKE_EVERY_MS);
   }
 }

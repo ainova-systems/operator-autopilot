@@ -20,21 +20,28 @@ export function memberLockKey(pool: string, member: string): string {
  * `shared`). A `workspaces` pool hands out named members, each held by a renewable Shield lease.
  * The host's own holds are counted first, so a pool that is full here costs no remote call.
  */
+/** What a Pools instance asks its daemon: telling the owner, and whether it is stopping. */
+export interface PoolHooks {
+  notify?: (title: string, body: string) => Promise<void>;
+  stopping?: () => boolean;
+}
+
 export class Pools {
   readonly manifest: Manifest;
   readonly backend: StateBackend;
   readonly log: Logger;
-  /** Tells the owner about a lease this host lost while its job still runs. */
-  private readonly notify?: (title: string, body: string) => Promise<void>;
+  private readonly hooks: PoolHooks;
+  /** Jobs whose workspace lease was lost and the owner told, so a later renewal does not tell again. */
+  private readonly lostLeases = new Set<string>();
   readonly held = new Map<string, Map<string, SlotHold>>();
   // Workspace leases this host gave back by token: the next job waits for one to lapse.
   private readonly ending = new EndingLocks();
 
-  constructor(manifest: Manifest, backend: StateBackend, log: Logger, notify?: (title: string, body: string) => Promise<void>) {
+  constructor(manifest: Manifest, backend: StateBackend, log: Logger, hooks: PoolHooks = {}) {
     this.manifest = manifest;
     this.backend = backend;
     this.log = log;
-    if (notify) this.notify = notify;
+    this.hooks = hooks;
   }
 
   private holds(pool: string): Map<string, SlotHold> {
@@ -124,13 +131,17 @@ export class Pools {
     // running job: the gap is when another host could take the member, so it is closed at once.
     if (outcome === 'lifetime-exceeded') await endOwnedLock(this.backend.locks, hold.key, hold.token);
     const token = outcome === 'lifetime-exceeded'
-      ? await retakeLock(this.backend.locks, hold.key, this.manifest.runtime.leaseTtlMs, jobId)
+      ? await retakeLock(this.backend.locks, hold.key, this.manifest.runtime.leaseTtlMs, jobId, undefined, this.hooks.stopping)
       : await this.backend.locks.acquire(hold.key, this.manifest.runtime.leaseTtlMs, jobId).then((lease) => (lease.acquired ? lease.token : undefined));
     if (token === undefined) {
+      // Told once per job: renewal keeps trying every third of a lease, and each try fails the same way.
+      if (this.lostLeases.has(jobId)) return hold;
+      this.lostLeases.add(jobId);
       this.log.warn('workspace lease lost to another holder; the running job keeps working in a workspace it no longer holds', { job: jobId, pool: hold.pool, member: hold.member });
-      await this.notify?.('operator: workspace lease lost', `job ${jobId} keeps running in ${hold.pool}/${hold.member ?? '-'} without holding it; another job may be placed there`).catch(() => undefined);
+      await this.hooks.notify?.('operator: workspace lease lost', `job ${jobId} keeps running in ${hold.pool}/${hold.member ?? '-'} without holding it; another job may be placed there`).catch(() => undefined);
       return hold;
     }
+    if (this.lostLeases.delete(jobId)) this.log.info('workspace lease taken again', { job: jobId, pool: hold.pool, member: hold.member });
     const renewed = { ...hold, token };
     this.holds(hold.pool).set(jobId, renewed);
     return renewed;
@@ -138,6 +149,7 @@ export class Pools {
 
   async release(jobId: string, hold: SlotHold): Promise<void> {
     this.holds(hold.pool).delete(jobId);
+    this.lostLeases.delete(jobId);
     if (hold.kind === 'limit') { await this.backend.slots.release(hold.key, hold.token, { global: hold.global }); return; }
     if (hold.read) return;
     if ((await endOwnedLock(this.backend.locks, hold.key, hold.token)) === 'ended') this.ending.ended(hold.key);

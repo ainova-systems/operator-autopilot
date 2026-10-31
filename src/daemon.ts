@@ -153,7 +153,7 @@ export class Daemon {
     this.host = options.host ?? hostname();
     this.jobs = new JobStore(this.backend.docs, this.manifest.runtime.retentionMs);
     this.waits = new WaitStore(this.backend.docs);
-    this.pools = new Pools(this.manifest, this.backend, this.log, (title, body) => this.herdr.notify(title, body));
+    this.pools = new Pools(this.manifest, this.backend, this.log, { notify: (title, body) => this.herdr.notify(title, body), stopping: () => this.stopped });
   }
 
   private get leaseTtl(): number { return this.manifest.runtime.leaseTtlMs; }
@@ -235,7 +235,8 @@ export class Daemon {
     if (previous?.host === this.host && previous.lapsesAt) {
       // The previous daemon here gave the lease back as it stopped: take it once that second passed,
       // rather than reading it as another daemon's and waiting a third of a lease.
-      const token = await retakeLock(this.backend.locks, 'leader', this.leaseTtl, `${this.host}:${process.pid}`, Math.max(0, Date.parse(previous.lapsesAt) - Date.now()) + RETAKE_WITHIN_MS);
+      const token = await retakeLock(this.backend.locks, 'leader', this.leaseTtl, `${this.host}:${process.pid}`, Math.max(0, Date.parse(previous.lapsesAt) - Date.now()) + RETAKE_WITHIN_MS, () => this.stopped);
+      if (token === undefined && this.stopped) return false;
       if (token === undefined) {
         // Another daemon took it meanwhile: the note is spent, and later attempts wait like any other.
         await rm(this.leaderFile, { force: true });
@@ -255,7 +256,7 @@ export class Daemon {
   private async writeLeader(token: string): Promise<void> {
     this.leader = { token, renewedAt: Date.now() };
     await mkdir(this.manifest.runtime.stateDir, { recursive: true });
-    await writeJsonAtomic(this.leaderFile, { token, pid: process.pid, host: this.host, acquiredAt: new Date().toISOString() } satisfies LeaderFile);
+    await writeJsonAtomic(this.leaderFile, { token, pid: process.pid, host: this.host, acquiredAt: new Date().toISOString() } satisfies LeaderFile, 0o600);
   }
 
   /** Renews the leader lease when a third of it has passed; throws LEADER_LOST when it is gone. */
@@ -274,8 +275,10 @@ export class Daemon {
       // Past its lifetime the lease cannot be renewed: end it by token and take it again as soon as
       // it lapsed; a standby that takes it first becomes the leader, and this daemon stops.
       await endOwnedLock(this.backend.locks, 'leader', this.leader.token);
-      const token = await retakeLock(this.backend.locks, 'leader', this.leaseTtl, `${this.host}:${process.pid}`);
+      const token = await retakeLock(this.backend.locks, 'leader', this.leaseTtl, `${this.host}:${process.pid}`, undefined, () => this.stopped);
       if (token !== undefined) { await this.writeLeader(token); this.log.info('leader lease re-acquired after its 24h lifetime'); return; }
+      // Stopping anyway: the lease was given back, so there is nothing left to release.
+      if (this.stopped) { this.leader = undefined; return; }
     }
     this.leader = undefined;
     throw new OperatorError('LEADER_LOST', 'the leader lease was lost; another daemon may be running for this project');
@@ -285,11 +288,12 @@ export class Daemon {
     if (!this.leader) return;
     try {
       const end = await endOwnedLock(this.backend.locks, 'leader', this.leader.token);
-      if (end === 'lost') await rm(this.leaderFile, { force: true });
-      else {
-        // Recorded for the daemon that starts next on this host: the lease lapses within a second.
-        const previous = await readJsonFile<LeaderFile>(this.leaderFile);
-        if (previous) await writeJsonAtomic(this.leaderFile, { ...previous, lapsesAt: new Date(Date.now() + END_MS).toISOString() } satisfies LeaderFile);
+      const previous = await readJsonFile<LeaderFile>(this.leaderFile);
+      // Only this leader's own note is touched. A shortened lease is recorded for the daemon that
+      // starts next on this host, since it lapses within a second; any other end leaves nothing to take.
+      if (previous?.token === this.leader.token) {
+        if (end === 'ended') await writeJsonAtomic(this.leaderFile, { ...previous, lapsesAt: new Date(Date.now() + END_MS).toISOString() } satisfies LeaderFile, 0o600);
+        else await rm(this.leaderFile, { force: true });
       }
     } catch (error) {
       this.log.warn('could not release the leader lease; it expires by itself', { error: errorText(error) });
@@ -673,7 +677,8 @@ export class Daemon {
     const run = job.run;
     if (!run) { await this.interrupt(job, 'running without a run record'); return; }
     if (run.host !== this.host) {
-      if (run.lease && (await this.backend.locks.exists(run.lease.key))) return;
+      // A run lease this daemon is taking again after its lifetime is briefly absent, not expired.
+      if (run.lease && (this.endingLeases.remaining(run.lease.key) > 0 || (await this.backend.locks.exists(run.lease.key)))) return;
       await this.interrupt(job, `run lease from host ${run.host} expired`);
       return;
     }
@@ -703,10 +708,18 @@ export class Daemon {
     this.renewedAt.set(job.id, Date.now());
     const changes: Partial<JobRun> = {};
     if (run.lease) {
-      const outcome = await this.backend.locks.renew(run.lease.key, run.lease.token, this.leaseTtl);
-      if (outcome !== 'renewed') {
-        const lease = await this.backend.locks.acquire(run.lease.key, this.leaseTtl, `${this.host}:${job.attempt}`);
-        if (lease.acquired) changes.lease = { key: run.lease.key, token: lease.token };
+      const key = run.lease.key;
+      const outcome = await this.backend.locks.renew(key, run.lease.token, this.leaseTtl);
+      if (outcome === 'lifetime-exceeded') {
+        // Past its lifetime: end it by token and take it again as soon as it lapsed, marked as being
+        // given back meanwhile, so the gap never reads as an expired run.
+        if ((await endOwnedLock(this.backend.locks, key, run.lease.token)) === 'ended') this.endingLeases.ended(key);
+        const token = await retakeLock(this.backend.locks, key, this.leaseTtl, `${this.host}:${job.attempt}`, undefined, () => this.stopped);
+        if (token !== undefined) changes.lease = { key, token };
+        else this.log.warn('run lease past its lifetime could not be taken again', { job: job.id });
+      } else if (outcome !== 'renewed') {
+        const lease = await this.backend.locks.acquire(key, this.leaseTtl, `${this.host}:${job.attempt}`);
+        if (lease.acquired) changes.lease = { key, token: lease.token };
       }
     }
     if (run.slot) {

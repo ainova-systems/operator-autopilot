@@ -49,9 +49,10 @@ export function runPath(runDir: string, file: keyof typeof RUN_FILES): string {
   return join(runDir, RUN_FILES[file]);
 }
 
-export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+/** Writes JSON through a temporary file and a rename; `mode` 0o600 keeps a file holding a token private. */
+export async function writeJsonAtomic(path: string, value: unknown, mode?: number): Promise<void> {
   const temp = `${path}.${randomBytes(4).toString('hex')}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`);
+  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, mode === undefined ? undefined : { mode });
   await rename(temp, path);
 }
 
