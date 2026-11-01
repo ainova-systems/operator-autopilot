@@ -6,19 +6,23 @@ what each one decides and why. They follow the setup steps of
 
 | Prompt | Run | Ends with |
 |---|---|---|
-| 1. Install Operator on a host | once per host | the runtime installed, the state key in an env file, a checklist |
+| 1. Install Operator on a host | once per host | the runtime installed, signed-in tools, the state key stored privately, a checklist |
 | 2a. The project's own workflow | at the repository root | a workflow written for this repository alone |
 | 2b. The recommended workflow | at the repository root | the development packs installed and adapted to this repository |
 
 ## Why the prompts work this way
 
+- **Outcomes, not steps.** Each prompt states the state to reach, the limits and how to show it is
+  reached. The agent works out the commands for the host and repository it finds - the OS, the
+  service manager (`operator service` installs a systemd user service; elsewhere `operator run` runs
+  under the host's own service manager), the code host and the tools already there.
 - **One question at a time, with a recommendation.** Every choice a workflow makes - phases, judges,
   QA admission, merge gates - is the owner's. The prompts research first, then ask; nothing is
   decided silently, and the pattern docs supply the options and the reasoning behind each.
 - **The host and the repository are separate.** Installing the runtime, its state key and the
-  service user is host work and happens once; the workflow is repository work and is committed.
-  A secret never crosses into the repository: the state key lives in an env file with mode 600 that
-  the service reads.
+  service is host work and happens once; the workflow is repository work and is committed. A
+  secret never crosses into the repository: the state key is stored where only the service user
+  can read it.
 - **Nothing is enabled before the owner sees it work.** `operator validate --describe` resolves
   every operation and script, and `operator run --dry-run` shows the requests discovery would make
   for the repository's current pull requests and queue. The service is installed only on the
