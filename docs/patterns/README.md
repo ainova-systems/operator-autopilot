@@ -1,6 +1,6 @@
 # SDLC patterns
 
-Sample workflows the [setup prompt](../setup.md) draws its recommendations from. Each pattern
+Sample workflows the [setup prompts](../../README.md#fast-start) draw their recommendations from. Each pattern
 states what it decides, why, what the project must supply, the failures it exists to prevent, and
 its configuration knobs. None of them is shared code: a project adopts a pattern by writing its own
 workflow, usually through the setup.
