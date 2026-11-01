@@ -147,20 +147,20 @@ The first project's pipeline is included as one complete reference, anonymized.
 
 ## The setup prompt
 
-One prompt, run in the target repository, from scratch:
+Three prompts, kept in one place - the README's [Fast start](../README.md#fast-start); this
+document does not restate them:
 
-1. **Install the runtime** and its service.
-2. **Add the packs** to `intelligence.yaml` - `operator` and the platform pack - and run
-   intelligence sync.
-3. **Research the repository**: branching, CI and which checks decide, test suites, preview or QA
-   environments, where work is queued, the code host and the tracker, existing rules and skills.
-4. **Interview the owner, one question at a time**: what the research found, two to four options
-   and a recommendation from the pattern docs.
-5. **Write** `operator.yaml`, the workflow configuration and the profile keys (`forge_cli` among
-   them), and the discovery script from the pack's helpers.
-6. **Validate**: `operator validate --describe` resolves every operation, the forge contract test
-   passes against the chosen platform pack, and a dry run makes the requests the owner expects for
-   the repository's current pull requests and queue.
+1. **Install Operator on a host** - once per host: the runtime, the state key in an env file outside
+   any repository, and a checklist of what the host still lacks.
+2. **Set up the project's own workflow (2a)** - in the target repository: research it, interview the
+   owner one question at a time, write `operator.yaml`, the discovery script and one skill per phase,
+   validate with a dry run.
+3. **Adopt the recommended workflow (2b)** - in the target repository: install intelligence and the
+   `core` and `operator` packs, write only the repository's own profile keys (`forge_cli` among
+   them), configuration, discovery and rules, validate with the forge contract test and a dry run.
+
+Each asks the owner one question at a time and stops before enabling the service.
+[setup.md](setup.md) explains what each step decides.
 
 After setup the workflow belongs to the project, which changes it like any other code.
 
