@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- A leader lease the state backend dropped (at the end of its 24h lifetime, or after a late renewal) is taken again instead of stopping the daemon; it stops only when another daemon holds the lease.
+- A leader lease whose renewal finds it gone is taken again instead of stopping the daemon; the daemon stops only when another daemon holds the lease.
 
 ## [0.8.0]
 

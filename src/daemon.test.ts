@@ -1741,3 +1741,21 @@ test('a leader lease Shield dropped is taken again, and lost only when another d
   internals.leader!.renewedAt = 0;
   await assert.rejects(internals.ensureLeader(), (error: unknown) => (error as { code?: string }).code === 'LEADER_LOST');
 });
+
+test('a daemon stopping while it takes a dropped leader lease back gives the lease up', async () => {
+  const p = await project();
+  const renew = p.backend.locks.renew.bind(p.backend.locks);
+  const acquire = p.backend.locks.acquire.bind(p.backend.locks);
+  const daemon = p.daemon();
+  assert.equal(await daemon.acquireLeader(), true);
+  const internals = daemon as unknown as { leader?: { renewedAt: number }; ensureLeader(): Promise<void> };
+  await p.backend.locks.release('leader');
+  p.backend.locks.renew = async (key, token, ttlMs) => (key === 'leader' && ttlMs !== 1000 ? 'lost' : renew(key, token, ttlMs));
+  p.backend.locks.acquire = async (key, ttlMs, reference) => { const lease = await acquire(key, ttlMs, reference); if (key === 'leader') daemon.stop(); return lease; };
+  internals.leader!.renewedAt = 0;
+  await internals.ensureLeader();
+  assert.equal(internals.leader, undefined, 'a stopping daemon keeps no lease');
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  p.backend.locks.acquire = acquire;
+  assert.equal((await p.backend.locks.acquire('leader', 60_000, 'next')).acquired, true, 'the given-back lease lapses for the next daemon');
+});
