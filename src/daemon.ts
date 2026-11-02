@@ -288,6 +288,13 @@ export class Daemon {
       // Stopping anyway: the lease was given back, so there is nothing left to release.
       if (this.stopped) { this.leader = undefined; return; }
     }
+    if (outcome === 'lost' && !this.stopped) {
+      // Shield drops a lease at the end of its 24h lifetime without always saying so, and a late
+      // renewal finds it gone too. Gone is not taken: take it again, and stop only when another
+      // daemon holds it now.
+      const lease = await this.backend.locks.acquire('leader', this.leaseTtl, `${this.host}:${process.pid}`);
+      if (lease.acquired) { await this.writeLeader(lease.token); this.log.warn('leader lease was gone at renewal; taken again'); return; }
+    }
     this.leader = undefined;
     throw new OperatorError('LEADER_LOST', 'the leader lease was lost; another daemon may be running for this project');
   }

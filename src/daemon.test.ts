@@ -1721,3 +1721,23 @@ test('a close-retry pass that fails runs again a minute later, not on every poll
   await assert.rejects(daemon.poll(new Date(t0 + 61_000)), /storage did not answer/);
   assert.equal(reads, 2);
 });
+
+test('a leader lease Shield dropped is taken again, and lost only when another daemon holds it', async () => {
+  const p = await project();
+  const renew = p.backend.locks.renew.bind(p.backend.locks);
+  const daemon = p.daemon();
+  assert.equal(await daemon.acquireLeader(), true);
+  const internals = daemon as unknown as { leader?: { renewedAt: number }; ensureLeader(): Promise<void>; releaseLeader(): Promise<void> };
+  // Dropped at the end of its lifetime: the lock is gone and nobody else took it.
+  await p.backend.locks.release('leader');
+  p.backend.locks.renew = async (key, token, ttlMs) => (key === 'leader' ? 'lost' : renew(key, token, ttlMs));
+  internals.leader!.renewedAt = 0;
+  await internals.ensureLeader();
+  assert.ok(internals.leader, 'the daemon still leads');
+  assert.ok(p.lines.some((line) => line.includes('leader lease was gone at renewal; taken again')));
+  // Taken by another daemon meanwhile: that one leads, this one stops.
+  await p.backend.locks.release('leader');
+  assert.equal((await p.backend.locks.acquire('leader', 60_000, 'elsewhere')).acquired, true);
+  internals.leader!.renewedAt = 0;
+  await assert.rejects(internals.ensureLeader(), (error: unknown) => (error as { code?: string }).code === 'LEADER_LOST');
+});

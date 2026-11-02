@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- A leader lease the state backend dropped (at the end of its 24h lifetime, or after a late renewal) is taken again instead of stopping the daemon; it stops only when another daemon holds the lease.
+
 ## [0.8.0]
 
 - `tabs: per-subject` keeps one herdr tab and claude session per subject and operation until a result names the subject in `endSubjects` (`operator tabs` lists them), resuming a session only while claude keeps its transcript, and no tab is closed, reused or has its session ended unless herdr reports its pane idle, done, gone or twice `unknown` - a kept `keepTab` session now ends when its tab closes (also for tabs an older daemon recorded) and stays open, with the owner notified, while its pane works or is blocked.
