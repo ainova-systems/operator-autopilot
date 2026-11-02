@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.1]
 
 - A leader lease whose renewal finds it gone is taken again instead of stopping the daemon; the daemon stops only when another daemon holds the lease.
 
