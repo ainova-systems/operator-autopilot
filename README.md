@@ -207,7 +207,8 @@ Usage exhaustion is an availability wait, not an ordinary failed attempt. The ru
 Claude's rejected `rate_limit_event` and transcript API usage errors, and Codex's structured usage
 errors. User messages, tool output, context-window exhaustion, authentication failures and allowed
 or warning-only rate-limit events do not start a cooldown. A reported future reset time wins;
-without a usable reset time the default is **four hours from detection**. Repeated notifications
+without a usable reset time the default is **four hours from detection**. Codex reset clocks
+use the CLI process timezone, including an operation’s `env.TZ` override. Repeated notifications
 for the same window do not keep extending it. Cooldowns persist in the state backend, scoped to
 this project's namespace and provider; use separate namespaces for independent provider accounts.
 
@@ -224,7 +225,8 @@ The existing wall-time cap still applies to headless runs and any operation hold
 capacity. If that cap ends a quota-limited run, the same job queues until reset and resumes its
 saved Claude session or Codex thread. This does not spend ordinary retries. `attempt` counts
 physical launches; `retryCount` counts ordinary failed retries. Every launch keeps its own run
-files. An already-started queued task, a retry, and a new round in a retained conversation never switch provider.
+files. An automatically assigned workspace stays pinned through quota recovery and ordinary retries.
+An already-started queued task, a retry, and a new round in a retained conversation never switch provider.
 
 Fallback is **opt-in per compatible operation**:
 

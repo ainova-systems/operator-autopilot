@@ -21,7 +21,7 @@ const data = process.env.FAKE_DATA;
 const config = JSON.parse(readFileSync(join(data, 'providers.json'), 'utf8'));
 const setting = config[provider];
 const sessionId = args.includes('--resume') ? args[args.indexOf('--resume') + 1] : args.includes('--session-id') ? args[args.indexOf('--session-id') + 1] : undefined;
-appendFileSync(join(data, 'provider-calls.jsonl'), JSON.stringify({ provider, args, sessionId, subject: input.subject, pid: process.pid }) + '\\n');
+appendFileSync(join(data, 'provider-calls.jsonl'), JSON.stringify({ provider, args, sessionId, subject: input.subject, pid: process.pid, cwd: process.cwd() }) + '\\n');
 let transcript;
 if (provider === 'claude' && sessionId) {
   const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', process.cwd().replace(/[^a-zA-Z0-9]/g, '-'));
@@ -29,19 +29,21 @@ if (provider === 'claude' && sessionId) {
   transcript = join(dir, sessionId + '.jsonl');
   if (!existsSync(transcript)) writeFileSync(transcript, '');
 }
-const result = { contract: 1, status: 'done', evidence: [], next: [] };
-if (provider === 'codex') process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thread-' + input.subject }) + '\\n');
+const result = setting.mode === 'retryable' ? { contract: 1, status: 'failed', failure: { reason: 'transient operation error', retryable: true }, evidence: [], next: [] } : { contract: 1, status: 'done', evidence: [], next: [], ...(setting.endSubjects ? { endSubjects: setting.endSubjects } : {}) };
+const output = (text) => new Promise((resolve, reject) => process.stdout.write(text, (error) => error ? reject(error) : resolve()));
+if (provider === 'codex') await output(JSON.stringify({ type: 'thread.started', thread_id: 'thread-' + input.subject }) + '\\n');
+if (setting.noise) await output(JSON.stringify({ type: 'item.completed', item: { text: 'x'.repeat(setting.noise) } }) + '\\n');
 const done = () => {
   if (setting.after === 'auth') { process.stderr.write('Authentication failed\\n'); process.exit(1); }
   if (provider === 'codex') writeFileSync(args[args.indexOf('-o') + 1], JSON.stringify(result));
   else writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify(result));
   process.exit(0);
 };
-if (setting.mode === 'done') done();
+if (setting.mode === 'done' || setting.mode === 'retryable') done();
 if (setting.mode === 'auth') { process.stderr.write('Authentication failed\\n'); process.exit(1); }
 const event = provider === 'claude'
   ? { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', ...(setting.reset ? { resetsAt: setting.reset / 1000 } : {}) } }
-  : { type: 'error', code: 'usage_limit_reached', message: "You've hit your usage limit", ...(setting.reset ? { resets_at: setting.reset / 1000 } : {}) };
+  : { type: 'error', code: 'usage_limit_reached', message: setting.message ?? "You've hit your usage limit", ...(setting.reset ? { resets_at: setting.reset / 1000 } : {}) };
 if (setting.mode === 'live' || setting.mode === 'split') {
   const encoded = JSON.stringify(event) + '\\n';
   if (setting.mode === 'split') {
@@ -50,12 +52,12 @@ if (setting.mode === 'live' || setting.mode === 'split') {
   } else appendFileSync(transcript, encoded);
   const timer = setInterval(() => { if (existsSync(join(data, 'continue-' + input.subject))) { clearInterval(timer); done(); } }, 25);
 } else {
-  process.stdout.write(JSON.stringify(event) + '\\n');
+  await output(JSON.stringify(event) + '\\n');
   process.exit(1);
 }
 `;
 
-type Mode = { mode: string; reset?: number; after?: string };
+type Mode = { mode: string; reset?: number; after?: string; noise?: number; message?: string; endSubjects?: string[] };
 async function fixture(options: { live?: boolean; limit?: boolean; timeout?: string } = {}) {
   const extra = options.live
     ? `      task: { kind: interactive, engine: claude, fallback: codex, prompt: 'Do the task from {input}; write {result}', placement: herdr, tabs: per-subject, timeout: ${options.timeout ?? '1s'}, ${options.limit ? 'limit: checks,' : ''} args: ['--permission-mode', auto] }`
@@ -100,7 +102,7 @@ async function fixture(options: { live?: boolean; limit?: boolean; timeout?: str
     setStatus: (value: typeof status) => { status = value; },
     failSend: () => { rejectSends = 1; },
     modes: async (claude: Mode, codex: Mode = { mode: 'done' }) => writeFile(join(p.data, 'providers.json'), JSON.stringify({ claude, codex })),
-    calls: async (): Promise<{ provider: string; args: string[]; sessionId?: string; subject: string; pid: number }[]> => {
+    calls: async (): Promise<{ provider: string; args: string[]; sessionId?: string; subject: string; pid: number; cwd: string }[]> => {
       try { return (await readFile(join(p.data, 'provider-calls.jsonl'), 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); } catch { return []; }
     },
     cleanup: async () => {
@@ -290,10 +292,10 @@ test('a fallback Codex task that exhausts quota resumes its saved thread, never 
   try {
     const reset = Date.now() + 60_000;
     await cache(f.p, 'claude', reset + 60_000);
-    await f.modes({ mode: 'done' }, { mode: 'quota', reset });
+    await f.modes({ mode: 'done' }, { mode: 'quota', reset, noise: 300_000 });
     const daemon = f.p.daemon(); await daemon.acquireLeader();
     const id = await task(daemon, 'codex-resume');
-    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && Boolean((await daemon.jobs.get(id))?.codexThreadId));
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && Boolean((await daemon.jobs.get(id))?.quotaWait));
     assert.equal((await daemon.jobs.get(id))?.codexThreadId, 'thread-codex-resume');
     await f.modes({ mode: 'done' }, { mode: 'done' });
     await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + 60_000)); return (await daemon.jobs.get(id))?.status === 'done'; });
@@ -301,5 +303,86 @@ test('a fallback Codex task that exhausts quota resumes its saved thread, never 
     assert.deepEqual(calls.map((call) => call.provider), ['codex', 'codex']);
     assert.deepEqual(calls[1]!.args.slice(0, 3), ['exec', 'resume', 'thread-codex-resume']);
     assert.equal((await daemon.jobs.get(id))?.retryCount, 0);
+  } finally { await f.cleanup(); }
+});
+
+
+for (const mode of ['quota', 'retryable']) {
+  test(`auto-selected workspace and Claude conversation remain pinned through ${mode} recovery`, async () => {
+    const f = await fixture();
+    try {
+      const reset = Date.now() + 60_000;
+      const a = join(f.p.root, 'slot-a'); const b = join(f.p.root, 'slot-b');
+      await mkdir(a); await mkdir(b);
+      f.p.manifest.pools.set('resume-slots', { kind: 'workspaces', name: 'resume-slots', members: [{ name: 'a', cwd: a, herdr: 'a' }, { name: 'b', cwd: b, herdr: 'b' }] });
+      const op = f.p.manifest.workflows.get('demo')!.operations.get('task')!;
+      op.pool = 'resume-slots'; op.retries = 1; op.retryDelayMs = 60_000;
+      await f.modes({ mode, reset });
+      const daemon = f.p.daemon(); await daemon.acquireLeader();
+      const blocker = await daemon.pools.acquire('resume-slots', 'blocker', { member: 'a' });
+      assert.ok(blocker.granted);
+      const id = await task(daemon, `workspace-${mode}`);
+      await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && (await daemon.jobs.get(id))!.attempt === 2);
+      await daemon.pools.release('blocker', blocker.hold);
+      await f.modes({ mode: 'done' });
+      await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + 60_001)); return (await daemon.jobs.get(id))?.status === 'done'; });
+      const calls = await f.calls();
+      assert.deepEqual(calls.map((call) => call.cwd), [b, b]);
+      assert.equal(calls[1]!.sessionId, calls[0]!.sessionId);
+      assert.ok(calls[1]!.args.includes('--resume'));
+      assert.equal((await daemon.jobs.get(id))?.member, 'b');
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('a fallback Codex ordinary retry keeps its thread after oversized output', async () => {
+  const f = await fixture();
+  try {
+    const reset = Date.now() + 120_000;
+    await cache(f.p, 'claude', reset);
+    const op = f.p.manifest.workflows.get('demo')!.operations.get('task')!;
+    op.retries = 1; op.retryDelayMs = 60_000;
+    await f.modes({ mode: 'done' }, { mode: 'retryable', noise: 300_000 });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await task(daemon, 'codex-ordinary');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && (await daemon.jobs.get(id))!.attempt === 2);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + 60_001)); return (await daemon.jobs.get(id))?.status === 'done'; });
+    const calls = await f.calls();
+    assert.deepEqual(calls[1]!.args.slice(0, 3), ['exec', 'resume', 'thread-codex-ordinary']);
+    assert.equal((await daemon.jobs.get(id))?.retryCount, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('fallback Codex persists a rendered reset in its configured child timezone', async () => {
+  const f = await fixture();
+  try {
+    const timeZone = 'America/New_York';
+    f.p.manifest.workflows.get('demo')!.operations.get('task')!.env['TZ'] = timeZone;
+    const until = Math.ceil((Date.now() + 86_400_000) / 60_000) * 60_000;
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }).formatToParts(until).map((part) => [part.type, part.value]));
+    const message = `You've hit your usage limit. Try again at ${parts['month']} ${parts['day']}, ${parts['year']} ${parts['hour']}:${parts['minute']} ${parts['dayPeriod']}.`;
+    await f.modes({ mode: 'quota' }, { mode: 'quota', message });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    await rememberQuota(daemon.backend.docs, quotaFromEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } }, 'claude')!);
+    const jobId = await task(daemon, 'child-zone');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(jobId))?.quotaWait?.provider === 'codex');
+    assert.equal((await daemon.jobs.get(jobId))?.quotaWait?.until, new Date(until).toISOString());
+  } finally { await f.cleanup(); }
+});
+
+test('ending a subject clears threads created by fallback for per-subject Claude tabs', async () => {
+  const f = await fixture({ live: true, timeout: '5s' });
+  try {
+    await cache(f.p, 'claude', Date.now() + 120_000);
+    await f.modes({ mode: 'done' }, { mode: 'done', endSubjects: ['ended'] });
+    const daemon = f.p.daemon({ herdr: f.herdr }); await daemon.acquireLeader();
+    const first = await task(daemon, 'ended', 'first');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(first))?.status === 'done');
+    assert.deepEqual(await f.p.backend.docs.list('threads'), []);
+    await f.modes({ mode: 'done' });
+    const second = await task(daemon, 'ended', 'second');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(second))?.status === 'done');
+    assert.notEqual((await f.calls())[1]!.args[1], 'resume');
   } finally { await f.cleanup(); }
 });

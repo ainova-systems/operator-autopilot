@@ -49,6 +49,12 @@ test('Codex usage errors read structured, ISO and canonical rendered reset times
   assert.equal(quotaFromLines('ordinary output\n' + JSON.stringify({ type: 'error', message: "You've hit your usage limit" }) + '\n', 'codex', now)?.explicitReset, false);
 });
 
+test('Codex rendered reset uses the child timezone instead of the daemon timezone', () => {
+  const event = { type: 'error', message: "You've hit your usage limit. Try again at Nov 5th, 2026 7:01 AM." };
+  assert.equal(quotaFromEvent(event, 'codex', now, 'America/New_York')?.until, '2026-11-05T12:01:00.000Z');
+  assert.equal(quotaFromEvent(event, 'codex', now, 'Europe/Vilnius')?.until, '2026-11-05T05:01:00.000Z');
+});
+
 test('persisted cooldown survives a new backend and repeated watchdog events do not slide it', async () => {
   const root = await mkdtemp(join(tmpdir(), 'operator-quota-'));
   try {
@@ -73,5 +79,62 @@ test('a delayed unspecified rejection cannot replace a still-valid explicit rese
     const explicit = await rememberQuota(backend.docs, quotaFromEvent(rejected({ resetsAt: reset / 1000 }), 'claude', detected)!);
     const later = await rememberQuota(backend.docs, quotaFromEvent(rejected(), 'claude', detected + 30_000)!);
     assert.deepEqual(later, explicit);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('replayed older explicit evidence cannot shorten a newer cooldown', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'operator-quota-'));
+  try {
+    const backend = createFileBackend(root, 'test');
+    const detected = Date.now();
+    const older = quotaFromEvent(rejected({ resetsAt: (detected + 60_000) / 1000 }), 'claude', detected)!;
+    const newer = quotaFromEvent(rejected({ resetsAt: (detected + 8 * 3_600_000) / 1000 }), 'claude', detected + 1_000)!;
+    await rememberQuota(backend.docs, { ...newer, detectedAt: new Date(detected - 1_000).toISOString() });
+    // Re-observing the same reset must advance authority even though its window ID is unchanged.
+    await rememberQuota(backend.docs, newer);
+    assert.deepEqual(await rememberQuota(backend.docs, older), newer);
+    assert.equal((await coolingProvider(backend.docs, 'claude', detected + 120_000))?.until, newer.until);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('concurrent live observations atomically keep the newest reset', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'operator-quota-'));
+  try {
+    const backend = createFileBackend(root, 'test');
+    const detected = Date.now();
+    await rememberQuota(backend.docs, quotaFromEvent(rejected({ resetsAt: (detected + 30_000) / 1000 }), 'claude', detected)!);
+    const older = quotaFromEvent(rejected({ resetsAt: (detected + 60_000) / 1000 }), 'claude', detected + 1_000)!;
+    const newer = quotaFromEvent(rejected({ resetsAt: (detected + 8 * 3_600_000) / 1000 }), 'claude', detected + 2_000)!;
+    let releaseOlder!: () => void;
+    const newerWritten = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    const docs = { ...backend.docs, replace: async <T>(collection: string, key: string, value: T, options?: Parameters<typeof backend.docs.replace>[3]) => {
+      if ((value as { id?: string }).id === older.id) await newerWritten;
+      const result = await backend.docs.replace(collection, key, value, options);
+      if ((value as { id?: string }).id === newer.id) releaseOlder();
+      return result;
+    } };
+    await Promise.all([rememberQuota(docs, older), rememberQuota(docs, newer)]);
+    assert.equal((await coolingProvider(backend.docs, 'claude', detected + 120_000))?.until, newer.until);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a later unspecified event in one batch cannot erase an explicit reset', () => {
+  const reset = now + 3_600_000;
+  const lines = [rejected({ resetsAt: reset / 1000 }), rejected()].map((event) => JSON.stringify(event)).join('\n');
+  assert.equal(quotaFromLines(lines, 'claude', now)?.until, new Date(reset).toISOString());
+});
+
+test('at equal observation times explicit reset wins over a longer default in either order', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'operator-quota-'));
+  try {
+    const detected = Date.now();
+    const defaultWait = quotaFromEvent(rejected(), 'claude', detected)!;
+    const explicit = quotaFromEvent(rejected({ resetsAt: (detected + 3_600_000) / 1000 }), 'claude', detected)!;
+    for (const order of [[defaultWait, explicit], [explicit, defaultWait]]) {
+      const backend = createFileBackend(root, order[0]!.explicitReset ? 'explicit-first' : 'default-first');
+      for (const quota of order) await rememberQuota(backend.docs, quota!);
+      assert.equal((await coolingProvider(backend.docs, 'claude', detected))?.until, explicit.until);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

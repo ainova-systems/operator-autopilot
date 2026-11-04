@@ -104,7 +104,7 @@ export async function runJobExec(runDir: string): Promise<number> {
     for (const [path, isTranscript] of [[runPath(runDir, 'output'), false], ...(transcript ? [[transcript, true] as const] : [])] as const) {
       const tail = await readEventTail(path, isTranscript ? transcriptOffset : outputOffset);
       if (isTranscript) transcriptOffset = tail.completeSize; else outputOffset = tail.completeSize;
-      const candidate = quotaFromLines(tail.completeText, launch.provider);
+      const candidate = quotaFromLines(tail.completeText, launch.provider, Date.now(), sessionEnv['TZ']);
       // Prefer the protocol timestamp over a transcript's less precise rendered message.
       if (candidate && (!found || !found.explicitReset && candidate.explicitReset)) found = candidate;
     }
@@ -116,6 +116,14 @@ export async function runJobExec(runDir: string): Promise<number> {
     const resumed = await readJsonFile<QuotaResume>(runPath(runDir, 'quotaResume'));
     // Only renewable workspace ownership can outlive the active timeout. Guard capacity cannot.
     quotaPaused = Boolean(attended && launch.suspendQuotaTimeout) && (resumed?.id !== quota.id || resumed.state !== 'sent');
+  };
+  const checkQuotaSafely = async (): Promise<void> => {
+    try { await checkQuota(); } catch (error) {
+      // Observation is optional; a broken log must never disable the execution deadline or
+      // prevent the wrapper from publishing its exit and stopping its heartbeat.
+      quotaPaused = false;
+      process.stderr.write(`operator: quota check failed: ${(error as Error).message}\n`);
+    }
   };
   let timedOut = false;
   let closedAfterResult = false;
@@ -151,12 +159,12 @@ export async function runJobExec(runDir: string): Promise<number> {
     const timer = setInterval(() => {
       if (quotaChecking || released) return;
       quotaChecking = true;
-      checkQuota().then(() => {
+      checkQuotaSafely().then(() => {
         const now = Date.now();
         if (!quotaPaused) remaining -= now - checkedAt;
         checkedAt = now;
         if (remaining <= 0 && !timedOut) { timedOut = true; end(); }
-      }, (error: unknown) => process.stderr.write(`operator: quota check failed: ${(error as Error).message}\n`)).finally(() => { quotaChecking = false; });
+      }).finally(() => { quotaChecking = false; });
     }, Math.min(RESULT_POLL_MS, launch.timeoutMs));
     let closing = false;
     const watcher = attended ? setInterval(() => {
@@ -230,7 +238,7 @@ export async function runJobExec(runDir: string): Promise<number> {
     }
   }
 
-  await checkQuota();
+  await checkQuotaSafely();
   clearInterval(heartbeat);
   const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;
   process.stdout.write(footer);

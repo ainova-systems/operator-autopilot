@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { collectRun, readExit } from './collect.ts';
 import type { OperationResult } from './contract.ts';
-import { codexFallback, findCodexThread } from './engines.ts';
+import { codexFallback } from './engines.ts';
 import { coolingProvider, quotaFromLines, readEventTail, rememberQuota, type Provider, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
 import { HerdrRefusal, type Herdr } from './herdr.ts';
@@ -613,6 +613,7 @@ export class Daemon {
       if (current.status !== 'queued' || current.attempt !== job.attempt) return undefined;
       current.status = 'running';
       current.run = run;
+      if (run.slot?.member) current.member = run.slot.member;
       if (op.engine !== 'command') current.provider = op.engine;
       if (op.contractResult) current.codexContract = true;
       if (session) current.claudeSessionId = session.id;
@@ -738,7 +739,7 @@ export class Daemon {
     }
     const workflow = this.manifest.workflows.get(job.workflow);
     for (const op of workflow?.operations.values() ?? []) {
-      if (op.thread !== 'per-subject') continue;
+      if ((op.fallback === 'codex' ? codexFallback(op) : op).thread !== 'per-subject') continue;
       for (const subject of subjects) {
         await this.backend.docs.delete('threads', stableId('t', job.workflow, op.name, subject)).catch((error: unknown) => {
           this.log.warn('could not forget an ended subject\'s Codex thread', { subject, operation: op.name, error: errorText(error) });
@@ -940,6 +941,7 @@ export class Daemon {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
       current.status = 'queued';
       current.provider = evidence.provider;
+      if (run.slot?.member) current.member = run.slot.member;
       current.retryCount = job.retryCount ?? job.attempt - 1;
       current.attempt += 1;
       current.notBefore = quota.until;
@@ -971,7 +973,7 @@ export class Daemon {
     } else {
       const collected = await collectRun(job, op, run.runDir, exit);
       result = collected.result;
-      const threadId = collected.threadId ?? (op.contractResult ? findCodexThread((await readEventTail(runPath(run.runDir, 'output'))).text) : undefined);
+      const threadId = collected.threadId;
       if (threadId) {
         await this.jobs.update(job.id, (current) => { if (current.status !== 'running' || current.attempt !== job.attempt) return undefined; current.codexThreadId = threadId; return current; });
         if (op.thread === 'per-subject') await this.backend.docs.replace('threads', this.threadKey(job), { threadId, updatedAt: new Date().toISOString() }, { ttlMs: 30 * 86_400_000 });
@@ -983,7 +985,7 @@ export class Daemon {
         const resumed = recorded ? await readJsonFile<QuotaResume>(runPath(run.runDir, 'quotaResume')) : undefined;
         const evidence = recorded
           ? resumed?.id === recorded.id && resumed.state === 'sent' ? undefined : recorded
-          : quotaFromLines((await readEventTail(runPath(run.runDir, 'output'))).text, provider);
+          : quotaFromLines((await readEventTail(runPath(run.runDir, 'output'))).text, provider, Date.now(), op.env['TZ'] ?? process.env['TZ']);
         if (evidence) { await this.requeueQuota(job, run, evidence); return; }
       }
     }
@@ -1030,6 +1032,7 @@ export class Daemon {
     const finishedAt = new Date().toISOString();
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      if (run.slot?.member) current.member = run.slot.member;
       delete current.quotaWait;
       delete current.waitingFor;
       current.outcome = {
@@ -1091,6 +1094,7 @@ export class Daemon {
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
       addHistory(current, 'interrupted', reason);
+      if (current.run?.slot?.member) current.member = current.run.slot.member;
       delete current.run;
       if (giveUp) {
         current.status = 'failed';

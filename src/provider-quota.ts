@@ -1,5 +1,6 @@
 import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { OperatorError } from './errors.ts';
 import type { DocStore } from './state/types.ts';
 
 export type Provider = 'claude' | 'codex';
@@ -65,7 +66,7 @@ function clockReset(text: string, now: number): number | undefined {
   return undefined;
 }
 
-function resetTime(event: Record<string, unknown>, text: string, now: number): number | undefined {
+function resetTime(event: Record<string, unknown>, text: string, now: number, timeZone: string): number | undefined {
   for (const key of ['resetsAt', 'resets_at', 'reset_at']) {
     const value = timestamp(event[key]);
     if (value !== undefined) return value;
@@ -74,7 +75,8 @@ function resetTime(event: Record<string, unknown>, text: string, now: number): n
   const parsed = timestamp(iso?.[1]);
   if (parsed !== undefined) return parsed;
   const codex = /try again at ([A-Za-z]{3,9} \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)/i.exec(text);
-  const local = timestamp(codex?.[1]?.replace(/(\d)(?:st|nd|rd|th)/, '$1'));
+  const rendered = codex?.[1]?.replace(/(\d)(?:st|nd|rd|th)/, '$1').replace(/(\d{4}) /, '$1, ');
+  const local = rendered ? clockReset(`resets ${rendered} (${timeZone})`, now) : undefined;
   if (local !== undefined) return local;
   return clockReset(text, now);
 }
@@ -82,7 +84,7 @@ function resetTime(event: Record<string, unknown>, text: string, now: number): n
 const USAGE_MESSAGE = /^(?:Error:\s*)?(?:You(?:'|’)?ve hit your (?:(?:usage|weekly|monthly) )?limit|You have hit your (?:(?:usage|weekly|monthly) )?limit|Your (?:usage|weekly|monthly) limit (?:has been |was )?reached|Usage limit (?:reached|exceeded))/i;
 
 /** Only provider protocol error records count; user/assistant prose and tool output never do. */
-export function quotaFromEvent(value: unknown, provider: Provider, now = Date.now()): QuotaWait | undefined {
+export function quotaFromEvent(value: unknown, provider: Provider, now = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): QuotaWait | undefined {
   const event = object(value);
   if (!event) return undefined;
   let detail: Record<string, unknown> = event;
@@ -111,7 +113,7 @@ export function quotaFromEvent(value: unknown, provider: Provider, now = Date.no
   }
   const supplied = ['resetsAt', 'resets_at', 'reset_at'].map((key) => timestamp(detail[key])).find((value) => value !== undefined);
   if (supplied !== undefined && supplied <= now) return undefined;
-  const reset = resetTime(detail, message, now);
+  const reset = resetTime(detail, message, now, timeZone);
   if (reset !== undefined && reset <= now) return undefined;
   const until = new Date(reset ?? now + DEFAULT_QUOTA_WAIT_MS).toISOString();
   // Repeated rejected notifications for one window have the same identity even without a reset.
@@ -137,23 +139,39 @@ export async function readEventTail(path: string, since = 0): Promise<{ text: st
   } finally { await file.close(); }
 }
 
-export function quotaFromLines(text: string, provider: Provider, now = Date.now()): QuotaWait | undefined {
+export function quotaFromLines(text: string, provider: Provider, now = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): QuotaWait | undefined {
   let quota: QuotaWait | undefined;
   for (const line of text.split('\n')) {
     let event: unknown;
     try { event = JSON.parse(line); } catch { continue; }
-    const found = quotaFromEvent(event, provider, now);
-    if (found) quota = found;
+    const found = quotaFromEvent(event, provider, now, timeZone);
+    if (found && (!quota || found.explicitReset || !quota.explicitReset)) quota = found;
   }
   return quota;
 }
 
 export async function rememberQuota(docs: DocStore, quota: QuotaWait): Promise<QuotaWait> {
-  const existing = await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, quota.provider);
-  // The repeated watchdog event must not slide an unspecified four-hour window forever.
-  if (existing && (existing.value.id === quota.id || !quota.explicitReset) && Date.parse(existing.value.until) > Date.parse(quota.detectedAt)) return existing.value;
-  await docs.replace(PROVIDER_COOLDOWNS, quota.provider, quota, { ttlMs: Math.max(DEFAULT_QUOTA_WAIT_MS, Date.parse(quota.until) - Date.now()) + DEFAULT_QUOTA_WAIT_MS });
-  return quota;
+  const ttlMs = Math.max(DEFAULT_QUOTA_WAIT_MS, Date.parse(quota.until) - Date.now()) + DEFAULT_QUOTA_WAIT_MS;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const existing = await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, quota.provider);
+    if (!existing) {
+      if (await docs.create(PROVIDER_COOLDOWNS, quota.provider, quota, ttlMs) === 'created') return quota;
+      continue;
+    }
+    const prior = existing.value;
+    const observed = Date.parse(quota.detectedAt);
+    const previous = Date.parse(prior.detectedAt);
+    // Live runs replay their saved evidence. Arrival order is not observation order.
+    if (observed < previous) return prior;
+    if (observed === previous) {
+      if (prior.explicitReset && !quota.explicitReset) return prior;
+      if (prior.explicitReset === quota.explicitReset && Date.parse(quota.until) <= Date.parse(prior.until)) return prior;
+    }
+    // Repeated watchdog messages cannot slide the default window or discard a known reset.
+    if (!quota.explicitReset && Date.parse(prior.until) > observed) return prior;
+    if (await docs.replace(PROVIDER_COOLDOWNS, quota.provider, quota, { etag: existing.etag, missingIsConflict: true, ttlMs }) === 'written') return quota;
+  }
+  throw new OperatorError('STATE_CONTENTION', `provider ${quota.provider} cooldown kept changing under eight consecutive updates`);
 }
 
 export async function coolingProvider(docs: DocStore, provider: Provider, now: number): Promise<QuotaWait | undefined> {
