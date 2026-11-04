@@ -201,6 +201,71 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   A tab herdr cannot close when its run ends is closed on a later poll; one closed by hand counts
   as closed.
 
+## Provider usage limits
+
+Usage exhaustion is an availability wait, not an ordinary failed attempt. The runtime recognizes
+Claude's rejected `rate_limit_event` and transcript API usage errors, and Codex's structured usage
+errors. User messages, tool output, context-window exhaustion, authentication failures and allowed
+or warning-only rate-limit events do not start a cooldown. A reported future reset time wins;
+without a usable reset time the default is **four hours from detection**. Repeated notifications
+for the same window do not keep extending it. Cooldowns persist in the state backend, scoped to
+this project's namespace and provider; use separate namespaces for independent provider accounts.
+
+An attended Claude task keeps its **same process, conversation and workspace** while waiting.
+Its active execution timeout pauses, and idle nudges stop. At reset the daemon continues an idle
+or done pane once; a working client is allowed to resume itself. Blocked, unknown and unreachable
+panes are never answered automatically. Unconfirmed continuation delivery retries up to three
+times, at least a minute apart, checking for activity first; an unresolved delivery notifies the
+owner and leaves the session open. The per-run deadline and delivery state survive a daemon
+restart. A valid completed operation result always wins over earlier quota evidence.
+
+The existing wall-time cap still applies to headless runs and any operation holding a
+**nonrenewable `limit` pool**, whether through `pool` or `limit`: a session cannot outlive its Guard
+capacity. If that cap ends a quota-limited run, the same job queues until reset and resumes its
+saved Claude session or Codex thread. This does not spend ordinary retries. `attempt` counts
+physical launches; `retryCount` counts ordinary failed retries. Every launch keeps its own run
+files. An already-started queued task, a retry, and a new round in a retained conversation never switch provider.
+
+Fallback is **opt-in per compatible operation**:
+
+```yaml
+workflows:
+  development:
+    operations:
+      work:
+        kind: interactive
+        engine: claude
+        fallback: codex
+        prompt: >-
+          Perform the task described in {input}. Preserve existing work and write the
+          operation result (contract 1) to {result}.
+        placement: herdr
+        tabs: per-subject
+        args: ['--permission-mode', auto]
+```
+
+Only a **new task that has not started** can choose Codex when Claude's cooldown is already known.
+The task that first discovers Claude's limit has already started and stays with Claude. A retained
+conversation for the same subject and operation also counts as started. Its provider is pinned
+until the subject ends. If both providers are cooling down, new tasks stay queued until the first
+usable reset; existing tasks wait for their own provider. A waiting live task keeps its workspace
+lease, so fallback cannot borrow that workspace.
+
+Enabling fallback declares that the prompt/skill can be performed by either engine. Codex runs as
+an agent, retains the original task input and result contract, and uses its own conversation.
+Claude model and CLI arguments are not forwarded. Untranslatable tool restrictions, injected
+system prompts or settings arguments make validation refuse fallback instead of dropping a policy.
+Codex uses `on-request` approvals and `read-only` for declared read access; write access uses
+`workspace-write` plus only the current run directory. No permission bypass is added. Fallback may
+return its contract as its final JSON message (including from a read-only sandbox); plain text,
+invalid JSON or exit zero alone is never success. Existing native Codex output/schema operations
+keep their output contract and read-only sandbox.
+
+`operator job <id>` / `operator jobs --json` show `provider`, `quotaWait.until`, and the reason for
+waiting; `operator state get provider-cooldowns claude` reads the cached provider deadline. These
+runtime-owned collections are read-only through the state CLI. This behavior applies to wrappers
+started by this version; upgrading the daemon does not replace code in an already-running wrapper.
+
 ## Use
 
 ```bash

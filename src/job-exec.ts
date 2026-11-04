@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { claudeSessionExists } from './claude-session.ts';
+import { claudeSessionExists, claudeSessionPath } from './claude-session.ts';
 import { loadEnvFile } from './env.ts';
+import { quotaFromLines, readEventTail, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
 import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type LaunchSpec, type WrapperInfo } from './runfiles.ts';
 
@@ -88,6 +89,34 @@ export async function runJobExec(runDir: string): Promise<number> {
   output.write(banner);
 
   const attended = launch.attended;
+  const sessionEnv = { ...process.env, ...launch.env };
+  const initialTranscript = launch.claudeSession ? claudeSessionPath(launch.cwd, launch.claudeSession.id, sessionEnv) : undefined;
+  // Existing transcript errors belong to an earlier turn, never to this invocation.
+  let transcriptOffset = initialTranscript ? (await readEventTail(initialTranscript)).size : 0;
+  let outputOffset = 0;
+  let quota: QuotaWait | undefined;
+  let quotaChecking = false;
+  let quotaPaused = false;
+  const checkQuota = async (): Promise<void> => {
+    if (!launch.provider || released || closedAfterResult || await resultWritten(String(launch.env['OPERATOR_RESULT']))) { quotaPaused = false; return; }
+    const transcript = launch.claudeSession ? claudeSessionPath(launch.cwd, launch.claudeSession.id, sessionEnv) : undefined;
+    let found: QuotaWait | undefined;
+    for (const [path, isTranscript] of [[runPath(runDir, 'output'), false], ...(transcript ? [[transcript, true] as const] : [])] as const) {
+      const tail = await readEventTail(path, isTranscript ? transcriptOffset : outputOffset);
+      if (isTranscript) transcriptOffset = tail.completeSize; else outputOffset = tail.completeSize;
+      const candidate = quotaFromLines(tail.completeText, launch.provider);
+      // Prefer the protocol timestamp over a transcript's less precise rendered message.
+      if (candidate && (!found || !found.explicitReset && candidate.explicitReset)) found = candidate;
+    }
+    if (found && (!quota || found.id !== quota.id && (found.explicitReset || Date.parse(quota.until) <= Date.now()))) {
+      quota = found;
+      await writeJsonAtomic(runPath(runDir, 'quota'), quota);
+    }
+    if (!quota) return;
+    const resumed = await readJsonFile<QuotaResume>(runPath(runDir, 'quotaResume'));
+    // Only renewable workspace ownership can outlive the active timeout. Guard capacity cannot.
+    quotaPaused = Boolean(attended && launch.suspendQuotaTimeout) && (resumed?.id !== quota.id || resumed.state !== 'sent');
+  };
   let timedOut = false;
   let closedAfterResult = false;
   let released = false;
@@ -117,7 +146,18 @@ export async function runJobExec(runDir: string): Promise<number> {
       signalCommand(info, 'SIGTERM');
       setTimeout(() => signalCommand(info, 'SIGKILL'), KILL_GRACE_MS).unref();
     };
-    const timer = setTimeout(() => { timedOut = true; end(); }, launch.timeoutMs);
+    let remaining = launch.timeoutMs;
+    let checkedAt = Date.now();
+    const timer = setInterval(() => {
+      if (quotaChecking || released) return;
+      quotaChecking = true;
+      checkQuota().then(() => {
+        const now = Date.now();
+        if (!quotaPaused) remaining -= now - checkedAt;
+        checkedAt = now;
+        if (remaining <= 0 && !timedOut) { timedOut = true; end(); }
+      }, (error: unknown) => process.stderr.write(`operator: quota check failed: ${(error as Error).message}\n`)).finally(() => { quotaChecking = false; });
+    }, Math.min(RESULT_POLL_MS, launch.timeoutMs));
     let closing = false;
     const watcher = attended ? setInterval(() => {
       resultStatus(attended.resultPath).then((status) => {
@@ -190,6 +230,7 @@ export async function runJobExec(runDir: string): Promise<number> {
     }
   }
 
+  await checkQuota();
   clearInterval(heartbeat);
   const footer = `operator: exit ${exit.exitCode ?? exit.signal}${exit.timedOut ? ' (timed out)' : ''}${exit.closedAfterResult ? ' (closed after its result)' : ''}${exit.error ? ` (${exit.error})` : ''} - the runtime collects the result and ${launch.retainedTab ? 'keeps this tab for the subject' : 'closes this tab'}\n`;
   process.stdout.write(footer);

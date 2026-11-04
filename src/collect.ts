@@ -9,6 +9,7 @@ export interface Collected {
   exit: ExitInfo;
   result: OperationResult;
   threadId?: string;
+  contractProvided?: boolean;
 }
 
 function failed(reason: string, retryable: boolean, message?: string): OperationResult {
@@ -33,7 +34,7 @@ export async function collectRun(job: JobRecord, op: OperationSpec, runDir: stri
   if (exit.timedOut) return { exit, result: failed(`timed out after ${Math.round(op.timeoutMs / 1000)}s`, true) };
   if (exit.error) return { exit, result: failed(`could not start: ${exit.error}`, false) };
 
-  if (op.engine === 'codex') {
+  if (op.engine === 'codex' && !op.contractResult) {
     const outputPath = `${runDir}/output.json`;
     const log = (await readText(runPath(runDir, 'output'))) ?? '';
     const threadId = findCodexThread(log);
@@ -48,7 +49,7 @@ export async function collectRun(job: JobRecord, op: OperationSpec, runDir: stri
     return withThread({ contract: CONTRACT_VERSION, status: 'done', evidence: [outputPath], next });
   }
 
-  const raw = await readText(runPath(runDir, 'result'));
+  const raw = await readText(runPath(runDir, 'result')) ?? (op.contractResult ? await readText(`${runDir}/output.json`) : undefined);
   if (raw === undefined) {
     return { exit, result: failed(exit.exitCode === 0 ? 'exited 0 without writing a result file' : `exited ${exit.exitCode ?? exit.signal} without a result file`, false) };
   }
@@ -60,7 +61,7 @@ export async function collectRun(job: JobRecord, op: OperationSpec, runDir: stri
   if (exit.exitCode !== 0 && !exit.closedAfterResult && !exit.released && outcome.value.status !== 'failed') {
     return { exit, result: failed(`exited ${exit.exitCode ?? exit.signal} although the result says ${outcome.value.status}`, false, outcome.value.message) };
   }
-  return { exit, result: outcome.value };
+  return { exit, result: outcome.value, contractProvided: true };
 }
 
 export async function readExit(runDir: string): Promise<ExitInfo | undefined> {

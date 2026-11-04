@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { collectRun, readExit } from './collect.ts';
 import type { OperationResult } from './contract.ts';
+import { codexFallback, findCodexThread } from './engines.ts';
+import { coolingProvider, quotaFromLines, readEventTail, rememberQuota, type Provider, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
 import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
@@ -47,6 +49,9 @@ const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
 // A dispatch the state backend failed is tried again after this, not on every poll.
 const BACKEND_RETRY_MS = 30_000;
+const QUOTA_RESUME_RETRY_MS = 60_000;
+const QUOTA_RESUME_ATTEMPTS = 3;
+export const PROVIDER_AFFINITIES = 'provider-affinities';
 const TAB_RECORD_TTL_MS = 7 * 86_400_000;
 /** Nudges an idle interactive session gets before the owner is told. */
 const IDLE_NUDGES = 2;
@@ -78,6 +83,7 @@ interface TabRecord extends TabPane { tabId: string; jobId: string; since: strin
 
 /** A herdr tab kept for its subject: later runs of the same operation there run in it. */
 export interface SubjectTab {
+  provider?: Provider;
   workflow: string;
   subject: string;
   operation: string;
@@ -423,7 +429,7 @@ export class Daemon {
   private async dispatch(job: JobRecord, now: Date): Promise<void> {
     if (job.notBefore && Date.parse(job.notBefore) > now.getTime()) return;
     if ((this.deferred.get(job.id) ?? 0) > now.getTime()) return;
-    const op = this.operation(job);
+    let op = this.operation(job);
     if (!op) {
       await this.finishWithoutRun(job, 'failed', `operation ${job.workflow}/${job.operation} is not configured or its workflow is disabled`);
       return;
@@ -433,6 +439,39 @@ export class Daemon {
       this.log.info('dry run: would start agent', { job: job.id, operation: job.operation, subject: job.subject, kind: op.kind, placement: op.placement, pool: op.pool, argv: JSON.stringify(prepared.command.argv) });
       await this.finishWithoutRun(job, 'noop', 'dry run: agent not started');
       return;
+    }
+
+    if (op.engine !== 'command') {
+      const retained = op.tabs === 'per-subject'
+        ? (await this.backend.docs.get<SubjectTab>(SUBJECT_TABS_COLLECTION, subjectTabKey(job.workflow, job.subject, job.operation, job.member)))?.value
+        : undefined;
+      const affinity = op.tabs === 'per-subject' || op.thread === 'per-subject'
+        ? (await this.backend.docs.get<{ provider: Provider }>(PROVIDER_AFFINITIES, this.affinityKey(job)))?.value.provider
+        : undefined;
+      // A new record may continue a conversation: it is not a new logical task.
+      const pinned = job.provider ?? retained?.provider ?? (retained?.sessionId ? 'claude' : undefined) ?? affinity
+        ?? (job.attempt > 1 || job.history.some((item) => item.event === 'started') ? op.engine : undefined);
+      let provider = pinned ?? op.engine;
+      let cooldown = await coolingProvider(this.backend.docs, provider, now.getTime());
+      if (cooldown && !pinned && provider === 'claude' && op.fallback === 'codex') {
+        const alternate = await coolingProvider(this.backend.docs, 'codex', now.getTime());
+        if (!alternate) { provider = 'codex'; cooldown = undefined; }
+        else if (Date.parse(alternate.until) < Date.parse(cooldown.until)) cooldown = alternate;
+      }
+      if (cooldown) {
+        await this.jobs.update(job.id, (current) => {
+          if (current.status !== 'queued') return undefined;
+          current.notBefore = cooldown.until;
+          current.waitingFor = `${pinned ?? 'available provider'} usage limit until ${cooldown.until}`;
+          current.quotaWait = cooldown;
+          if (pinned) current.provider = pinned;
+          if (job.waitingFor !== current.waitingFor) addHistory(current, 'quota wait', current.waitingFor);
+          return current;
+        });
+        if (job.quotaWait?.until !== cooldown.until) this.log.info('job waits for provider quota', { job: job.id, provider, until: cooldown.until });
+        return;
+      }
+      if (provider === 'codex' && op.engine === 'claude') op = codexFallback(op);
     }
 
     if (op.exclusive) {
@@ -503,7 +542,7 @@ export class Daemon {
       this.log.warn('run lease is held elsewhere; not starting the job twice', { job: job.id });
       return;
     }
-    const pending: JobRun = { attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}), ...(limitHold ? { limitSlot: limitHold } : {}) };
+    const pending: JobRun = { ...(op.engine !== 'command' ? { provider: op.engine } : {}), ...(op.contractResult ? { codexContract: true } : {}), attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}), ...(limitHold ? { limitSlot: limitHold } : {}) };
     try {
       const busy = await this.startRun(job, op, pending, cwd, herdrWorkspace);
       if (busy) {
@@ -519,7 +558,7 @@ export class Daemon {
 
   /** Starts the run, or answers why it waits: its per-subject tab is in use. */
   private async startRun(job: JobRecord, op: OperationSpec, pending: JobRun, cwd: string, herdrWorkspace: string | undefined): Promise<string | undefined> {
-    const threadId = op.thread === 'per-subject' ? (await this.backend.docs.get<{ threadId: string }>('threads', this.threadKey(job)))?.value.threadId : undefined;
+    const threadId = job.codexThreadId ?? (op.thread === 'per-subject' ? (await this.backend.docs.get<{ threadId: string }>('threads', this.threadKey(job)))?.value.threadId : undefined);
     const placement = pending.placement;
     const member = pending.slot?.member;
     let kept: SubjectTab | undefined;
@@ -551,12 +590,12 @@ export class Daemon {
     if (op.kind === 'interactive' && !attended) placement.degraded = `${placement.degraded ?? 'no terminal'}; runs as an agent`;
     // A per-subject tab is recorded before anything else can fail, so a failed start cannot leak it.
     // A retained claude tab continues its session; the first run in it starts one under a known id.
-    let session: { id: string; resume: boolean } | undefined;
+    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' ? { id: job.claudeSessionId ?? randomUUID(), resume: Boolean(job.claudeSessionId) } : undefined;
     if (retain && placement.kind === 'herdr' && placement.tabId && placement.paneId && placement.workspace) {
       // The wrapper decides whether the session can be resumed: it runs where the session does.
-      if (op.engine === 'claude') session = kept?.sessionId ? { id: kept.sessionId, resume: true } : { id: randomUUID(), resume: false };
+      if (op.engine === 'claude' && kept?.sessionId) session = { id: kept.sessionId, resume: true };
       const now = new Date().toISOString();
-      const record: SubjectTab = { workflow: job.workflow, subject: job.subject, operation: job.operation, ...(member ? { member } : {}), workspaceId: placement.workspace, tabId: placement.tabId, paneId: placement.paneId, ...(session ? { sessionId: session.id } : {}), jobId: job.id, runDir: runDirFor(this.manifest, job), since: kept?.since ?? now, updatedAt: now, refreshedAt: now };
+      const record: SubjectTab = { ...(op.engine !== 'command' ? { provider: op.engine } : {}), workflow: job.workflow, subject: job.subject, operation: job.operation, ...(member ? { member } : {}), workspaceId: placement.workspace, tabId: placement.tabId, paneId: placement.paneId, ...(session ? { sessionId: session.id } : {}), jobId: job.id, runDir: runDirFor(this.manifest, job), since: kept?.since ?? now, updatedAt: now, refreshedAt: now };
       try {
         await this.backend.docs.replace(SUBJECT_TABS_COLLECTION, subjectTabKey(job.workflow, job.subject, job.operation, member), record, { ttlMs: SUBJECT_TAB_TTL_MS });
         placement.retained = true;
@@ -574,6 +613,10 @@ export class Daemon {
       if (current.status !== 'queued' || current.attempt !== job.attempt) return undefined;
       current.status = 'running';
       current.run = run;
+      if (op.engine !== 'command') current.provider = op.engine;
+      if (op.contractResult) current.codexContract = true;
+      if (session) current.claudeSessionId = session.id;
+      delete current.quotaWait;
       delete current.waitingFor;
       delete current.notBefore;
       addHistory(current, 'started', `${placement.kind}${placement.paneId ? ` ${placement.paneId}` : ''}${placement.degraded ? ` (degraded: ${placement.degraded})` : ''} attempt ${job.attempt}`);
@@ -584,6 +627,7 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return undefined;
     }
+    if (op.engine !== 'command' && (op.tabs === 'per-subject' || op.thread === 'per-subject')) await this.backend.docs.replace(PROVIDER_AFFINITIES, this.affinityKey(job), { provider: op.engine, workflow: job.workflow, subject: job.subject, operation: job.operation }, { ttlMs: SUBJECT_TAB_TTL_MS });
     try {
       if (placement.kind === 'herdr' && placement.paneId) await startInHerdr(this.herdr, placement.paneId, prepared.runDir);
       else await startHeadless(prepared.runDir);
@@ -596,6 +640,10 @@ export class Daemon {
     this.renewedAt.set(job.id, Date.now());
     this.log.info('job started', { job: job.id, workflow: job.workflow, operation: job.operation, subject: job.subject, attempt: job.attempt, placement: placement.kind, pane: placement.paneId, member: run.slot?.member, degraded: placement.degraded });
     return undefined;
+  }
+
+  private affinityKey(job: JobRecord): string {
+    return stableId('pa', job.workflow, job.operation, job.subject, job.member ?? '');
   }
 
   private threadKey(job: JobRecord): string {
@@ -685,6 +733,9 @@ export class Daemon {
         this.log.warn('could not end a subject\'s tab; a later result naming the subject retries', { subject: value.subject, tab: value.tabId, error: errorText(error) });
       }
     }
+    for (const { key, value } of await this.backend.docs.list<{ workflow: string; subject: string }>(PROVIDER_AFFINITIES)) {
+      if (value.workflow === job.workflow && subjects.includes(value.subject)) await this.backend.docs.delete(PROVIDER_AFFINITIES, key);
+    }
     const workflow = this.manifest.workflows.get(job.workflow);
     for (const op of workflow?.operations.values() ?? []) {
       if (op.thread !== 'per-subject') continue;
@@ -719,7 +770,10 @@ export class Daemon {
     const starting = now.getTime() - Date.parse(run.startedAt) < START_GRACE_MS;
     const beating = heartbeatAge === undefined ? starting : heartbeatAge < HEARTBEAT_STALE_MS;
     if (wrapper && processAlive(wrapper.pid) && beating) {
-      await this.keepAlive(job, run);
+      const waiting = await this.observeQuota(job, run, now);
+      const observed = { ...job };
+      if (waiting) observed.quotaWait = waiting; else delete observed.quotaWait;
+      await this.keepAlive(observed, run);
       return;
     }
     if (!wrapper && starting) return;
@@ -765,7 +819,7 @@ export class Daemon {
         this.log.info('gave back a run lease taken again for a job that ended meanwhile', { job: job.id });
       }
     }
-    if (run.placement.paneId) await this.watchPane(job, run.placement.paneId, run.runDir);
+    if (run.placement.paneId && !job.quotaWait) await this.watchPane(job, run.placement.paneId, run.runDir);
   }
 
   /**
@@ -807,6 +861,100 @@ export class Daemon {
     await this.herdr.notify(`operator: ${jobTitle(job)} is idle`, `pane ${paneId} has no result after ${state.nudges} nudges`).catch(() => undefined);
   }
 
+  /** Keeps a quota-limited live session in place; only a safe, idle pane receives continuation. */
+  private async observeQuota(job: JobRecord, run: JobRun, now: Date): Promise<QuotaWait | undefined> {
+    if (await resultWritten(runPath(run.runDir, 'result'))) return undefined;
+    const evidence = await readJsonFile<QuotaWait>(runPath(run.runDir, 'quota'));
+    if (!evidence) return undefined;
+    const resumePath = runPath(run.runDir, 'quotaResume');
+    let resume = await readJsonFile<QuotaResume>(resumePath);
+    if (resume?.id === evidence.id && resume.state === 'sent') return undefined;
+    const quota = await rememberQuota(this.backend.docs, evidence);
+    // The run owns its evidence id even when another run already cached this provider window.
+    const wait = { ...quota, id: evidence.id };
+    if (job.quotaWait?.id !== wait.id || job.quotaWait.until !== wait.until) {
+      await this.jobs.update(job.id, (current) => {
+        if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+        current.quotaWait = wait;
+        addHistory(current, 'quota wait', `${wait.provider} until ${wait.until}; session retained`);
+        return current;
+      });
+      this.log.info('session waits for provider quota', { job: job.id, provider: wait.provider, until: wait.until, pane: run.placement.paneId });
+    }
+    if (now.getTime() < Date.parse(wait.until)) return wait;
+    if (!run.placement.paneId || this.operation(job)?.kind !== 'interactive') return undefined;
+    const status = await this.herdr.agentStatus(run.placement.paneId).catch(() => undefined);
+    if (status !== 'working' && status !== 'idle' && status !== 'done') {
+      const reason = `quota reset passed; pane ${status ?? 'unreachable'} needs attention`;
+      if (job.waitingFor !== reason) {
+        await this.jobs.update(job.id, (current) => {
+          if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+          current.waitingFor = reason;
+          return current;
+        });
+        this.log.warn('quota reset passed but the pane cannot be continued safely', { job: job.id, pane: run.placement.paneId, status: status ?? 'unreachable' });
+        await this.herdr.notify(`operator: ${jobTitle(job)} needs attention`, `${reason}; the session remains open and no prompt was answered`).catch(() => undefined);
+      }
+      return wait;
+    }
+    const markSent = async (): Promise<void> => {
+      await writeJsonAtomic(resumePath, { id: evidence.id, state: 'sent', attempts: resume?.id === evidence.id ? resume.attempts : 0, nextAttemptAt: now.toISOString() } satisfies QuotaResume);
+      await this.jobs.update(job.id, (current) => {
+        if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+        delete current.quotaWait;
+        delete current.waitingFor;
+        addHistory(current, 'quota resumed', status === 'working' ? 'provider resumed itself' : 'continued the same session');
+        return current;
+      });
+    };
+    // Newer clients retry themselves. Never inject another turn into an active one.
+    if (status === 'working') { await markSent(); return undefined; }
+    if (resume?.id !== evidence.id) resume = undefined;
+    if (resume && Date.parse(resume.nextAttemptAt) > now.getTime()) return wait;
+    if ((resume?.attempts ?? 0) >= QUOTA_RESUME_ATTEMPTS) {
+      if (!this.notified.has(job.id)) {
+        this.notified.add(job.id);
+        this.log.warn('quota continuation needs the owner after delivery retries', { job: job.id, pane: run.placement.paneId });
+        await this.herdr.notify(`operator: ${jobTitle(job)} needs continuation`, 'The quota reset passed, but continuation delivery could not be confirmed. The original session remains open.').catch(() => undefined);
+      }
+      return wait;
+    }
+    // Record delivery intent before sending. A crash retries after a minute, first checking activity.
+    resume = { id: evidence.id, state: 'pending', attempts: (resume?.attempts ?? 0) + 1, nextAttemptAt: new Date(now.getTime() + QUOTA_RESUME_RETRY_MS).toISOString() };
+    await writeJsonAtomic(resumePath, resume);
+    try {
+      await this.herdr.runInPane(run.placement.paneId, 'operator: the usage-limit reset time has passed. Continue this same task from where you stopped; preserve completed work and write its operation result when finished.');
+      await markSent();
+      this.log.info('continued quota-limited session', { job: job.id, pane: run.placement.paneId });
+      return undefined;
+    } catch (error) {
+      this.log.warn('quota continuation delivery failed; retrying later', { job: job.id, error: errorText(error), nextAttemptAt: resume.nextAttemptAt });
+      return wait;
+    }
+  }
+
+  private async requeueQuota(job: JobRecord, run: JobRun, evidence: QuotaWait): Promise<void> {
+    const quota = await rememberQuota(this.backend.docs, evidence);
+    await this.releaseRun(job.id, run);
+    await this.jobs.update(job.id, (current) => {
+      if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      current.status = 'queued';
+      current.provider = evidence.provider;
+      current.retryCount = job.retryCount ?? job.attempt - 1;
+      current.attempt += 1;
+      current.notBefore = quota.until;
+      current.waitingFor = `${evidence.provider} usage limit until ${quota.until}`;
+      current.quotaWait = quota;
+      delete current.run;
+      addHistory(current, 'quota wait', `${evidence.provider} until ${quota.until}; same provider resumes`);
+      return current;
+    });
+    this.renewedAt.delete(job.id);
+    this.notified.delete(job.id);
+    this.idle.delete(job.id);
+    this.log.info('quota-limited task queued without spending a retry', { job: job.id, provider: evidence.provider, until: quota.until });
+  }
+
   private async finish(job: JobRecord, run: JobRun, exit: ExitInfo): Promise<void> {
     // Effects below are published only for the attempt the job still records as running.
     await this.ensureLeader();
@@ -815,15 +963,28 @@ export class Daemon {
       this.log.warn('a finished run is no longer the job\'s current attempt; its result is not applied', { job: job.id, attempt: job.attempt });
       return;
     }
-    const op = this.operation(job);
+    const configured = this.operation(job);
+    const op = configured && (run.codexContract || job.codexContract) ? codexFallback(configured) : configured;
     let result: OperationResult;
     if (!op) {
       result = { contract: 1, status: 'failed', evidence: [], next: [], failure: { reason: 'operation no longer configured', retryable: false } };
     } else {
       const collected = await collectRun(job, op, run.runDir, exit);
       result = collected.result;
-      if (collected.threadId && op.thread === 'per-subject') {
-        await this.backend.docs.replace('threads', this.threadKey(job), { threadId: collected.threadId, updatedAt: new Date().toISOString() }, { ttlMs: 30 * 86_400_000 });
+      const threadId = collected.threadId ?? (op.contractResult ? findCodexThread((await readEventTail(runPath(run.runDir, 'output'))).text) : undefined);
+      if (threadId) {
+        await this.jobs.update(job.id, (current) => { if (current.status !== 'running' || current.attempt !== job.attempt) return undefined; current.codexThreadId = threadId; return current; });
+        if (op.thread === 'per-subject') await this.backend.docs.replace('threads', this.threadKey(job), { threadId, updatedAt: new Date().toISOString() }, { ttlMs: 30 * 86_400_000 });
+      }
+      // A validated task result wins. Quota handling applies only when the engine failed to supply it.
+      if (result.status === 'failed' && !collected.contractProvided && (run.provider ?? op.engine) !== 'command') {
+        const provider = run.provider ?? op.engine as Provider;
+        const recorded = await readJsonFile<QuotaWait>(runPath(run.runDir, 'quota'));
+        const resumed = recorded ? await readJsonFile<QuotaResume>(runPath(run.runDir, 'quotaResume')) : undefined;
+        const evidence = recorded
+          ? resumed?.id === recorded.id && resumed.state === 'sent' ? undefined : recorded
+          : quotaFromLines((await readEventTail(runPath(run.runDir, 'output'))).text, provider);
+        if (evidence) { await this.requeueQuota(job, run, evidence); return; }
       }
     }
     const workflow = this.manifest.workflows.get(job.workflow);
@@ -860,7 +1021,8 @@ export class Daemon {
       await this.waits.open(this.manifest.project, job.workflow, job.id, job.attempt, { ...result.wait, ...(member ? { member } : {}) });
     }
 
-    const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt <= op.retries;
+    const retryCount = job.retryCount ?? job.attempt - 1;
+    const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && retryCount < op.retries;
     await this.releaseRun(job.id, run, result.status === 'noop' ? 0 : op?.keepTabMs ?? 0);
     if (result.endSubjects) {
       try { await this.endSubjects(job, result.endSubjects); } catch (error) { this.log.warn('closing the tabs of ended subjects failed; a later result naming them retries', { job: job.id, error: errorText(error) }); }
@@ -868,6 +1030,8 @@ export class Daemon {
     const finishedAt = new Date().toISOString();
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      delete current.quotaWait;
+      delete current.waitingFor;
       current.outcome = {
         finishedAt,
         status: result.status,
@@ -880,6 +1044,7 @@ export class Daemon {
       if (retry && op) {
         current.status = 'queued';
         current.attempt += 1;
+        current.retryCount = retryCount + 1;
         current.notBefore = new Date(Date.now() + op.retryDelayMs).toISOString();
         delete current.run;
         addHistory(current, 'retry scheduled', result.failure?.reason);

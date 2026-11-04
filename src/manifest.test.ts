@@ -201,3 +201,20 @@ workflows:
   assert.throws(() => parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr, tabs: per-subject, keepTab: 30m }'), 'm.yaml'), /operations\.plan\.keepTab: a per-subject tab stays open until its subject ends/);
   assert.throws(() => parseManifest(text('{ kind: interactive, engine: claude, skill: plan-change, placement: herdr, tabs: forever }'), 'm.yaml'), /operations\.plan\.tabs: expected per-job or per-subject/);
 });
+
+
+test('Codex fallback is explicit and refuses untranslatable Claude restrictions', () => {
+  const text = (args: string, extra = '') => `contract: 1
+project: demo
+workflows:
+  w:
+    operations:
+      task: { kind: agent, engine: claude, prompt: 'Do work', fallback: codex, args: ${args}${extra} }
+`;
+  assert.equal(parseManifest(text("['--permission-mode', auto, '--verbose']"), 'm.yaml').manifest.workflows.get('w')?.operations.get('task')?.fallback, 'codex');
+  assert.equal(parseManifest(text('[]').replace(', fallback: codex', ''), 'm.yaml').manifest.workflows.get('w')?.operations.get('task')?.fallback, undefined);
+  for (const args of ["['--allowedTools', Read]", "['--disallowedTools', Bash]", "['--permission-mode', plan]", "['--settings', policy.json]"]) {
+    assert.throws(() => parseManifest(text(args), 'm.yaml'), /cannot translate Claude argument/);
+  }
+  assert.throws(() => parseManifest(text('[]').replace('engine: claude', 'engine: codex'), 'm.yaml'), /only claude operations/);
+});

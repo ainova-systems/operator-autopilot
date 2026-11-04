@@ -59,7 +59,8 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
       const prompt = renderPrompt(op.prompt ?? DEFAULT_CLAUDE_PROMPT, values);
       // A session takes the prompt as its first message and stays open; -p answers once and exits.
       // A per-subject tab names its session, so the next run of the operation continues it.
-      const argv = (session: string[]): string[] => ['claude', ...(context.attended ? [] : ['-p']), prompt, ...session, ...(op.model ? ['--model', op.model] : []), ...op.args];
+      const outputArgs = context.attended || op.args.some((arg) => arg === '--output-format' || arg.startsWith('--output-format=')) ? [] : ['--output-format', 'stream-json', '--verbose'];
+      const argv = (session: string[]): string[] => ['claude', ...(context.attended ? [] : ['-p']), prompt, ...session, ...(op.model ? ['--model', op.model] : []), ...op.args, ...outputArgs];
       if (!context.session) return { argv: argv([]) };
       const { id, resume } = context.session;
       const resumeArgv = argv(['--resume', id]);
@@ -68,7 +69,9 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
     }
     case 'codex': {
       const outputPath = join(context.runDir, 'output.json');
-      const prompt = renderPrompt(op.prompt ?? DEFAULT_CODEX_PROMPT, { ...values, output: outputPath });
+      const rendered = renderPrompt(op.prompt ?? DEFAULT_CODEX_PROMPT, { ...values, output: outputPath });
+      const prompt = op.contractResult ? `${rendered}\nReturn the operation result (contract 1) as your final JSON message. The runtime validates it as the original task result; plain prose is not success. In a read-only sandbox, return this JSON instead of writing the result file.` : rendered;
+      const sandbox = op.contractResult && op.access === 'write' ? 'workspace-write' : 'read-only';
       const agent = context.codexAgent;
       const model = op.model ?? agent?.model;
       // The definition is the one source of the reviewer's model and instructions; -c takes TOML values.
@@ -76,11 +79,11 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
         ...(agent?.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(agent.reasoningEffort)}`] : []),
         ...(agent?.instructions ? ['-c', `developer_instructions=${JSON.stringify(agent.instructions)}`] : []),
       ];
-      const shared = ['--json', '-o', outputPath, ...(op.schema ? ['--output-schema', resolve(context.root, op.schema)] : []), ...(model ? ['-m', model] : []), ...fromAgent, ...op.args];
+      const shared = ['--json', '-o', outputPath, ...(op.contractResult && op.access === 'write' ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify([context.runDir])}`] : []), ...(op.schema ? ['--output-schema', resolve(context.root, op.schema)] : []), ...(model ? ['-m', model] : []), ...fromAgent, ...op.args];
       // `exec resume` takes no --sandbox flag, so the read-only sandbox is set through config there.
       const argv = context.threadId
-        ? ['codex', 'exec', 'resume', context.threadId, ...shared, '-c', 'sandbox_mode="read-only"', prompt]
-        : ['codex', 'exec', '-s', 'read-only', ...shared, prompt];
+        ? ['codex', 'exec', 'resume', context.threadId, ...shared, '-c', `sandbox_mode=${JSON.stringify(sandbox)}`, prompt]
+        : ['codex', 'exec', '-s', sandbox, ...shared, prompt];
       return { argv, outputPath };
     }
   }
@@ -98,4 +101,15 @@ export function findCodexThread(output: string): string | undefined {
     }
   }
   return undefined;
+}
+
+/** Creates a Codex-compatible task only for an explicitly opted-in Claude operation. */
+export function codexFallback(op: OperationSpec): OperationSpec {
+  const { model: _model, agent: _agent, fallback: _fallback, ...base } = op;
+  return {
+    ...base, engine: 'codex', kind: 'agent', contractResult: true,
+    args: ['-c', 'approval_policy="on-request"'],
+    prompt: op.prompt ?? DEFAULT_CLAUDE_PROMPT,
+    thread: op.tabs === 'per-subject' ? 'per-subject' : 'none',
+  };
 }

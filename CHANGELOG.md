@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Usage limits keep attended Claude sessions open until reset, queue same-provider resumptions without spending retries, and allow explicitly compatible new tasks to use Codex during a persisted cooldown (four hours when no reset time is reported).
+
 ## [0.8.1]
 
 - A leader lease whose renewal finds it gone is taken again instead of stopping the daemon; the daemon stops only when another daemon holds the lease.
