@@ -18,6 +18,7 @@ import { Pools } from './pools.ts';
 import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
 import type { Acquired, StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
+import { detectUsageLimit, USAGE_LIMIT_RECHECK_MS, type UsageLimit } from './usage-limit.ts';
 import { WaitStore } from './waits.ts';
 
 export interface DaemonOptions {
@@ -50,6 +51,11 @@ const BACKEND_RETRY_MS = 30_000;
 const TAB_RECORD_TTL_MS = 7 * 86_400_000;
 /** Nudges an idle interactive session gets before the owner is told. */
 const IDLE_NUDGES = 2;
+/** How much of a blocked pane, and of a failed run's output, is read for an engine's usage-limit message. */
+const PANE_TAIL_LINES = 40;
+const OUTPUT_TAIL_BYTES = 16_384;
+/** An outage starting within this long of the last one's end continues it; the owner is not told again. */
+const OUTAGE_NOTICE_GAP_MS = 3_600_000;
 
 /** What an idle session is asked; it is typed into the session as the operator's next message. */
 export function idleNudgeText(minutes: number): string {
@@ -97,6 +103,25 @@ export interface SubjectTab {
 }
 
 /** When a kept tab record was last written or renewed. */
+function outOfUsage(engine: string, until: number): string {
+  return `engine ${engine} is out of usage until ${new Date(until).toISOString()}`;
+}
+
+/** The end of a text file, or empty when it is missing. */
+async function tailText(path: string, bytes: number): Promise<string> {
+  let handle;
+  try { handle = await open(path, 'r'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error; }
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, bytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 function lastRenewal(value: TabRecord | SubjectTab): number {
   return Date.parse(value.refreshedAt ?? ('updatedAt' in value ? value.updatedAt : value.since));
 }
@@ -132,6 +157,11 @@ export class Daemon {
   private readonly deferred = new Map<string, number>();
   private readonly renewedAt = new Map<string, number>();
   private readonly notified = new Set<string>();
+  // Engines out of usage, until when; and when each last came back, so a limit met again right after
+  // its reset reads as the same outage. Kept by the leader alone: only it starts jobs, and a daemon
+  // that takes over learns of a standing limit from the first run that meets it.
+  private readonly outages = new Map<string, number>();
+  private readonly outageEnded = new Map<string, number>();
   /** Interactive sessions seen idle without a result: since when, and how often they were nudged. */
   private readonly idle = new Map<string, { since?: number; nudges: number; warned: boolean }>();
   private tabsPending = true;
@@ -460,6 +490,13 @@ export class Daemon {
         });
       }
     };
+    const outage = this.outages.get(op.engine);
+    if (outage !== undefined) {
+      if (outage > now.getTime()) { await queue(outOfUsage(op.engine, outage), outage - now.getTime()); return; }
+      this.outages.delete(op.engine);
+      this.outageEnded.set(op.engine, now.getTime());
+      this.log.info('engine usage limit passed; its jobs start again', { engine: op.engine });
+    }
     // A run lease this daemon gave back a moment ago, e.g. for a run that waited for its tab, is free
     // once it lapsed: retry after that second rather than read it as held elsewhere and wait a lease long.
     const lapsing = this.endingLeases.remaining(`run.${job.id}`);
@@ -765,7 +802,7 @@ export class Daemon {
         this.log.info('gave back a run lease taken again for a job that ended meanwhile', { job: job.id });
       }
     }
-    if (run.placement.paneId) await this.watchPane(job, run.placement.paneId, run.runDir);
+    if (run.placement.paneId) await this.watchPane(job, run, run.placement.paneId);
   }
 
   /**
@@ -774,8 +811,16 @@ export class Daemon {
    * short, so after `idleNudge` it is asked to write its result or say what it waits for; a second
    * silence nudges again, and a third tells the owner. Waiting is fine; stopping short is not.
    */
-  private async watchPane(job: JobRecord, paneId: string, runDir: string): Promise<void> {
+  private async watchPane(job: JobRecord, run: JobRun, paneId: string): Promise<void> {
+    const runDir = run.runDir;
     const status = await this.herdr.agentStatus(paneId).catch(() => undefined);
+    // An engine that ran out of usage stops at its own prompt, which reads as blocked; nothing a person
+    // answers there makes the run work before the limit resets, so it is ended rather than reported.
+    const engine = this.operation(job)?.engine;
+    if (status === 'blocked' && engine) {
+      const limit = detectUsageLimit(engine, await this.herdr.readPane(paneId, PANE_TAIL_LINES).catch(() => ''));
+      if (limit) { await this.deferForUsage(job, run, limit); return; }
+    }
     if (status === 'blocked' && !this.notified.has(job.id)) {
       this.notified.add(job.id);
       this.log.warn('agent pane is blocked; the runtime never answers it', { job: job.id, pane: paneId });
@@ -822,6 +867,10 @@ export class Daemon {
     } else {
       const collected = await collectRun(job, op, run.runDir, exit);
       result = collected.result;
+      if (result.status === 'failed' && !exit.timedOut) {
+        const limit = detectUsageLimit(op.engine, await tailText(runPath(run.runDir, 'output'), OUTPUT_TAIL_BYTES));
+        if (limit) { await this.deferForUsage(job, run, limit); return; }
+      }
       if (collected.threadId && op.thread === 'per-subject') {
         await this.backend.docs.replace('threads', this.threadKey(job), { threadId: collected.threadId, updatedAt: new Date().toISOString() }, { ttlMs: 30 * 86_400_000 });
       }
@@ -860,7 +909,7 @@ export class Daemon {
       await this.waits.open(this.manifest.project, job.workflow, job.id, job.attempt, { ...result.wait, ...(member ? { member } : {}) });
     }
 
-    const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt <= op.retries;
+    const retry = result.status === 'failed' && result.failure?.retryable === true && op !== undefined && job.attempt - (job.freeAttempts ?? 0) <= op.retries;
     await this.releaseRun(job.id, run, result.status === 'noop' ? 0 : op?.keepTabMs ?? 0);
     if (result.endSubjects) {
       try { await this.endSubjects(job, result.endSubjects); } catch (error) { this.log.warn('closing the tabs of ended subjects failed; a later result naming them retries', { job: job.id, error: errorText(error) }); }
@@ -898,6 +947,44 @@ export class Daemon {
     else this.log.info('job finished', fields);
     // A scheduled retry is not an end the owner has to act on; its last attempt is.
     if (op && !retry && op.notify.includes(result.status)) await this.notifyOwner(job, result);
+  }
+
+  /**
+   * Ends a run its engine refused for want of usage and queues the job again for when the limit
+   * resets, without counting the attempt against its retries. No job starts on the engine until then;
+   * the owner hears of it once per outage. The engine's prompt is never answered: the session ends.
+   */
+  private async deferForUsage(job: JobRecord, run: JobRun, limit: UsageLimit): Promise<void> {
+    const now = Date.now();
+    const standing = this.outages.get(limit.engine);
+    const until = Math.max(limit.resetsAt?.getTime() ?? now + USAGE_LIMIT_RECHECK_MS, standing ?? 0);
+    this.outages.set(limit.engine, until);
+    const reason = outOfUsage(limit.engine, until);
+    // Requeued before the run is ended, so the exit the ended run still writes is not applied as its outcome.
+    const updated = await this.jobs.update(job.id, (current) => {
+      if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      current.status = 'queued';
+      current.attempt += 1;
+      current.freeAttempts = (current.freeAttempts ?? 0) + 1;
+      current.notBefore = new Date(until).toISOString();
+      current.waitingFor = reason;
+      delete current.run;
+      addHistory(current, 'deferred', reason);
+      return current;
+    });
+    if (!updated) return;
+    if (run.runDir) await this.endSession(run.runDir);
+    await this.releaseRun(job.id, run);
+    this.renewedAt.delete(job.id);
+    this.notified.delete(job.id);
+    this.idle.delete(job.id);
+    this.log.warn('job deferred: its engine is out of usage', { job: job.id, operation: job.operation, subject: job.subject, engine: limit.engine, until: new Date(until).toISOString() });
+    if (standing !== undefined) return;
+    // A limit met again soon after it passed is the same outage continuing, not news for the owner.
+    const ended = this.outageEnded.get(limit.engine);
+    if (ended !== undefined && now - ended < OUTAGE_NOTICE_GAP_MS) return;
+    this.log.warn('engine out of usage; no job starts on it until the limit resets', { engine: limit.engine, until: new Date(until).toISOString(), resetKnown: limit.resetsAt !== undefined });
+    await this.herdr.notify(`operator: ${limit.engine} is out of usage`, `no ${limit.engine} job starts until ${new Date(until).toISOString()}; queued jobs wait and start then`).catch(() => undefined);
   }
 
   /** Tells the owner a run ended in a status its operation names under `notify`; delivery is best effort. */

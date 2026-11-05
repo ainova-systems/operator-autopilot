@@ -22,6 +22,7 @@ export const absentHerdr: Herdr = {
   setTitle: async () => undefined,
   closeTab: async () => 'gone',
   agentStatus: async () => undefined,
+  readPane: async () => '',
   notify: async () => undefined,
 };
 

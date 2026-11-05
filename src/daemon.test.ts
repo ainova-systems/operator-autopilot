@@ -13,6 +13,7 @@ import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo
 import { absentHerdr, createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
 import { fireTrigger } from './triggers.ts';
 import { clearPause, readPause, requestPause } from './pause.ts';
+import { parseReset } from './usage-limit.ts';
 
 const projects: TestProject[] = [];
 async function project(options?: Parameters<typeof createTestProject>[0]): Promise<TestProject> {
@@ -1362,7 +1363,9 @@ test('a tab an older daemon recorded without its pane closes as before, whatever
 /**
  * A stand-in claude: keeps a transcript per session where claude does, under CLAUDE_CONFIG_DIR,
  * refuses to resume a session without one, and records its arguments. `data/claude-exit` makes it
- * end without a result, with that exit code, once it has started (or resumed) its session.
+ * end without a result, with that exit code, once it has started (or resumed) its session;
+ * `data/claude-limit` makes it print that file's text and exit 1, as claude does out of usage; and
+ * `data/claude-hang` keeps it running without a result until `data/claude-release` appears.
  */
 async function fakeClaude(p: TestProject): Promise<{ restore: () => void; calls: () => Promise<string[][]>; transcript: (id: string) => string }> {
   const bin = join(p.root, 'bin');
@@ -1383,6 +1386,8 @@ async function fakeClaude(p: TestProject): Promise<{ restore: () => void; calls:
     "const fresh = args.indexOf('--session-id');",
     "if (fresh >= 0 && existsSync(join(dir, args[fresh + 1] + '.jsonl'))) { console.error('Error: Session ID ' + args[fresh + 1] + ' is already in use.'); process.exit(1); }",
     "if (fresh >= 0) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, args[fresh + 1] + '.jsonl'), ''); }",
+    "if (existsSync(join(data, 'claude-limit'))) { console.error(readFileSync(join(data, 'claude-limit'), 'utf8')); process.exit(1); }",
+    "if (existsSync(join(data, 'claude-hang'))) { setInterval(() => { if (existsSync(join(data, 'claude-release'))) { writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({ contract: 1, status: 'done' })); process.exit(0); } }, 100); return; }",
     "const fail = join(data, 'claude-exit');",
     "if (existsSync(fail)) { const code = Number(readFileSync(fail, 'utf8')); rmSync(fail); process.exit(code); }",
     "writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify({ contract: 1, status: 'done' }));",
@@ -1758,4 +1763,107 @@ test('a daemon stopping while it takes a dropped leader lease back gives the lea
   await new Promise((resolve) => setTimeout(resolve, 1200));
   p.backend.locks.acquire = acquire;
   assert.equal((await p.backend.locks.acquire('leader', 60_000, 'next')).acquired, true, 'the given-back lease lapses for the next daemon');
+});
+
+const ASK_OPERATION = '      chat:     { kind: interactive, engine: claude, prompt: "work on {subject}", placement: herdr, tabs: per-subject, timeout: 5m }';
+const LIMIT_PROMPT = [
+  '● Usage limit reached again · continuing automatically at 12pm',
+  '   What do you want to do?',
+  '   ❯ 1. Stop and wait for limit to reset',
+  '     2. Wait here, then continue automatically shortly',
+].join('\n');
+
+/** A herdr whose panes read as blocked while the fake claude hangs, and show `screen` when read. */
+function blockedHerdr(p: TestProject, screen: string, notes: string[]): Herdr {
+  const { herdr } = tabHerdr();
+  return {
+    ...herdr,
+    agentStatus: async () => (existsSync(join(p.data, 'claude-hang')) && !existsSync(join(p.data, 'claude-release')) ? 'blocked' : 'idle'),
+    readPane: async () => screen,
+    notify: async (title, body) => { notes.push(`${title} | ${body}`); },
+  };
+}
+
+test('a session stopped at its engine\'s usage limit is ended and queued for the reset without spending a retry, and no job starts on the engine meanwhile', async () => {
+  const p = await project({ extraOperations: ASK_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const notes: string[] = [];
+    const daemon = p.daemon({ herdr: blockedHerdr(p, LIMIT_PROMPT, notes) });
+    await daemon.acquireLeader();
+    await writeFile(join(p.data, 'claude-hang'), '1');
+    const started = Date.now();
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'chat', subject: 'pr-7', input: {}, trigger: { id: 'ask-1', name: 'test', kind: 'manual' } });
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'chat', 'pr-7'))[0]?.freeAttempts === 1, 30_000);
+    const deferred = (await jobsBy(daemon, 'chat', 'pr-7'))[0];
+    assert.equal(deferred?.status, 'queued', 'queued again, not failed: the operation has no retries');
+    assert.equal(deferred?.attempt, 2);
+    assert.match(deferred?.waitingFor ?? '', /^engine claude is out of usage until /);
+    const resumeAt = Date.parse(deferred?.notBefore ?? '');
+    assert.ok(Math.abs(resumeAt - started - 30 * 60_000) < 60_000, 'no reset in the message: it is checked again in 30 minutes');
+    assert.equal(notes.filter((note) => note.includes('claude is out of usage')).length, 1);
+    assert.equal(notes.some((note) => note.includes('is blocked')), false, 'the owner is not asked to answer the prompt');
+
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'chat', subject: 'pr-8', input: {}, trigger: { id: 'ask-2', name: 'test', kind: 'manual' } });
+    for (let i = 0; i < 5; i += 1) { await daemon.poll(); await sleep(100); }
+    const waiting = (await jobsBy(daemon, 'chat', 'pr-8'))[0];
+    assert.equal(waiting?.status, 'queued');
+    assert.match(waiting?.waitingFor ?? '', /^engine claude is out of usage until /);
+    assert.equal((await claude.calls()).length, 1, 'nothing started on the engine while it is out');
+    assert.equal(notes.filter((note) => note.includes('claude is out of usage')).length, 1, 'told once per outage');
+
+    // The limit resets: both jobs start, and the deferred one finishes on its free attempt.
+    await rm(join(p.data, 'claude-hang'));
+    // Time moves on past the reset; a run lease given back a moment ago lapses within a second.
+    for (let i = 0; i < 5 && (await daemon.jobs.list()).some((job) => job.operation === 'chat' && job.status === 'queued'); i += 1) {
+      await daemon.poll(new Date(resumeAt + 1000 + i * 1000));
+      await sleep(600);
+    }
+    await pollUntil(daemon, async () => (await daemon.jobs.list()).filter((job) => job.operation === 'chat').every((job) => job.status === 'done'), 30_000);
+    assert.equal((await jobsBy(daemon, 'chat', 'pr-7'))[0]?.freeAttempts, 1);
+    assert.ok(p.lines.some((line) => line.includes('engine usage limit passed; its jobs start again')));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a session blocked on anything but its engine\'s usage limit stays running for the owner', async () => {
+  const p = await project({ extraOperations: ASK_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const notes: string[] = [];
+    const daemon = p.daemon({ herdr: blockedHerdr(p, 'Do you want to make this edit to src/a.ts?\n ❯ 1. Yes\n   2. No', notes) });
+    await daemon.acquireLeader();
+    await writeFile(join(p.data, 'claude-hang'), '1');
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'chat', subject: 'pr-7', input: {}, trigger: { id: 'ask-3', name: 'test', kind: 'manual' } });
+    await pollUntil(daemon, async () => notes.some((note) => note.includes('is blocked')), 30_000);
+    const job = (await jobsBy(daemon, 'chat', 'pr-7'))[0];
+    assert.equal(job?.status, 'running');
+    assert.equal(job?.freeAttempts, undefined);
+    await writeFile(join(p.data, 'claude-release'), '1');
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'chat', 'pr-7'))[0]?.status === 'done', 30_000);
+    assert.equal(notes.some((note) => note.includes('out of usage')), false);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('an agent run that exits on its engine\'s usage limit is queued for the reset it names, not failed', async () => {
+  const p = await project({ extraOperations: '      lim:      { kind: agent, engine: claude, prompt: "work on {subject}", timeout: 5m }' });
+  const claude = await fakeClaude(p);
+  try {
+    const notes: string[] = [];
+    const daemon = p.daemon({ herdr: { ...absentHerdr, notify: async (title, body) => { notes.push(`${title} | ${body}`); } } });
+    await daemon.acquireLeader();
+    const message = "You've hit your weekly limit · resets 12pm (UTC)";
+    await writeFile(join(p.data, 'claude-limit'), message);
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'lim', subject: 'pr-4', input: {}, trigger: { id: 'lim-1', name: 'test', kind: 'manual' } });
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'lim', 'pr-4'))[0]?.freeAttempts === 1, 30_000);
+    const job = (await jobsBy(daemon, 'lim', 'pr-4'))[0];
+    assert.equal(job?.status, 'queued');
+    assert.equal(job?.notBefore, parseReset(message)?.toISOString());
+    assert.equal(notes.filter((note) => note.includes('claude is out of usage')).length, 1);
+  } finally {
+    claude.restore();
+  }
 });

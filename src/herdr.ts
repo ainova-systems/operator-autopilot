@@ -18,6 +18,8 @@ export interface Herdr {
   /** `gone` when the tab was already closed, for example by hand. */
   closeTab(tabId: string): Promise<'closed' | 'gone'>;
   agentStatus(paneId: string): Promise<string | undefined>;
+  /** The last `lines` lines a pane shows, as text. */
+  readPane(paneId: string, lines: number): Promise<string>;
   notify(title: string, body: string): Promise<void>;
 }
 
@@ -102,6 +104,9 @@ export function createHerdr(exec: HerdrExec = defaultHerdrExec): Herdr {
     async agentStatus(paneId: string): Promise<string | undefined> {
       const info = result(await exec(['pane', 'get', paneId]), 'pane get');
       return (info['pane'] as { agent_status?: string } | undefined)?.agent_status;
+    },
+    async readPane(paneId: string, lines: number): Promise<string> {
+      return exec(['pane', 'read', paneId, '--lines', String(lines)]);
     },
     async notify(title: string, body: string): Promise<void> {
       await exec(['notification', 'show', title, '--body', body, '--sound', 'request']);

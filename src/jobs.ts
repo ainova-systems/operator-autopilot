@@ -58,6 +58,8 @@ export interface JobRecord {
   notBefore?: string;
   /** Why a queued job has not started yet, e.g. a full pool. */
   waitingFor?: string;
+  /** Attempts that did not count against the operation's retries: runs ended because their engine was out of usage. */
+  freeAttempts?: number;
   /** The workspace member the job runs in, when its request named one. */
   member?: string;
   run?: JobRun;

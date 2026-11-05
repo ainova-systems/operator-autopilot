@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- A claude or codex run that meets its engine's usage limit is ended and queued for the reset its message names (or 30 minutes) without spending a retry, no job starts on that engine until then, and the owner is told once per outage instead of runs waiting out their timeouts at the limit prompt.
+
 ## [0.8.1]
 
 - A leader lease whose renewal finds it gone is taken again instead of stopping the daemon; the daemon stops only when another daemon holds the lease.

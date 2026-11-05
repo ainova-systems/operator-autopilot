@@ -198,6 +198,13 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   write its result or say what it waits for; after two such nudges the owner is notified once. A
   session waiting on its own background work answers and keeps waiting. Without herdr the run
   degrades to headless and the job record says so.
+- **Engine usage limits.** A claude or codex run that meets its engine's usage limit - a `blocked`
+  pane showing the engine's limit prompt, or a failed run whose output ends with the limit message -
+  is ended (its prompt is never answered) and queued again for the reset the message names, or for
+  30 minutes when it names none; that attempt does not count against `retries`. Until then no job
+  starts on that engine: queued jobs wait with `engine <name> is out of usage until <time>`, and the
+  owner is notified once per outage. The leader keeps this in memory; a daemon that takes over learns
+  of a standing limit from the first run that meets it.
   A tab herdr cannot close when its run ends is closed on a later poll; one closed by hand counts
   as closed.
 
