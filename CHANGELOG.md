@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.9.0] - 2026-11-05
 
 - Usage limits keep attended Claude sessions open until reset, queue same-provider resumptions without spending retries, and allow explicitly compatible new tasks to use Codex during a persisted cooldown (four hours when no reset time is reported).
 
