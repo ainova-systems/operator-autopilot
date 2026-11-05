@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildCommand, findCodexThread } from './engines.ts';
+import { buildCommand, codexFallback, findCodexThread } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
 const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
@@ -11,7 +11,7 @@ test('a claude operation runs its skill headlessly with a pointer prompt', () =>
   assert.equal(argv[0], 'claude');
   assert.equal(argv[1], '-p');
   assert.match(argv[2] ?? '', /^Run the implement-change skill for subject pr-7\. The operation input file is \/runs\/j1\/a1\/input\.json\. Write the operation result \(contract 1\) to \/runs\/j1\/a1\/result\.json\.$/);
-  assert.deepEqual(argv.slice(3), ['--model', 'opus', '--permission-mode', 'acceptEdits']);
+  assert.deepEqual(argv.slice(3), ['--model', 'opus', '--permission-mode', 'acceptEdits', '--output-format', 'stream-json', '--verbose']);
 });
 
 test('a codex operation is read-only, schema-bound, and resumes its thread', () => {
@@ -73,6 +73,25 @@ test('a claude run in a per-subject tab starts its session under a known id, and
   assert.deepEqual(next.slice(0, 2), ['claude', '-p']);
   assert.deepEqual(next.slice(3, 5), ['--resume', id]);
   assert.equal(next.includes('--session-id'), false);
-  assert.deepEqual(next.slice(-4), ['--model', 'opus', '--permission-mode', 'auto']);
+  assert.deepEqual(next.slice(-7), ['--model', 'opus', '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose']);
   assert.equal(buildCommand(op, context).argv.some((arg) => arg === '--session-id' || arg === '--resume'), false);
+});
+
+
+test('opted-in Codex fallback preserves contract and declared sandbox, without Claude policy or model arguments', () => {
+  const original: OperationSpec = { ...base, engine: 'claude', fallback: 'codex', skill: 'work', model: 'opus', args: ['--permission-mode', 'auto'] };
+  const fallback = codexFallback(original);
+  const fresh = buildCommand(fallback, context).argv;
+  assert.deepEqual(fresh.slice(0, 4), ['codex', 'exec', '-s', 'workspace-write']);
+  assert.ok(fresh.includes('approval_policy="on-request"'));
+  assert.ok(fresh.includes('sandbox_workspace_write.writable_roots=["/runs/j1/a1"]'));
+  assert.equal(fresh.includes('opus'), false);
+  assert.equal(fresh.includes('--permission-mode'), false);
+  assert.match(fresh.at(-1)!, /Return the operation result \(contract 1\) as your final JSON/);
+  const readOnly = buildCommand(codexFallback({ ...original, access: 'read' }), context).argv;
+  assert.deepEqual(readOnly.slice(0, 4), ['codex', 'exec', '-s', 'read-only']);
+  assert.equal(readOnly.some((arg) => arg.startsWith('sandbox_workspace_write.writable_roots=')), false);
+  const resumed = buildCommand(fallback, { ...context, threadId: 'thread-1' }).argv;
+  assert.deepEqual(resumed.slice(0, 4), ['codex', 'exec', 'resume', 'thread-1']);
+  assert.ok(resumed.includes('sandbox_mode="workspace-write"'));
 });

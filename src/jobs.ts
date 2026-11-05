@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { JsonObject, ResultStatus, TriggerKind } from './contract.ts';
 import { OperatorError } from './errors.ts';
 import type { Manifest } from './manifest.ts';
+import type { Provider, QuotaWait } from './provider-quota.ts';
 import type { DocStore } from './state/types.ts';
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'noop' | 'waiting' | 'needs-input' | 'failed' | 'cancelled';
@@ -20,6 +21,8 @@ export interface SlotHold {
 }
 
 export interface JobRun {
+  provider?: Provider;
+  codexContract?: boolean;
   attempt: number;
   host: string;
   runDir: string;
@@ -53,6 +56,14 @@ export interface JobRecord {
   trigger: { id: string; name: string; kind: TriggerKind };
   status: JobStatus;
   attempt: number;
+  /** Physical attempts include quota resumptions; only ordinary failures spend retries. */
+  retryCount?: number;
+  /** Pinned on first launch: an already-started task never changes provider. */
+  provider?: Provider;
+  codexContract?: boolean;
+  claudeSessionId?: string;
+  codexThreadId?: string;
+  quotaWait?: QuotaWait;
   createdAt: string;
   updatedAt: string;
   notBefore?: string;

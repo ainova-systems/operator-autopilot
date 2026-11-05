@@ -31,6 +31,10 @@ export interface OperationSpec {
   name: string;
   kind: OperationKind;
   engine: Engine;
+  /** Explicit opt-in: new Claude tasks may run in Codex during a provider cooldown. */
+  fallback?: 'codex';
+  /** Internal effective operation: Codex must return the original Claude result contract. */
+  contractResult?: boolean;
   command?: string;
   skill?: string;
   agent?: string;
@@ -212,12 +216,14 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
 function readOperation(reader: Reader, name: string, value: unknown, path: string): OperationSpec | undefined {
   if (!NAME.test(name)) { reader.problem(path, 'operation names are lower-case letters, digits and dashes'); return undefined; }
   if (!isObject(value)) { reader.problem(path, 'expected a mapping'); return undefined; }
-  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access', 'keepTab', 'tabs'], path);
+  reader.unknownKeys(value, ['kind', 'engine', 'command', 'skill', 'agent', 'prompt', 'model', 'args', 'schema', 'thread', 'pool', 'placement', 'timeout', 'retries', 'retryDelay', 'then', 'exclusive', 'env', 'notify', 'limit', 'access', 'keepTab', 'tabs', 'fallback'], path);
   const kind = value['kind'] as OperationKind;
   if (!KINDS.includes(kind)) { reader.problem(`${path}.kind`, `expected one of ${KINDS.join(', ')}`); return undefined; }
   const engineValue = value['engine'] ?? (kind === 'script' ? 'command' : undefined);
   if (typeof engineValue !== 'string' || !ENGINES.includes(engineValue as Engine)) { reader.problem(`${path}.engine`, `expected one of ${ENGINES.join(', ')}`); return undefined; }
   const engine = engineValue as Engine;
+  const fallback = value['fallback'];
+  if (fallback !== undefined && (fallback !== 'codex' || engine !== 'claude')) reader.problem(`${path}.fallback`, 'only claude operations may opt into fallback: codex');
   if (kind === 'script' && engine !== 'command') reader.problem(`${path}.engine`, 'a script runs its command; engines are for agents');
   if (kind === 'interactive' && engine === 'codex') reader.problem(`${path}.engine`, 'an interactive operation runs claude or a command; codex runs as an agent');
 
@@ -239,6 +245,20 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
 
   const args = value['args'] ?? [];
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) reader.problem(`${path}.args`, 'expected a list of strings');
+  if (fallback === 'codex' && Array.isArray(args) && args.every((arg) => typeof arg === 'string')) {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = String(args[index]);
+      if (arg === '--verbose' || arg === '--include-partial-messages') continue;
+      const [flag, inline] = arg.split('=', 2);
+      if (flag === '--output-format') { if (inline === undefined) index += 1; continue; }
+      if (flag === '--permission-mode') {
+        const mode = inline ?? args[++index];
+        if (mode === 'auto' || mode === 'default' || mode === 'acceptEdits' || mode === 'plan' && access === 'read') continue;
+      }
+      reader.problem(`${path}.fallback`, `cannot translate Claude argument ${arg}; use a compatible prompt and declared access before enabling fallback`);
+      break;
+    }
+  }
   const thread = value['thread'] ?? 'none';
   if (thread !== 'per-subject' && thread !== 'none') reader.problem(`${path}.thread`, 'expected per-subject or none');
   const placement = value['placement'] ?? 'headless';
@@ -259,6 +279,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     name,
     kind,
     engine,
+    ...(fallback === 'codex' && engine === 'claude' ? { fallback: 'codex' as const } : {}),
     args: Array.isArray(args) ? args.map(String) : [],
     thread: thread === 'per-subject' ? 'per-subject' : 'none',
     placement: placement === 'herdr' ? 'herdr' : 'headless',

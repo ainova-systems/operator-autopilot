@@ -26,7 +26,7 @@ import { validateProject } from './validate.ts';
 import { WaitStore } from './waits.ts';
 
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', SUBJECT_TABS_COLLECTION, CONTROL_COLLECTION, CLAIMS_COLLECTION, QUEUE_COLLECTION]);
+const RESERVED_COLLECTIONS = new Set(['jobs', 'waits', 'threads', 'deliveries', 'tabs', 'provider-cooldowns', 'provider-affinities', SUBJECT_TABS_COLLECTION, CONTROL_COLLECTION, CLAIMS_COLLECTION, QUEUE_COLLECTION]);
 const PAUSE_POLL_MS = 5_000;
 const DEFAULT_CLAIM_TTL = '1h';
 
@@ -50,7 +50,7 @@ Commands:
                                    Run the daemon as the systemd user service operator@<project> (Linux)
   state <get|put|list|delete> <collection> [key]
                                    Project state for scripts and skills (reserved: jobs, waits, threads, deliveries,
-                                   tabs, subject-tabs, control, subject-claims, work-queue)
+                                   tabs, subject-tabs, provider-cooldowns, provider-affinities, control, subject-claims, work-queue)
   claim <take|renew|release|show> [subject] --run <id> [--ttl 1h]
                                    A compare-and-set lease on an opaque subject; show without a subject lists live claims
   queue <add|list|get|take|update> [id]

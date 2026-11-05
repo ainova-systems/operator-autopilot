@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -146,3 +147,28 @@ test('an attended session that quits at once without a result is never started a
   await runJobExec(dir);
   assert.deepEqual((await readFile(log, 'utf8')).trim().split('\n'), ['--session-id']);
 });
+
+for (const exitDelay of [0, 1000, 1500]) {
+  test(`quota read failure preserves wrapper cleanup and timeout (${exitDelay}ms child lifetime)`, async () => {
+    // Keep the output FD open but replace its path with a directory, forcing the optional quota
+    // observer to fail without preventing the wrapper from writing its required exit artifact.
+    const pausedFirst = exitDelay === 1500;
+    const breakLog = `fs.unlinkSync('output.log'); fs.mkdirSync('output.log');`;
+    const quota = JSON.stringify({ type: 'error', code: 'usage_limit_reached', resets_at: (Date.now() + 3_600_000) / 1000 });
+    const script = `const fs = require('node:fs'); ${pausedFirst ? `fs.appendFileSync('output.log', ${JSON.stringify(quota + '\n')}); setTimeout(() => { ${breakLog} }, 500);` : breakLog} setTimeout(() => process.exit(0), ${exitDelay});`;
+    const { dir } = await runDir(script, false, 0, 250);
+    const launch = (await readJsonFile<LaunchSpec>(runPath(dir, 'launch')))!;
+    launch.provider = 'codex';
+    if (pausedFirst) { launch.attended = { resultPath: runPath(dir, 'result'), graceMs: 200 }; launch.suspendQuotaTimeout = true; }
+    await writeJsonAtomic(runPath(dir, 'launch'), launch);
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `import { runJobExec } from ${JSON.stringify(new URL('./job-exec.ts', import.meta.url).href)}; await runJobExec(${JSON.stringify(dir)});`], { stdio: 'ignore' });
+    const watchdog = setTimeout(() => child.kill('SIGKILL'), 2500);
+    await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    clearTimeout(watchdog);
+    const exit = await readJsonFile<ExitInfo>(runPath(dir, 'exit'));
+    assert.ok(exit, 'quota observation failure must not skip exit.json or leave heartbeat running');
+    if (pausedFirst) assert.ok(await readJsonFile(runPath(dir, 'quota')), 'the live wait was observed before the log broke');
+    assert.equal(exit.timedOut, exitDelay > 0, 'the deadline remains enforced when every quota poll fails');
+    assert.notEqual(child.signalCode, 'SIGKILL', 'wrapper must exit without an external watchdog');
+  });
+}

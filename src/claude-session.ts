@@ -5,13 +5,14 @@ import { isAbsolute, join } from 'node:path';
 /** Longest project directory name claude writes before it shortens it and appends a hash. */
 const PROJECT_DIR_LIMIT = 200;
 
-function transcriptIn(projects: string, cwd: string, file: string): boolean {
+function transcriptIn(projects: string, cwd: string, file: string): string | undefined {
   const name = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  if (name.length <= PROJECT_DIR_LIMIT) return existsSync(join(projects, name, file));
+  if (name.length <= PROJECT_DIR_LIMIT) { const path = join(projects, name, file); return existsSync(path) ? path : undefined; }
   const prefix = `${name.slice(0, PROJECT_DIR_LIMIT)}-`;
   let dirs: string[];
-  try { dirs = readdirSync(projects); } catch { return false; }
-  return dirs.some((dir) => dir.startsWith(prefix) && existsSync(join(projects, dir, file)));
+  try { dirs = readdirSync(projects); } catch { return undefined; }
+  const dir = dirs.find((dir) => dir.startsWith(prefix) && existsSync(join(projects, dir, file)));
+  return dir ? join(projects, dir, file) : undefined;
 }
 
 /**
@@ -23,12 +24,17 @@ function transcriptIn(projects: string, cwd: string, file: string): boolean {
  * 2.1.308). The name the cwd was given is checked too. Undefined when it cannot be told: a relative
  * `CLAUDE_CONFIG_DIR`, whose base claude does not document.
  */
-export function claudeSessionExists(cwd: string, sessionId: string, env: Record<string, string | undefined>): boolean | undefined {
+export function claudeSessionPath(cwd: string, sessionId: string, env: Record<string, string | undefined>): string | undefined {
   const configured = env['CLAUDE_CONFIG_DIR'];
   if (configured && !isAbsolute(configured)) return undefined;
   const projects = join(configured || env['HOME'] || homedir(), ...(configured ? [] : ['.claude']), 'projects');
   const file = `${sessionId}.jsonl`;
   let real = cwd;
   try { real = realpathSync(cwd); } catch { /* a cwd that cannot be resolved is checked as given */ }
-  return transcriptIn(projects, real, file) || (real !== cwd && transcriptIn(projects, cwd, file));
+  return transcriptIn(projects, real, file) ?? (real !== cwd ? transcriptIn(projects, cwd, file) : undefined);
+}
+
+export function claudeSessionExists(cwd: string, sessionId: string, env: Record<string, string | undefined>): boolean | undefined {
+  if (env['CLAUDE_CONFIG_DIR'] && !isAbsolute(env['CLAUDE_CONFIG_DIR'])) return undefined;
+  return claudeSessionPath(cwd, sessionId, env) !== undefined;
 }

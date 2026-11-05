@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Provider } from './provider-quota.ts';
 
 /** What the job wrapper needs to execute one run; written by the daemon, read by `job-exec`. */
 export interface LaunchSpec {
@@ -13,6 +14,9 @@ export interface LaunchSpec {
   envFile?: string;
   envKeys?: string[];
   timeoutMs: number;
+  provider?: Provider;
+  /** Only attended sessions without a nonrenewable limit pool may suspend active time. */
+  suspendQuotaTimeout?: boolean;
   /**
    * An interactive run: the command owns the terminal, and the wrapper ends it `graceMs` after
    * a result file appears at `resultPath`.
@@ -43,6 +47,8 @@ export const RUN_FILES = {
   heartbeat: 'heartbeat',
   exit: 'exit.json',
   output: 'output.log',
+  quota: 'quota.json',
+  quotaResume: 'quota-resume.json',
 } as const;
 
 export function runPath(runDir: string, file: keyof typeof RUN_FILES): string {
