@@ -12,21 +12,22 @@ export interface UsageLimit {
 /** How long an engine stays out when its message names no reset this module can read, or a past one. */
 export const USAGE_LIMIT_RECHECK_MS = 30 * 60_000;
 
-/** How many of a text's last non-empty lines can hold the engine's message: it is the newest thing shown. */
-export const PANE_TAIL = 8;
+/** How many of a pane's last non-empty lines can hold the engine's message, menu and input box below it. */
+export const PANE_TAIL = 14;
 /** A run's output ends with the engine's message and the wrapper's closing lines. */
 export const OUTPUT_TAIL = 5;
 
 /**
- * Each engine's own limit message: a line that starts with `line` (after the glyphs a terminal UI
- * puts in front) and, somewhere in the same tail, one of `companion` - its reset, its retry hint or
- * its limit menu. Both together are the engine speaking, not a diff, a test or a log quoting it. An
- * engine with no entry is never judged out.
+ * Each engine's own limit message: a line that starts with `line` (after the engine's own UI glyph,
+ * never a diff, quote, list or table prefix), with `companion` - its reset or retry hint - on that line
+ * or the next, or its limit `menu` just below. Together they are the engine speaking, not a diff, a test
+ * or a log quoting it. An engine with no entry is never judged out.
  */
-const LIMIT_MESSAGES: Record<string, { line: RegExp; companion: RegExp }> = {
+const LIMIT_MESSAGES: Record<string, { line: RegExp; companion: RegExp; menu?: RegExp }> = {
   claude: {
-    line: /^(?:you'?ve hit your\b[^\n]{0,40}?\blimit\b|(?:claude ai )?usage limit reached\b)/i,
-    companion: /\bresets\s+\S|continuing automatically at|limit reached\|\d{10}\b|stop and wait for limit to reset/i,
+    line: /^(?:you'?ve hit your\b[^\n]{0,40}?\blimit\b|(?:claude ai )?usage limit reached\b|\d+-hour limit reached\b)/i,
+    companion: /\bresets\s+\S|continuing automatically at|limit reached\|\d{10}\b/i,
+    menu: /^\W*\d*\.?\s*stop and wait for limit to reset/i,
   },
   codex: {
     line: /^you'?ve hit your usage limit\b/i,
@@ -34,25 +35,33 @@ const LIMIT_MESSAGES: Record<string, { line: RegExp; companion: RegExp }> = {
   },
 };
 
+/** How far below its message line an engine draws its limit menu. */
+const MENU_REACH = 8;
+
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
 /**
  * The usage limit `text` reports for `engine`, or undefined when it reports none. `text` is what the
- * run printed or what its terminal shows; only the engine's own message in its last `tail` lines counts.
+ * run printed or what its terminal shows; only the engine's own message in its last `tail` lines
+ * counts, the newest one when it shows several.
  */
 export function detectUsageLimit(engine: string, text: string, now: Date = new Date(), tail = PANE_TAIL): UsageLimit | undefined {
   const message = LIMIT_MESSAGES[engine];
   if (!message) return undefined;
   const lines = tailLines(text, tail);
-  if (!lines.some((line) => message.line.test(line))) return undefined;
-  const shown = lines.join('\n');
-  if (!message.companion.test(shown)) return undefined;
-  const resetsAt = parseReset(shown, now);
-  return { engine, ...(resetsAt ? { resetsAt } : {}) };
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!message.line.test(lines[index] ?? '')) continue;
+    const near = `${lines[index]}\n${lines[index + 1] ?? ''}`;
+    const menu = message.menu;
+    if (!message.companion.test(near) && !(menu && lines.slice(index + 1, index + 1 + MENU_REACH).some((line) => menu.test(line)))) continue;
+    const resetsAt = parseReset(near, now);
+    return { engine, ...(resetsAt ? { resetsAt } : {}) };
+  }
+  return undefined;
 }
 
 /**
- * The last non-empty lines, each without the glyphs and indentation a terminal UI puts in front. A
+ * The last non-empty lines, each without the engine UI glyph and the indentation in front of it. A
  * JSON line (a streamed result) contributes its `result`, `error` and `message` strings instead, where
  * a headless engine puts its message.
  */
@@ -77,8 +86,9 @@ function tailLines(text: string, count: number): string[] {
   return lines;
 }
 
+/** Removes an engine UI glyph and the indentation before and after it; any other prefix stays. */
 function strip(line: string): string {
-  return line.replace(/^[\s●⎿■✻·•*>│|─-]+/u, '').trim();
+  return line.replace(/^\s*[●⎿■✻]\s*/u, '').trimEnd();
 }
 
 /**

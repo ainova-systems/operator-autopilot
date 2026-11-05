@@ -82,3 +82,39 @@ test('an engine is back at the reset its message names, or re-checked when the r
   assert.equal(availableAgainAt({ engine: 'claude', resetsAt: new Date(now - 5000) }, now), now + USAGE_LIMIT_RECHECK_MS);
   assert.equal(availableAgainAt({ engine: 'claude', resetsAt: new Date(now) }, now), now + USAGE_LIMIT_RECHECK_MS);
 });
+
+test('a diff, quote, list or table line carrying the engine\'s words is no limit', () => {
+  const cases: string[][] = [
+    ['-Usage limit reached handler resets 5pm (UTC)'],
+    [" You've hit your usage limit", ' continuing automatically at 5pm'],
+    ["- You've hit your limit text is detected", '- it shows resets 5pm (UTC)'],
+    ['> Usage limit reached', '> resets 5pm'],
+    ['│ Usage limit reached', '│ resets 5pm'],
+  ];
+  for (const lines of cases) assert.equal(detectUsageLimit('claude', lines.join('\n'), NOW), undefined, lines.join(' / '));
+});
+
+test('the hourly wording and a full screen with the menu and the input box below are a limit', () => {
+  assert.equal(detectUsageLimit('claude', '● 5-hour limit reached ∙ resets 3pm (UTC)', NOW)?.resetsAt?.toISOString(), '2026-11-04T15:00:00.000Z');
+  const screen = [
+    '● Bash(npm test)',
+    '  ⎿  Running…',
+    '● Usage limit reached again · continuing automatically at 12pm · esc to cancel',
+    "  ⎿  You've hit your weekly limit · resets 12pm (UTC)",
+    '     /usage-credits to finish what you are working on.',
+    '✻ Sautéed for 0s · done Wednesday 1:51 PM',
+    '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+    '   What do you want to do?',
+    '   ❯ 1. Stop and wait for limit to reset',
+    '     2. Wait here, then continue automatically shortly',
+    '     3. Switch to usage credits',
+    '   Enter to confirm · Esc to cancel',
+    '────────────────────────────────',
+    '❯',
+    '────────────────────────────────',
+    '  ⏵⏵ auto mode on (shift+tab to cycle) · 1 shell · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectUsageLimit('claude', screen, NOW)?.resetsAt?.toISOString(), '2026-11-04T12:00:00.000Z');
+  const menuOnly = ['● Usage limit reached', '   What do you want to do?', '   ❯ 1. Stop and wait for limit to reset', '     2. Wait here'].join('\n');
+  assert.deepEqual(detectUsageLimit('claude', menuOnly, NOW), { engine: 'claude' }, 'the limit menu right below stands in for a reset');
+});

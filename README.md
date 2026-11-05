@@ -202,10 +202,12 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   pane showing the engine's limit prompt, or a failed run whose output ends with the limit message -
   is ended (its prompt is never answered) and queued again for the reset the message names, or for
   30 minutes when it names none or one already past; that attempt does not count against `retries`.
-  Only the engine's own message counts: a line in the last few that starts with it, together with its
-  reset, retry hint or limit menu, so the phrase quoted in a diff or a test does not. A session that
-  reads idle at its limit is ended the same way, never nudged. A job deferred 20 times, or for 7 days,
-  ends failed and the owner is told. Until then no job
+  Only the engine's own message counts: a line among the last few that starts with it after the
+  engine's own UI glyph, with its reset or retry hint on that line or the next, or its limit menu just
+  below - so the phrase in a diff, quote, list or test does not. A session that reads idle at its limit
+  is ended the same way, never nudged. The job counts these runs in `freeAttempts` and dates the first
+  in `deferredSince`, both over its whole life; at 20 such runs, or 7 days after the first, it ends
+  failed and the owner is told. Until then no job
   starts on that engine: queued jobs wait with `engine <name> is out of usage until <time>`, and the
   owner is notified once per outage. The leader keeps this in memory; a daemon that takes over learns
   of a standing limit from the first run that meets it.
