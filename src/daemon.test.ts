@@ -1867,3 +1867,64 @@ test('an agent run that exits on its engine\'s usage limit is queued for the res
     claude.restore();
   }
 });
+
+test('a limit message naming a reset already past re-checks the engine after a while instead of starting again at once', async () => {
+  const p = await project({ extraOperations: '      lim:      { kind: agent, engine: claude, prompt: "work on {subject}", timeout: 5m }' });
+  const claude = await fakeClaude(p);
+  try {
+    const daemon = p.daemon();
+    await daemon.acquireLeader();
+    await writeFile(join(p.data, 'claude-limit'), `Claude AI usage limit reached|${Math.floor(Date.now() / 1000) - 60}`);
+    const started = Date.now();
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'lim', subject: 'pr-4', input: {}, trigger: { id: 'lim-past', name: 'test', kind: 'manual' } });
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'lim', 'pr-4'))[0]?.freeAttempts === 1, 30_000);
+    const resumeAt = Date.parse((await jobsBy(daemon, 'lim', 'pr-4'))[0]?.notBefore ?? '');
+    assert.ok(Math.abs(resumeAt - started - 30 * 60_000) < 60_000, `re-checked in 30 minutes, not at the past reset: ${new Date(resumeAt).toISOString()}`);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a job its engine keeps refusing ends failed once it was deferred too often, and the owner is told', async () => {
+  const p = await project({ extraOperations: '      lim:      { kind: agent, engine: claude, prompt: "work on {subject}", timeout: 5m }' });
+  const claude = await fakeClaude(p);
+  try {
+    const notes: string[] = [];
+    const daemon = p.daemon({ herdr: { ...absentHerdr, notify: async (title, body) => { notes.push(`${title} | ${body}`); } } });
+    await daemon.acquireLeader();
+    await writeFile(join(p.data, 'claude-limit'), "You've hit your weekly limit · resets 12pm (UTC)");
+    const { id } = await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'lim', subject: 'pr-6', input: {}, trigger: { id: 'lim-cap', name: 'test', kind: 'manual' } });
+    await daemon.jobs.update(id, (current) => ({ ...current, freeAttempts: 20, deferredSince: new Date(Date.now() - 3_600_000).toISOString() }));
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'lim', 'pr-6'))[0]?.status === 'failed', 30_000);
+    const job = (await jobsBy(daemon, 'lim', 'pr-6'))[0];
+    assert.match(job?.outcome?.failure?.reason ?? '', /^engine claude still out of usage after 20 deferred runs/);
+    assert.equal(job?.outcome?.failure?.retryable, false);
+    assert.ok(notes.some((note) => note.includes('failed') && note.includes('still out of usage')));
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a session idle at its engine\'s usage limit is ended for the reset, never nudged', async () => {
+  const p = await project({ extraOperations: ASK_OPERATION });
+  p.manifest.runtime.idleNudgeMs = 300;
+  const claude = await fakeClaude(p);
+  try {
+    const notes: string[] = [];
+    const typed: string[] = [];
+    const base = blockedHerdr(p, LIMIT_PROMPT, notes);
+    const daemon = p.daemon({ herdr: {
+      ...base,
+      agentStatus: async () => 'idle',
+      runInPane: async (pane, command) => { if (command.startsWith('operator:')) typed.push(command); else await base.runInPane(pane, command); },
+    } });
+    await daemon.acquireLeader();
+    await writeFile(join(p.data, 'claude-hang'), '1');
+    await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'chat', subject: 'pr-9', input: {}, trigger: { id: 'chat-idle', name: 'test', kind: 'manual' } });
+    await pollUntil(daemon, async () => (await jobsBy(daemon, 'chat', 'pr-9'))[0]?.freeAttempts === 1, 30_000);
+    assert.deepEqual(typed, [], 'nothing typed into a session at its limit');
+    assert.equal((await jobsBy(daemon, 'chat', 'pr-9'))[0]?.status, 'queued');
+  } finally {
+    claude.restore();
+  }
+});

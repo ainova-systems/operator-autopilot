@@ -9,27 +9,76 @@ export interface UsageLimit {
   resetsAt?: Date;
 }
 
-/** How long an engine stays out when its message names no reset this module can read. */
+/** How long an engine stays out when its message names no reset this module can read, or a past one. */
 export const USAGE_LIMIT_RECHECK_MS = 30 * 60_000;
 
-/** What each engine prints when it is out of usage. An engine with no entry is never judged out. */
-const LIMIT_PATTERNS: Record<string, RegExp[]> = {
-  claude: [/you'?ve hit your\b[^\n]{0,40}?\blimit\b/i, /\busage limit reached\b/i],
-  codex: [/you'?ve hit your usage limit\b/i],
+/** How many of a text's last non-empty lines can hold the engine's message: it is the newest thing shown. */
+export const PANE_TAIL = 8;
+/** A run's output ends with the engine's message and the wrapper's closing lines. */
+export const OUTPUT_TAIL = 5;
+
+/**
+ * Each engine's own limit message: a line that starts with `line` (after the glyphs a terminal UI
+ * puts in front) and, somewhere in the same tail, one of `companion` - its reset, its retry hint or
+ * its limit menu. Both together are the engine speaking, not a diff, a test or a log quoting it. An
+ * engine with no entry is never judged out.
+ */
+const LIMIT_MESSAGES: Record<string, { line: RegExp; companion: RegExp }> = {
+  claude: {
+    line: /^(?:you'?ve hit your\b[^\n]{0,40}?\blimit\b|(?:claude ai )?usage limit reached\b)/i,
+    companion: /\bresets\s+\S|continuing automatically at|limit reached\|\d{10}\b|stop and wait for limit to reset/i,
+  },
+  codex: {
+    line: /^you'?ve hit your usage limit\b/i,
+    companion: /\btry again (?:in|at)\b/i,
+  },
 };
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
 /**
  * The usage limit `text` reports for `engine`, or undefined when it reports none. `text` is what the
- * run printed or what its terminal shows; only the engine's own wording counts, so a permission
- * prompt or ordinary output never reads as a limit.
+ * run printed or what its terminal shows; only the engine's own message in its last `tail` lines counts.
  */
-export function detectUsageLimit(engine: string, text: string, now: Date = new Date()): UsageLimit | undefined {
-  const patterns = LIMIT_PATTERNS[engine];
-  if (!patterns || !patterns.some((pattern) => pattern.test(text))) return undefined;
-  const resetsAt = parseReset(text, now);
+export function detectUsageLimit(engine: string, text: string, now: Date = new Date(), tail = PANE_TAIL): UsageLimit | undefined {
+  const message = LIMIT_MESSAGES[engine];
+  if (!message) return undefined;
+  const lines = tailLines(text, tail);
+  if (!lines.some((line) => message.line.test(line))) return undefined;
+  const shown = lines.join('\n');
+  if (!message.companion.test(shown)) return undefined;
+  const resetsAt = parseReset(shown, now);
   return { engine, ...(resetsAt ? { resetsAt } : {}) };
+}
+
+/**
+ * The last non-empty lines, each without the glyphs and indentation a terminal UI puts in front. A
+ * JSON line (a streamed result) contributes its `result`, `error` and `message` strings instead, where
+ * a headless engine puts its message.
+ */
+function tailLines(text: string, count: number): string[] {
+  const lines: string[] = [];
+  for (const raw of text.split(/\r?\n/).filter((line) => line.trim() !== '').slice(-count)) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        for (const key of ['result', 'error', 'message']) {
+          const value = parsed[key];
+          if (typeof value === 'string') lines.push(...value.split(/\r?\n/).map(strip));
+        }
+        continue;
+      } catch {
+        // Not JSON after all: read it as text.
+      }
+    }
+    lines.push(strip(raw));
+  }
+  return lines;
+}
+
+function strip(line: string): string {
+  return line.replace(/^[\s●⎿■✻·•*>│|─-]+/u, '').trim();
 }
 
 /**
@@ -68,6 +117,12 @@ export function parseReset(text: string, now: Date = new Date()): Date | undefin
     if (ms > 0) return new Date(now.getTime() + ms);
   }
   return undefined;
+}
+
+/** When the engine is back: the reset its message names, or a re-check when it names none or one already past. */
+export function availableAgainAt(limit: UsageLimit, now: number): number {
+  const reset = limit.resetsAt?.getTime();
+  return reset !== undefined && reset > now ? reset : now + USAGE_LIMIT_RECHECK_MS;
 }
 
 function last<T>(matches: IterableIterator<T>): T | undefined {

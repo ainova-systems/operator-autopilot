@@ -60,6 +60,8 @@ export interface JobRecord {
   waitingFor?: string;
   /** Attempts that did not count against the operation's retries: runs ended because their engine was out of usage. */
   freeAttempts?: number;
+  /** When the job was first deferred for its engine's usage limit; a job deferred too long ends failed. */
+  deferredSince?: string;
   /** The workspace member the job runs in, when its request named one. */
   member?: string;
   run?: JobRun;

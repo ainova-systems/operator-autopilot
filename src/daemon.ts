@@ -18,7 +18,7 @@ import { Pools } from './pools.ts';
 import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
 import type { Acquired, StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
-import { detectUsageLimit, USAGE_LIMIT_RECHECK_MS, type UsageLimit } from './usage-limit.ts';
+import { availableAgainAt, detectUsageLimit, OUTPUT_TAIL, type UsageLimit } from './usage-limit.ts';
 import { WaitStore } from './waits.ts';
 
 export interface DaemonOptions {
@@ -54,6 +54,12 @@ const IDLE_NUDGES = 2;
 /** How much of a blocked pane, and of a failed run's output, is read for an engine's usage-limit message. */
 const PANE_TAIL_LINES = 40;
 const OUTPUT_TAIL_BYTES = 16_384;
+/**
+ * A job deferred this often, or for this long since its first deferral, ends failed and the owner is
+ * told: a misread message or an outage that never ends must not keep it queued forever.
+ */
+const MAX_FREE_ATTEMPTS = 20;
+const MAX_DEFERRED_MS = 7 * 86_400_000;
 /** An outage starting within this long of the last one's end continues it; the owner is not told again. */
 const OUTAGE_NOTICE_GAP_MS = 3_600_000;
 
@@ -102,7 +108,7 @@ export interface SubjectTab {
   refreshedAt?: string;
 }
 
-/** When a kept tab record was last written or renewed. */
+/** Why a job waits for its engine. */
 function outOfUsage(engine: string, until: number): string {
   return `engine ${engine} is out of usage until ${new Date(until).toISOString()}`;
 }
@@ -122,6 +128,7 @@ async function tailText(path: string, bytes: number): Promise<string> {
   }
 }
 
+/** When a kept tab record was last written or renewed. */
 function lastRenewal(value: TabRecord | SubjectTab): number {
   return Date.parse(value.refreshedAt ?? ('updatedAt' in value ? value.updatedAt : value.since));
 }
@@ -817,10 +824,7 @@ export class Daemon {
     // An engine that ran out of usage stops at its own prompt, which reads as blocked; nothing a person
     // answers there makes the run work before the limit resets, so it is ended rather than reported.
     const engine = this.operation(job)?.engine;
-    if (status === 'blocked' && engine) {
-      const limit = detectUsageLimit(engine, await this.herdr.readPane(paneId, PANE_TAIL_LINES).catch(() => ''));
-      if (limit) { await this.deferForUsage(job, run, limit); return; }
-    }
+    if (status === 'blocked' && engine && (await this.metUsageLimit(job, run, engine, paneId))) return;
     if (status === 'blocked' && !this.notified.has(job.id)) {
       this.notified.add(job.id);
       this.log.warn('agent pane is blocked; the runtime never answers it', { job: job.id, pane: paneId });
@@ -837,6 +841,8 @@ export class Daemon {
     if (state.since === undefined) { state.since = now; return; }
     if (now - state.since < limit) return;
     const minutes = Math.round((now - state.since) / 60_000);
+    // A session at its engine's limit can read as idle; it is ended, never typed into.
+    if (engine && (await this.metUsageLimit(job, run, engine, paneId))) return;
     if (state.nudges < IDLE_NUDGES) {
       state.nudges += 1;
       state.since = now;
@@ -868,7 +874,7 @@ export class Daemon {
       const collected = await collectRun(job, op, run.runDir, exit);
       result = collected.result;
       if (result.status === 'failed' && !exit.timedOut) {
-        const limit = detectUsageLimit(op.engine, await tailText(runPath(run.runDir, 'output'), OUTPUT_TAIL_BYTES));
+        const limit = detectUsageLimit(op.engine, await tailText(runPath(run.runDir, 'output'), OUTPUT_TAIL_BYTES), new Date(), OUTPUT_TAIL);
         if (limit) { await this.deferForUsage(job, run, limit); return; }
       }
       if (collected.threadId && op.thread === 'per-subject') {
@@ -949,6 +955,21 @@ export class Daemon {
     if (op && !retry && op.notify.includes(result.status)) await this.notifyOwner(job, result);
   }
 
+  /** Whether the pane shows the engine's usage-limit message; the run is deferred when it does. */
+  private async metUsageLimit(job: JobRecord, run: JobRun, engine: string, paneId: string): Promise<boolean> {
+    let screen: string;
+    try {
+      screen = await this.herdr.readPane(paneId, PANE_TAIL_LINES);
+    } catch (error) {
+      this.log.debug('could not read a pane to check its engine usage limit', { job: job.id, pane: paneId, error: errorText(error) });
+      return false;
+    }
+    const limit = detectUsageLimit(engine, screen);
+    if (!limit) return false;
+    await this.deferForUsage(job, run, limit);
+    return true;
+  }
+
   /**
    * Ends a run its engine refused for want of usage and queues the job again for when the limit
    * resets, without counting the attempt against its retries. No job starts on the engine until then;
@@ -957,12 +978,23 @@ export class Daemon {
   private async deferForUsage(job: JobRecord, run: JobRun, limit: UsageLimit): Promise<void> {
     const now = Date.now();
     const standing = this.outages.get(limit.engine);
-    const until = Math.max(limit.resetsAt?.getTime() ?? now + USAGE_LIMIT_RECHECK_MS, standing ?? 0);
+    const until = Math.max(availableAgainAt(limit, now), standing ?? 0);
     this.outages.set(limit.engine, until);
     const reason = outOfUsage(limit.engine, until);
+    let gaveUp: string | undefined;
     // Requeued before the run is ended, so the exit the ended run still writes is not applied as its outcome.
     const updated = await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
+      const since = current.deferredSince ? Date.parse(current.deferredSince) : now;
+      if ((current.freeAttempts ?? 0) >= MAX_FREE_ATTEMPTS || now - since >= MAX_DEFERRED_MS) {
+        gaveUp = `engine ${limit.engine} still out of usage after ${current.freeAttempts ?? 0} deferred runs since ${new Date(since).toISOString()}`;
+        current.status = 'failed';
+        current.outcome = { finishedAt: new Date(now).toISOString(), status: 'failed', evidence: [], next: [], failure: { reason: gaveUp, retryable: false } };
+        delete current.run;
+        addHistory(current, 'failed', gaveUp);
+        return current;
+      }
+      current.deferredSince ??= new Date(now).toISOString();
       current.status = 'queued';
       current.attempt += 1;
       current.freeAttempts = (current.freeAttempts ?? 0) + 1;
@@ -978,6 +1010,11 @@ export class Daemon {
     this.renewedAt.delete(job.id);
     this.notified.delete(job.id);
     this.idle.delete(job.id);
+    if (gaveUp) {
+      this.log.warn('job failed: its engine stayed out of usage too long', { job: job.id, operation: job.operation, subject: job.subject, engine: limit.engine, reason: gaveUp });
+      await this.herdr.notify(`operator: ${jobTitle(job)} failed`, gaveUp).catch(() => undefined);
+      return;
+    }
     this.log.warn('job deferred: its engine is out of usage', { job: job.id, operation: job.operation, subject: job.subject, engine: limit.engine, until: new Date(until).toISOString() });
     if (standing !== undefined) return;
     // A limit met again soon after it passed is the same outage continuing, not news for the owner.

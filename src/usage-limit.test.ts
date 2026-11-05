@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectUsageLimit, parseReset } from './usage-limit.ts';
+import { availableAgainAt, detectUsageLimit, OUTPUT_TAIL, parseReset, USAGE_LIMIT_RECHECK_MS } from './usage-limit.ts';
 
 const NOW = new Date('2026-11-04T09:30:00Z');
 
@@ -42,4 +42,43 @@ test('a permission prompt, ordinary output or an engine with no wording of its o
   assert.equal(detectUsageLimit('claude', 'Running the tests; the rate limit of the API is 10 requests a second.', NOW), undefined);
   assert.equal(detectUsageLimit('command', "You've hit your weekly limit · resets 12pm (UTC)", NOW), undefined);
   assert.equal(detectUsageLimit('codex', 'Usage limit reached|1762344000', NOW), undefined);
+});
+
+test('the phrase quoted in a diff, a test or a permission prompt is no limit: only the engine\'s own message line is', () => {
+  assert.equal(detectUsageLimit('claude', 'assert "usage limit reached"', NOW), undefined);
+  const diffOutput = [
+    'Running the suite',
+    "+  assert.equal(detect(\"You've hit your weekly limit · resets 12pm (UTC)\"), true);",
+    '+  assert.match(log, /usage limit reached/);',
+    '1 failing',
+    'operator: exit 1 - the runtime collects the result and closes this tab',
+  ].join('\n');
+  assert.equal(detectUsageLimit('claude', diffOutput, NOW, OUTPUT_TAIL), undefined);
+  const permissionWithDiff = [
+    '● Update(src/limit.ts)',
+    "  ⎿  +  const message = \"You've hit your weekly limit · resets 12pm (UTC)\";",
+    '     +  const menu = "Stop and wait for limit to reset";',
+    ' Do you want to make this edit to limit.ts?',
+    ' ❯ 1. Yes',
+    '   2. No, and tell Claude what to do differently',
+  ].join('\n');
+  assert.equal(detectUsageLimit('claude', permissionWithDiff, NOW), undefined);
+  assert.equal(detectUsageLimit('claude', "You've hit your weekly limit", NOW), undefined, 'the marker alone, without its reset or menu, is no limit');
+});
+
+test('a headless run\'s streamed result carries the limit message', () => {
+  const stream = [
+    '{"type":"system","subtype":"init"}',
+    '{"type":"result","subtype":"success","is_error":true,"result":"You\'ve hit your weekly limit · resets 12pm (UTC)"}',
+    'operator: exit 1 - the runtime collects the result and closes this tab',
+  ].join('\n');
+  assert.equal(detectUsageLimit('claude', stream, NOW, OUTPUT_TAIL)?.resetsAt?.toISOString(), '2026-11-04T12:00:00.000Z');
+});
+
+test('an engine is back at the reset its message names, or re-checked when the reset is unknown or already past', () => {
+  const now = NOW.getTime();
+  assert.equal(availableAgainAt({ engine: 'claude', resetsAt: new Date(now + 3_600_000) }, now), now + 3_600_000);
+  assert.equal(availableAgainAt({ engine: 'claude' }, now), now + USAGE_LIMIT_RECHECK_MS);
+  assert.equal(availableAgainAt({ engine: 'claude', resetsAt: new Date(now - 5000) }, now), now + USAGE_LIMIT_RECHECK_MS);
+  assert.equal(availableAgainAt({ engine: 'claude', resetsAt: new Date(now) }, now), now + USAGE_LIMIT_RECHECK_MS);
 });
