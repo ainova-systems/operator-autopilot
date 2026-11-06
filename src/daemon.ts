@@ -18,7 +18,7 @@ import { hostname } from 'node:os';
 import { isLocal, namesHosts, thisHost, type Manifest, type OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
 import { Pools } from './pools.ts';
-import { ageMs, bootedAt, processAlive, processStartedAt, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
+import { ageMs, processAlive, sameProcess, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
 import type { Acquired, StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
 import { WaitStore } from './waits.ts';
@@ -50,9 +50,6 @@ const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
 // A dispatch the state backend failed is tried again after this, not on every poll.
 const BACKEND_RETRY_MS = 30_000;
-// How far a process's start may sit from what its run recorded, and how soon a run starts its command.
-const PROCESS_START_SLACK_MS = 10_000;
-const COMMAND_START_WITHIN_MS = 10 * 60_000;
 // Guard slot leases end within a day.
 const DAY_MS = 86_400_000;
 const QUOTA_RESUME_RETRY_MS = 60_000;
@@ -440,22 +437,17 @@ export class Daemon {
       this.localRuns.delete(runDir);
       if (!running.some((job) => job.id === local.jobId)) this.runTokens.delete(local.jobId);
       if (await readExit(runDir)) continue;
-      // A process id can be reused: only a wrapper started when its run says, on this boot, and a
-      // command started within its run's first minutes are signalled. The command can outlive its
-      // wrapper, so each is stopped on its own.
-      const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
-      const since = wrapper ? Date.parse(wrapper.startedAt) : NaN;
-      const boot = await bootedAt();
-      if (!wrapper || !Number.isFinite(since) || boot === undefined || since < boot) continue;
+      // A process id can be reused, so a process is signalled only while the kernel still reports the
+      // boot and start time its run recorded; one recorded without them is left alone. The command
+      // can outlive its wrapper, so each is stopped on its own.
       let stopped = false;
       const command = await readJsonFile<CommandInfo>(runPath(runDir, 'command'));
-      const commandStart = command ? await processStartedAt(command.pid) : undefined;
-      if (command && commandStart !== undefined && commandStart >= since - PROCESS_START_SLACK_MS && commandStart <= since + COMMAND_START_WITHIN_MS) {
+      if (command && (await sameProcess(command.pid, command.identity))) {
         signalCommand(command, 'SIGKILL');
         stopped = true;
       }
-      const wrapperStart = await processStartedAt(wrapper.pid);
-      if (wrapperStart !== undefined && Math.abs(wrapperStart - since) <= PROCESS_START_SLACK_MS) {
+      const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+      if (wrapper && (await sameProcess(wrapper.pid, wrapper.identity))) {
         try { process.kill(wrapper.pid, 'SIGTERM'); stopped = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
       }
       if (stopped) this.log.warn('stopped a run another daemon took over', { job: local.jobId, attempt: local.attempt });

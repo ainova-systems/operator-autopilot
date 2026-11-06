@@ -1,7 +1,7 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { enqueue } from './jobs.ts';
-import { readJsonFile, runPath, type WrapperInfo } from './runfiles.ts';
+import { processIdentity, readJsonFile, runPath, sameProcess, type WrapperInfo } from './runfiles.ts';
 import { parseManifest } from './manifest.ts';
 import { requestPause } from './pause.ts';
 import { coolingProvider, rememberQuota } from './provider-quota.ts';
@@ -208,4 +208,13 @@ test('after a restart the superseded attempt is stopped and the current one keep
   await pollUntil(second, async () => !alive(old?.pid));
   await pollUntil(second, async () => (await second.jobs.get(id))?.status === 'done');
   assert.equal((await second.jobs.get(id))?.attempt, 2);
+});
+
+test('a process counts as the recorded one only while boot and start ticks match', async () => {
+  const self = await processIdentity(process.pid);
+  if (!self) return; // no /proc here: nothing is ever signalled from a record
+  assert.equal(await sameProcess(process.pid, self), true);
+  assert.equal(await sameProcess(process.pid, { ...self, ticks: self.ticks + 1 }), false, 'a reused pid starts at another tick');
+  assert.equal(await sameProcess(process.pid, { ...self, boot: 'another-boot' }), false);
+  assert.equal(await sameProcess(process.pid, undefined), false, 'a record without identity is left alone');
 });
