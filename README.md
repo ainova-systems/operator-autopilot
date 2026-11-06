@@ -70,13 +70,14 @@ the repository's normal change process.
 
 ````text
 Goal: this repository is run by the Operator runtime with the recommended pull-request workflow from
-the operator packs (ainova-systems/operator-packs), installed and kept up to date through intelligence
-(@ainova-systems/intelligence), and adapted to how this repository already works.
+the operator packs (https://github.com/ainova-systems/operator-packs), installed and kept up to date
+through intelligence (@ainova-systems/intelligence) as that repository's README describes, and
+adapted to how this repository already works.
 
 Done when:
-- intelligence manages the packs: the `operator` pack is installed from the operator-packs registry,
-  and the development packs `core` pack (@ainova-systems/intelligence-dev-packs) too unless the
-  repository already has its own equivalents, which the operator profile keys then point to;
+- intelligence manages the packs: the operator-packs registry is added and the `operator` pack
+  installed from it, and the `core` pack from intelligence-dev-packs too unless the repository
+  already has its own equivalents, which the operator profile keys then point to;
 - everything the packs leave to the project is answered in the repository's own rules and
   configuration - never by editing installed pack files - including the profile keys the operator
   pack lists in its README;
