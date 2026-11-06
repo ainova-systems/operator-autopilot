@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -13,6 +14,7 @@ import { resultWritten, signalCommand } from './job-exec.ts';
 import { jobTitle, openHerdrTab, prepareRun, runDirFor, startHeadless, startInHerdr } from './launch.ts';
 import { END_MS, EndingLocks, endOwnedLock, RETAKE_WITHIN_MS, retakeLock } from './locks.ts';
 import { errorText, type Logger } from './log.ts';
+import { hostname } from 'node:os';
 import { isLocal, namesHosts, thisHost, type Manifest, type OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
 import { Pools } from './pools.ts';
@@ -48,6 +50,8 @@ const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
 // A dispatch the state backend failed is tried again after this, not on every poll.
 const BACKEND_RETRY_MS = 30_000;
+// Guard slot leases end within a day.
+const DAY_MS = 86_400_000;
 const QUOTA_RESUME_RETRY_MS = 60_000;
 const QUOTA_RESUME_ATTEMPTS = 3;
 export const PROVIDER_AFFINITIES = 'provider-affinities';
@@ -130,6 +134,7 @@ export class Daemon {
    * keeps its own provider cooldowns and pause, because its accounts and its restarts are its own.
    */
   private readonly hostScope: string | undefined;
+  private legacyLeaderLogged = false;
   readonly jobs: JobStore;
   readonly waits: WaitStore;
   readonly pools: Pools;
@@ -178,6 +183,11 @@ export class Daemon {
   }
 
   private get leaseTtl(): number { return this.manifest.runtime.leaseTtlMs; }
+  /** A run or wrapper of this host: recorded under its name, or under the machine's by an older daemon. */
+  private mine(host: string | undefined): boolean {
+    return host === this.host || host === hostname();
+  }
+
   private get leaderKey(): string { return this.hostScope === undefined ? 'leader' : `leader.${this.hostScope}`; }
   private get leaderFile(): string { return join(this.manifest.runtime.stateDir, 'leader.json'); }
 
@@ -268,6 +278,11 @@ export class Daemon {
       await this.writeLeader(token);
       this.log.info('took the leader lease the previous daemon on this host gave back as it stopped', { previousPid: previous.pid });
       return true;
+    }
+    // A daemon of a manifest without hosts places every job anywhere: hosted daemons wait for it to stop.
+    if (this.hostScope !== undefined && (await this.backend.locks.exists('leader'))) {
+      if (!this.legacyLeaderLogged) { this.log.warn('a daemon without hosts still holds the project\'s leader lease; waiting for it to stop'); this.legacyLeaderLogged = true; }
+      return false;
     }
     if (await this.backend.locks.exists(this.leaderKey)) return false;
     const lease = await this.backend.locks.acquire(this.leaderKey, this.leaseTtl, `${this.host}:${process.pid}`);
@@ -393,7 +408,7 @@ export class Daemon {
       this.lastSubjectTabRefresh = now.getTime();
       await this.refreshSubjectTabs(now).catch((error: unknown) => this.log.warn('renewing per-subject tab records failed; retrying later', { error: errorText(error) }));
     }
-    if (this.tabsPending && now.getTime() >= this.nextTabRetry) {
+    if ((this.tabsPending || this.hostScope !== undefined) && now.getTime() >= this.nextTabRetry) {
       await this.retryTabs(now);
     }
   }
@@ -515,7 +530,7 @@ export class Daemon {
       if (job.waitingFor !== waitingFor) {
         this.log.info('job queued', { job: job.id, operation: job.operation, subject: job.subject, reason: waitingFor });
         await this.jobs.update(job.id, (current) => {
-          if (current.status !== 'queued') return undefined;
+          if (current.status !== 'queued' || current.waitingFor === waitingFor) return undefined;
           current.waitingFor = waitingFor;
           addHistory(current, 'waiting', waitingFor);
           return current;
@@ -566,7 +581,24 @@ export class Daemon {
       this.log.warn('run lease is held elsewhere; not starting the job twice', { job: job.id });
       return;
     }
-    const pending: JobRun = { ...(op.engine !== 'command' ? { provider: op.engine } : {}), ...(op.contractResult ? { codexContract: true } : {}), attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}), ...(limitHold ? { limitSlot: limitHold } : {}) };
+    let exclusiveHold: SlotHold | undefined;
+    if (op.exclusive && this.hostScope !== undefined) {
+      // Every host reads the same queue, so one shared slot keeps the operation to one run at a time.
+      const key = `exclusive.${job.workflow}.${job.operation}`;
+      const giveBack = (): Promise<void> => this.releaseRun(job.id, { attempt: job.attempt, host: this.host, runDir: '', startedAt: '', placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}), ...(limitHold ? { limitSlot: limitHold } : {}) });
+      const grant = await this.backend.slots.acquire(key, 1, Math.min(DAY_MS, op.timeoutMs + this.leaseTtl), { global: false }).catch(async (error: unknown) => {
+        await giveBack();
+        throw error;
+      });
+      if (!grant.granted) {
+        await giveBack();
+        this.deferred.set(job.id, now.getTime() + Math.max(this.manifest.runtime.pollMs, grant.retryAfterMs));
+        return;
+      }
+      exclusiveHold = { pool: `exclusive:${job.workflow}/${job.operation}`, kind: 'limit', key, token: grant.token, global: false };
+      this.pools.adopt(job.id, exclusiveHold);
+    }
+    const pending: JobRun = { ...(op.engine !== 'command' ? { provider: op.engine } : {}), ...(op.contractResult ? { codexContract: true } : {}), attempt: job.attempt, host: this.host, runDir: '', startedAt: now.toISOString(), placement: { kind: 'headless' }, lease: { key: leaseKey, token: lease.token }, ...(hold ? { slot: hold } : {}), ...(limitHold ? { limitSlot: limitHold } : {}), ...(exclusiveHold ? { exclusiveSlot: exclusiveHold } : {}) };
     try {
       const busy = await this.startRun(job, op, pending, cwd, herdrWorkspace);
       if (busy) {
@@ -642,7 +674,7 @@ export class Daemon {
       }
     }
     const retained = placement.retained === true;
-    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, attended, ...(threadId ? { threadId } : {}), ...(member ? { member } : {}), ...(session ? { session } : {}), ...(retained ? { retain: true } : {}) });
+    const prepared = await prepareRun(this.manifest, job, op, { cwd, dryRun: this.dryRun, attended, ...(threadId ? { threadId } : {}), ...(member ? { member } : {}), ...(session ? { session } : {}), ...(retained ? { retain: true } : {}), host: this.host });
     pending.runDir = prepared.runDir;
     const run = pending;
     await this.ensureLeader();
@@ -698,7 +730,7 @@ export class Daemon {
     const kept = (await this.backend.docs.get<SubjectTab>(SUBJECT_TABS_COLLECTION, key))?.value;
     if (!kept) return { retain: true };
     // Another host's tab stays that host's: this run gets a tab of its own that closes after it.
-    if (kept.host !== undefined && kept.host !== this.host) return { retain: false };
+    if (kept.host !== undefined && !this.mine(kept.host)) return { retain: false };
     // One conversation per key: a run still working in the tab is waited for, never forked.
     if (kept.jobId !== job.id && (await this.jobs.get(kept.jobId))?.status === 'running') return { retain: true, busy: `per-subject tab ${kept.tabId} is busy with ${kept.jobId}` };
     // Someone still works in the kept session - the owner after its result, most likely - so the
@@ -724,7 +756,7 @@ export class Daemon {
   private async endSession(runDir: string): Promise<boolean> {
     const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
     if (!wrapper) return true;
-    if (wrapper.host !== this.host) return false;
+    if (!this.mine(wrapper.host)) return false;
     if (!processAlive(wrapper.pid)) return true;
     // The wrapper forwards the signal to its session and exits when the session does.
     try { process.kill(wrapper.pid, 'SIGTERM'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
@@ -790,7 +822,7 @@ export class Daemon {
   private async observe(job: JobRecord, now: Date): Promise<void> {
     const run = job.run;
     if (!run) { await this.interrupt(job, 'running without a run record'); return; }
-    if (run.host !== this.host) {
+    if (!this.mine(run.host)) {
       if (run.lease && (await this.backend.locks.exists(run.lease.key))) { this.missingLeases.delete(job.id); return; }
       // A host taking its run lease again after the lease's lifetime leaves the key briefly absent:
       // the run reads as expired only once the key stayed missing longer than that.
@@ -800,7 +832,15 @@ export class Daemon {
         return;
       }
       this.missingLeases.delete(job.id);
-      await this.interrupt(job, `run lease from host ${run.host} expired`);
+      // Taking the lease first fences the run: its host cannot take it again and keep running the
+      // attempt this daemon requeues; a host that took it back meanwhile keeps its run.
+      const fence = run.lease ? await this.backend.locks.acquire(run.lease.key, this.leaseTtl, `${this.host}:fence`) : undefined;
+      if (fence && !fence.acquired) return;
+      try {
+        await this.interrupt(job, `run lease from host ${run.host} expired`);
+      } finally {
+        if (fence?.acquired && run.lease && (await endOwnedLock(this.backend.locks, run.lease.key, fence.token)) === 'ended') this.endingLeases.ended(run.lease.key);
+      }
       return;
     }
     const exit = await readExit(run.runDir);
@@ -824,6 +864,7 @@ export class Daemon {
 
   private async keepAlive(job: JobRecord, run: JobRun): Promise<void> {
     if (run.limitSlot && !this.pools.held.get(run.limitSlot.pool)?.has(job.id)) this.pools.adopt(job.id, run.limitSlot);
+    if (run.exclusiveSlot && !this.pools.held.get(run.exclusiveSlot.pool)?.has(job.id)) this.pools.adopt(job.id, run.exclusiveSlot);
     if (run.slot && !this.pools.held.get(run.slot.pool)?.has(job.id)) {
       this.pools.adopt(job.id, run.slot);
       this.log.info('resumed observing a running job', { job: job.id, operation: job.operation, subject: job.subject, pane: run.placement.paneId });
@@ -844,6 +885,11 @@ export class Daemon {
       } else if (outcome !== 'renewed') {
         const lease = await this.backend.locks.acquire(key, this.leaseTtl, `${this.host}:${job.attempt}`);
         if (lease.acquired) changes.lease = { key, token: lease.token };
+        else {
+          // Another daemon holds this run's lease: it requeued the attempt, so this run stops here.
+          await this.interrupt(job, 'its run lease is held by another daemon');
+          return;
+        }
       }
     }
     if (run.slot) {
@@ -975,6 +1021,8 @@ export class Daemon {
 
   private async requeueQuota(job: JobRecord, run: JobRun, evidence: QuotaWait): Promise<void> {
     const quota = await rememberQuota(this.backend.docs, evidence, this.hostScope);
+    const op = this.operation(job);
+    const anyHost = op !== undefined && this.placementHere({ ...job, ...(run.slot?.member ? { member: run.slot.member } : {}) }, op) === 'any';
     await this.releaseRun(job.id, run);
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
@@ -983,7 +1031,8 @@ export class Daemon {
       if (run.slot?.member) current.member = run.slot.member;
       current.retryCount = job.retryCount ?? job.attempt - 1;
       current.attempt += 1;
-      current.notBefore = quota.until;
+      // A job any host may run waits only for this host's reset; another host's accounts may be free.
+      if (!anyHost) current.notBefore = quota.until;
       current.waitingFor = `${evidence.provider} usage limit until ${quota.until}`;
       current.quotaWait = quota;
       delete current.run;
@@ -1119,7 +1168,7 @@ export class Daemon {
   }
 
   private async interrupt(job: JobRecord, reason: string): Promise<void> {
-    if (job.run?.host === this.host && job.run.runDir) {
+    if (this.mine(job.run?.host) && job.run?.runDir) {
       // The wrapper is gone; whatever its command left running must not overlap the next attempt.
       const command = await readJsonFile<CommandInfo>(runPath(job.run.runDir, 'command'));
       if (command && processAlive(command.pid)) {
@@ -1164,6 +1213,7 @@ export class Daemon {
     const steps: Promise<unknown>[] = [];
     if (run.slot) steps.push(this.pools.release(jobId, run.slot));
     if (run.limitSlot) steps.push(this.pools.release(jobId, run.limitSlot));
+    if (run.exclusiveSlot) steps.push(this.pools.release(jobId, run.exclusiveSlot));
     const lease = run.lease;
     if (lease) steps.push(releaseOwnedLease(this.backend, lease.key, lease.token).then((ended) => { if (ended) this.endingLeases.ended(lease.key); }));
     // A freed slot may be what a deferred job was waiting for.
@@ -1176,7 +1226,9 @@ export class Daemon {
     const pane = { ...(run.placement.paneId ? { paneId: run.placement.paneId } : {}), ...(run.runDir ? { runDir: run.runDir } : {}) };
     // A kept tab holds a session a person may be working in, so its close waits for an idle pane; a
     // tab whose run is over holds nothing but a shell.
-    if (keepTabMs > 0) await this.closeTabLater(jobId, run.placement.tabId, new Date(Date.now() + keepTabMs), { ...pane, guard: true });
+    // Another host's tab is closed by that host: it is recorded for that host's next pass.
+    if (!this.mine(run.host)) await this.closeTabLater(jobId, run.placement.tabId, undefined, pane, run.host);
+    else if (keepTabMs > 0) await this.closeTabLater(jobId, run.placement.tabId, new Date(Date.now() + keepTabMs), { ...pane, guard: true });
     else await this.closeTab(jobId, run.placement.tabId, pane);
   }
 
@@ -1263,10 +1315,10 @@ export class Daemon {
   }
 
   /** Records a tab a later poll closes: one kept open on purpose until `closeAt`, or one that could not close yet. */
-  private async closeTabLater(jobId: string, tabId: string, closeAt?: Date, pane: TabPane = {}): Promise<void> {
+  private async closeTabLater(jobId: string, tabId: string, closeAt?: Date, pane: TabPane = {}, host: string = this.host): Promise<void> {
     try {
       const now = new Date().toISOString();
-      await this.backend.docs.replace(TABS_COLLECTION, tabId, { tabId, jobId, since: now, refreshedAt: now, ...pane, host: this.host, ...(closeAt ? { closeAt: closeAt.toISOString() } : {}) } satisfies TabRecord, { ttlMs: TAB_RECORD_TTL_MS });
+      await this.backend.docs.replace(TABS_COLLECTION, tabId, { tabId, jobId, since: now, refreshedAt: now, ...pane, host, ...(closeAt ? { closeAt: closeAt.toISOString() } : {}) } satisfies TabRecord, { ttlMs: TAB_RECORD_TTL_MS });
       if (closeAt) this.log.info('the run\'s herdr tab stays open for a person', { job: jobId, tab: tabId, until: closeAt.toISOString() });
       this.tabsPending = true;
     } catch (error) {
@@ -1321,8 +1373,9 @@ export class Daemon {
     let left = 0;
     let confirming = false;
     for (const { key, value } of pending) {
-      // A tab in another host's herdr is closed by that host's daemon.
-      if (value.host !== undefined && value.host !== this.host) continue;
+      // A tab in another host's herdr is closed by that host's daemon. A record an older daemon wrote
+      // names no host: with hosts named it is this host's only when its run directory is here.
+      if (value.host !== undefined ? !this.mine(value.host) : this.hostScope !== undefined && !(value.runDir && existsSync(value.runDir))) continue;
       if (value.closeAt && Date.parse(value.closeAt) > now.getTime()) { left += 1; continue; }
       if (value.guard) {
         const held = (await this.jobs.get(value.jobId))?.status === 'running';

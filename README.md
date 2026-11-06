@@ -218,8 +218,8 @@ pools:
   codex-review: { limit: 3, perHost: true }
 ```
 
-Each host installs the service with the same manifest and `OPERATOR_HOST` naming it (the machine's
-host name when unset). Once any workspace names a host:
+Each host installs the service with the same manifest and an `OPERATOR_HOST=<name>` line in the
+service's env file (the machine's host name when unset). Once any workspace names a host:
 
 - every host runs its own daemon under its own leader lease, and all of them read one job queue;
 - a host starts only jobs it can place: one for a workspace of another host is left to that host,
@@ -228,7 +228,13 @@ host name when unset). Once any workspace names a host:
 - provider cooldowns, `perHost` limit pools, herdr tabs and `operator pause` belong to the host,
   because its accounts, its terminal and its restarts are its own; other limit pools, run leases,
   claims, the work queue and waits stay shared;
+- an expired run of another host is taken over only after this host holds its run lease, so the
+  host that ran it cannot take the lease back and keep running; a run that finds its lease held by
+  another daemon stops;
 - `validate` checks only this host's workspaces.
+
+A daemon of the manifest before it named hosts placed every job anywhere: hosted daemons wait while
+one still holds the project's leader lease, so stop it, then start the hosted ones.
 
 A subject's work stays on its host while it is bound to one workspace, which is what keeps a
 session, a kept tab or a Codex thread where it was started. Hosts keep their clocks in sync.

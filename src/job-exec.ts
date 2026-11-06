@@ -76,7 +76,7 @@ export async function runJobExec(runDir: string): Promise<number> {
   // The heartbeat exists before wrapper.json does, so an observer never sees a wrapper without one.
   const beat = (): Promise<void> => writeFile(runPath(runDir, 'heartbeat'), new Date().toISOString());
   await beat();
-  const wrapper: WrapperInfo = { pid: process.pid, host: hostname(), startedAt: new Date().toISOString() };
+  const wrapper: WrapperInfo = { pid: process.pid, host: launch.host ?? hostname(), startedAt: new Date().toISOString() };
   await writeJsonAtomic(runPath(runDir, 'wrapper'), wrapper);
   const heartbeat = setInterval(() => {
     beat().catch((error: unknown) => process.stderr.write(`operator: heartbeat write failed: ${(error as Error).message}\n`));

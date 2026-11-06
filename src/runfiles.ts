@@ -27,6 +27,8 @@ export interface LaunchSpec {
   retainedTab?: boolean;
   /** A claude session the wrapper resumes when claude has it, and starts under its id otherwise. */
   claudeSession?: { id: string; resume: boolean; resumeArgv: string[]; freshArgv: string[] };
+  /** The host the daemon goes by, recorded by the wrapper: a pane does not inherit the daemon's environment. */
+  host?: string;
 }
 
 export interface WrapperInfo { pid: number; host: string; startedAt: string }

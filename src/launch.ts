@@ -36,7 +36,7 @@ export const ATTENDED_CLOSE_GRACE_MS = 5_000;
  * Writes the run directory: the contract input file and the wrapper's launch spec. `attended` is
  * an interactive operation that got its terminal; one that did not runs as an agent.
  */
-export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean; attended?: boolean; member?: string; session?: { id: string; resume: boolean }; retain?: boolean }): Promise<PreparedRun> {
+export async function prepareRun(manifest: Manifest, job: JobRecord, op: OperationSpec, options: { cwd: string; threadId?: string; dryRun: boolean; attended?: boolean; member?: string; session?: { id: string; resume: boolean }; retain?: boolean; host?: string }): Promise<PreparedRun> {
   const runDir = runDirFor(manifest, job);
   await rm(runDir, { recursive: true, force: true });
   await mkdir(runDir, { recursive: true });
@@ -69,6 +69,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     ...(op.kind !== 'script' ? { agent: { engine: op.engine, ...(op.skill ? { skill: op.skill } : {}), ...(op.agent ? { agent: op.agent } : {}), ...(command.outputPath ? { outputPath: command.outputPath } : {}) } } : {}),
   };
   const launch: LaunchSpec = {
+    ...(options.host ? { host: options.host } : {}),
     jobId: job.id,
     attempt: job.attempt,
     title: jobTitle(job),

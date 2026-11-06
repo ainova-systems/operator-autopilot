@@ -1,6 +1,7 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { enqueue } from './jobs.ts';
+import { readJsonFile, runPath, type WrapperInfo } from './runfiles.ts';
 import { parseManifest } from './manifest.ts';
 import { requestPause } from './pause.ts';
 import { coolingProvider, rememberQuota } from './provider-quota.ts';
@@ -11,8 +12,8 @@ after(async () => { for (const p of projects) await p.cleanup(); });
 
 // Two hosts share one state: vm1 runs h1 and h2, vm2 runs r1.
 const HOSTED = {
-  pools: '  host-slot:\n    workspaces:\n      h: { count: 2, host: vm1, cwd: . }\n      r: { count: 1, host: vm2, cwd: . }\n',
-  extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }',
+  pools: '  host-slot:\n    workspaces:\n      h: { count: 2, host: vm1, cwd: . }\n      r: { count: 1, host: vm2, cwd: . }\n  per: { limit: 1, perHost: true }\n',
+  extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }\n      counted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: per, timeout: 30m }',
 };
 
 async function hosted(): Promise<TestProject> {
@@ -103,4 +104,53 @@ test('a provider cooldown is kept per host', async () => {
   assert.equal((await coolingProvider(p.backend.docs, 'claude', now, 'vm1'))?.until, until);
   assert.equal(await coolingProvider(p.backend.docs, 'claude', now, 'vm2'), undefined);
   assert.equal(await coolingProvider(p.backend.docs, 'claude', now), undefined);
+});
+
+test('an exclusive operation runs once across hosts polling at the same moment', async () => {
+  const p = await hosted();
+  const vm1 = p.daemon({ host: 'vm1' });
+  const vm2 = p.daemon({ host: 'vm2' });
+  await vm1.acquireLeader();
+  await vm2.acquireLeader();
+  for (const id of ['x', 'y']) await enqueue(vm1.jobs, { project: 'demo', workflow: 'demo', operation: 'discover', subject: '', input: {}, trigger: { id, name: 'test', kind: 'manual' } });
+  await Promise.all([vm1.poll(), vm2.poll()]);
+  const statuses = (await jobsBy(vm1, 'discover')).map((job) => job.status).sort();
+  assert.deepEqual(statuses, ['queued', 'running']);
+  await pollUntil(vm1, async () => (await jobsBy(vm1, 'discover')).every((job) => job.status !== 'running' && job.status !== 'queued'));
+});
+
+test('a perHost limit pool counts each host on its own', async () => {
+  const p = await hosted();
+  const vm1 = p.daemon({ host: 'vm1' });
+  const vm2 = p.daemon({ host: 'vm2' });
+  await vm1.acquireLeader();
+  await vm2.acquireLeader();
+  for (const subject of ['c1', 'c2', 'c3']) await enqueue(vm1.jobs, { project: 'demo', workflow: 'demo', operation: 'counted', subject, input: { seconds: 1 }, trigger: { id: subject, name: 'test', kind: 'manual' } });
+  await vm1.poll();
+  await vm2.poll();
+  const jobs = await jobsBy(vm1, 'counted');
+  assert.deepEqual(jobs.filter((job) => job.status === 'running').map((job) => job.run?.host).sort(), ['vm1', 'vm2']);
+  assert.equal(jobs.filter((job) => job.status === 'queued').length, 1);
+  await pollUntil(vm1, async () => { await vm2.poll(); return (await jobsBy(vm1, 'counted')).every((job) => job.status === 'done'); });
+});
+
+test('a hosted daemon waits while a daemon without hosts holds the project lease', async () => {
+  const p = await hosted();
+  const legacy = await p.backend.locks.acquire('leader', 60_000, 'old');
+  assert.equal(await p.daemon({ host: 'vm1' }).acquireLeader(), false);
+  await p.backend.locks.release('leader');
+  assert.ok(legacy.acquired);
+  assert.equal(await p.daemon({ host: 'vm1' }).acquireLeader(), true);
+});
+
+test('the wrapper records the host the daemon goes by', async () => {
+  const p = await hosted();
+  const vm2 = p.daemon({ host: 'vm2' });
+  await vm2.acquireLeader();
+  await hostedJob(p, 'named', 'r1');
+  await vm2.poll();
+  const job = (await jobsBy(vm2, 'hosted', 'named'))[0];
+  await pollUntil(vm2, async () => (await readJsonFile<WrapperInfo>(runPath(job?.run?.runDir ?? '', 'wrapper'))) !== undefined);
+  assert.equal((await readJsonFile<WrapperInfo>(runPath(job?.run?.runDir ?? '', 'wrapper')))?.host, 'vm2');
+  await pollUntil(vm2, async () => (await jobsBy(vm2, 'hosted', 'named'))[0]?.status === 'done');
 });

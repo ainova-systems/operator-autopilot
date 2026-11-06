@@ -101,7 +101,7 @@ export class Pools {
       if (holds.size >= pool.limit) return { granted: false, waitingFor: hosts ? `pool ${poolName} full` : `pool ${poolName} full (${holds.size}/${pool.limit} held by this host)`, retryAfterMs: LOCAL_RETRY_MS };
       const key = pool.perHost && host !== undefined ? `pool.${poolName}.${host}` : `pool.${poolName}`;
       const grant = await this.backend.slots.acquire(key, pool.limit, pool.slotTtlMs, { global: pool.shared });
-      if (!grant.granted) return { granted: false, waitingFor: `pool ${poolName} full (limit ${pool.limit}${pool.shared ? ', shared' : ''})`, retryAfterMs: Math.max(REMOTE_RETRY_MIN_MS, grant.retryAfterMs) };
+      if (!grant.granted) return { granted: false, waitingFor: hosts ? `pool ${poolName} full` : `pool ${poolName} full (limit ${pool.limit}${pool.shared ? ', shared' : ''})`, retryAfterMs: Math.max(REMOTE_RETRY_MIN_MS, grant.retryAfterMs) };
       const hold: SlotHold = { pool: poolName, kind: 'limit', key, token: grant.token, global: pool.shared };
       holds.set(jobId, hold);
       return { granted: true, hold };
