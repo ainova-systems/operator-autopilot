@@ -154,3 +154,18 @@ test('the wrapper records the host the daemon goes by', async () => {
   assert.equal((await readJsonFile<WrapperInfo>(runPath(job?.run?.runDir ?? '', 'wrapper')))?.host, 'vm2');
   await pollUntil(vm2, async () => (await jobsBy(vm2, 'hosted', 'named'))[0]?.status === 'done');
 });
+
+test('a run whose job another daemon took over is stopped on its own host', async () => {
+  const p = await hosted();
+  const vm2 = p.daemon({ host: 'vm2' });
+  await vm2.acquireLeader();
+  const { id } = await enqueue(vm2.jobs, { project: 'demo', workflow: 'demo', operation: 'hosted', subject: 'long', input: { seconds: 30 }, trigger: { id: 'long', name: 'test', kind: 'manual' }, member: 'r1' });
+  await vm2.poll();
+  const started = (await vm2.jobs.get(id))?.run?.runDir ?? '';
+  await pollUntil(vm2, async () => (await readJsonFile<WrapperInfo>(runPath(started, 'wrapper'))) !== undefined);
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(started, 'wrapper'));
+  // What a host that found the lease expired writes: the attempt requeued, its run gone.
+  await vm2.jobs.update(id, (job) => { job.status = 'queued'; job.attempt += 1; delete job.run; job.notBefore = new Date(Date.now() + 3_600_000).toISOString(); return job; });
+  await vm2.poll();
+  await pollUntil(vm2, async () => { try { process.kill(wrapper?.pid ?? 0, 0); return false; } catch { return true; } });
+});
