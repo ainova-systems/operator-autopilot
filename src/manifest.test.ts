@@ -28,7 +28,7 @@ test('reads the plan example: pools, workflows, defaults and a disabled sketch',
   const { manifest, warnings } = parseManifest(VALID, '/repo/operator.yaml');
   assert.equal(manifest.project, 'project-a');
   assert.equal(manifest.state.namespace, 'op-project-a');
-  assert.deepEqual(manifest.pools.get('codex-review'), { kind: 'limit', name: 'codex-review', limit: 3, slotTtlMs: 4 * 3_600_000, shared: true });
+  assert.deepEqual(manifest.pools.get('codex-review'), { kind: 'limit', name: 'codex-review', limit: 3, slotTtlMs: 4 * 3_600_000, shared: true, perHost: false });
   assert.deepEqual(manifest.pools.get('claude-slot'), { kind: 'workspaces', name: 'claude-slot', members: [{ name: 'd1', cwd: '/repo', herdr: 'd1' }] });
   const development = manifest.workflows.get('development');
   assert.equal(development?.triggers[0]?.kind, 'every');

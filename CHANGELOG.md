@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- One project runs on several hosts that share its state: a workspace names its `host`, a key with `count` declares a numbered group, and each host runs its own daemon over one job queue, starting only the jobs it can place and keeping its own provider cooldowns, `perHost` limit pools, herdr tabs and `operator pause`.
+
 ## [0.9.0] - 2026-11-05
 
 - Usage limits keep attended Claude sessions open until reset, queue same-provider resumptions without spending retries, and allow explicitly compatible new tasks to use Codex during a persisted cooldown (four hours when no reset time is reported).

@@ -14,7 +14,7 @@ import { createHerdr } from './herdr.ts';
 import { runJobExec } from './job-exec.ts';
 import { enqueue, JobStore, type JobStatus } from './jobs.ts';
 import { createLogger, errorText, type LogLevel } from './log.ts';
-import { loadManifest, manifestPath, type Manifest } from './manifest.ts';
+import { loadManifest, manifestPath, namesHosts, thisHost, type Manifest } from './manifest.ts';
 import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
 import { addQueueItem, getQueueItem, listQueue, QUEUE_COLLECTION, queuePriority, queueSourceKind, queueStatus, takeQueueItem, updateQueueItem, type QueueItem, type QueueWrite } from './queue.ts';
 import { redactTokens } from './redact.ts';
@@ -295,14 +295,15 @@ async function commandPause(values: Values): Promise<number> {
   const docs = openForCommand(manifest).docs;
   const store = new JobStore(docs, manifest.runtime.retentionMs);
   const timeoutMs = values.timeout === undefined ? undefined : parseDuration(values.timeout, '--timeout');
-  const { pause, created } = await requestPause(docs, `${userInfo().username}@${hostname()}`, values.reason);
-  const running = async (): Promise<number> => (await store.list('running')).length;
+  const host = namesHosts(manifest) ? thisHost() : undefined;
+  const { pause, created } = await requestPause(docs, `${userInfo().username}@${hostname()}`, values.reason, new Date(), host);
+  const running = async (): Promise<number> => (await store.list('running')).filter((job) => host === undefined || job.run?.host === host).length;
   const count = await running();
   print(values, { pause, created, running: count }, () => `${created ? 'pausing' : `already paused since ${pause.since} by ${pause.by}`}: no new job starts; ${count} running job(s) finish first`);
   if (!values.wait) return 0;
   const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
   for (let left = count; ; left = await running()) {
-    if (!(await readPause(docs))) { process.stderr.write('the pause was ended while waiting\n'); return 1; }
+    if (!(await readPause(docs, host))) { process.stderr.write('the pause was ended while waiting\n'); return 1; }
     if (left === 0) { process.stdout.write('paused: no job running\n'); return 0; }
     if (Date.now() >= deadline) { process.stdout.write(`still ${left} job(s) running\n`); return 3; }
     await sleep(PAUSE_POLL_MS);
@@ -311,7 +312,7 @@ async function commandPause(values: Values): Promise<number> {
 
 async function commandResume(values: Values): Promise<number> {
   const manifest = load(values);
-  const ended = await clearPause(openForCommand(manifest).docs);
+  const ended = await clearPause(openForCommand(manifest).docs, namesHosts(manifest) ? thisHost() : undefined);
   print(values, { resumed: ended }, () => (ended ? 'resumed: queued jobs start on the next poll' : 'not paused'));
   return 0;
 }

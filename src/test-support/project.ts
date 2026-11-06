@@ -32,7 +32,7 @@ export interface TestProject {
   backend: StateBackend;
   lines: string[];
   log: Logger;
-  daemon(options?: { dryRun?: boolean; herdr?: Herdr; backend?: StateBackend }): Daemon;
+  daemon(options?: { dryRun?: boolean; herdr?: Herdr; backend?: StateBackend; host?: string }): Daemon;
   drop(name: string, content?: string): Promise<void>;
   launches(): Promise<string[]>;
   cleanup(): Promise<void>;

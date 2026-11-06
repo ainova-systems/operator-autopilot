@@ -126,7 +126,7 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   reads the definition and names what it cannot read.
 - **Exclusive operations.** `exclusive: true` keeps an operation - typically discovery - to one run
   at a time, so a timer slot and a manual trigger cannot both take the same work.
-- **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects);
+- **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects, or counted per host with `perHost`);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
   The runtime gives every lock back - a workspace, a run lease, the leader lease - by shortening it
   to one second with its token, never by deleting the key, which could remove a successor's lock;
@@ -203,6 +203,36 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   A tab herdr cannot close when its run ends is closed on a later poll; one closed by hand counts
   as closed.
 
+## Several hosts
+
+One project can run on several hosts that share its state namespace. Give each workspace the host
+that runs it; a key with `count` declares a group, numbered from 1, whose `{name}` fills in the
+directory and the herdr workspace:
+
+```yaml
+pools:
+  claude-slot:
+    workspaces:
+      d: { count: 3, host: vm1, cwd: '../repo-{name}', herdr: 'repo-{name}' }   # d1, d2, d3
+      a: { count: 3, host: vm2, cwd: '../repo-{name}', herdr: 'repo-{name}' }   # a1, a2, a3
+  codex-review: { limit: 3, perHost: true }
+```
+
+Each host installs the service with the same manifest and `OPERATOR_HOST` naming it (the machine's
+host name when unset). Once any workspace names a host:
+
+- every host runs its own daemon under its own leader lease, and all of them read one job queue;
+- a host starts only jobs it can place: one for a workspace of another host is left to that host,
+  and one for any member of a pool goes to whichever host takes a free member first. Timers fire
+  once, since every host enqueues the same job; an `exclusive` operation runs once across all hosts;
+- provider cooldowns, `perHost` limit pools, herdr tabs and `operator pause` belong to the host,
+  because its accounts, its terminal and its restarts are its own; other limit pools, run leases,
+  claims, the work queue and waits stay shared;
+- `validate` checks only this host's workspaces.
+
+A subject's work stays on its host while it is bound to one workspace, which is what keeps a
+session, a kept tab or a Codex thread where it was started. Hosts keep their clocks in sync.
+
 ## Provider usage limits
 
 Usage exhaustion is an availability wait, not an ordinary failed attempt. The runtime recognizes
@@ -212,7 +242,8 @@ or warning-only rate-limit events do not start a cooldown. A reported future res
 without a usable reset time the default is **four hours from detection**. Codex reset clocks
 use the CLI process timezone, including an operation’s `env.TZ` override. Repeated notifications
 for the same window do not keep extending it. Cooldowns persist in the state backend, scoped to
-this project's namespace and provider; use separate namespaces for independent provider accounts.
+this project's namespace and provider, and to the host when the manifest names hosts (below); use
+separate namespaces for independent provider accounts.
 
 An attended Claude task keeps its **same process, conversation and workspace** while waiting.
 Its active execution timeout pauses, and idle nudges stop. At reset the daemon continues an idle
@@ -282,7 +313,7 @@ operator jobs [--status queued]  |  operator job <id>  |  operator waits  |  ope
 operator state get|put|list|delete <collection> [key]   # project state for scripts and skills
 operator claim take|renew|release <subject> --run <id> [--ttl 1h]  |  operator claim show [subject]
 operator queue add --title t --body-file spec.md  |  queue list|get|take|update   # private work queue
-operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart
+operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart (only this host's, once hosts are named)
 operator resume                                 # also happens by itself when the service starts again
 operator service install <project> --manifest operator.yaml [--env-file secrets.env] [--no-start]
 operator service status <project>  |  operator service uninstall <project>
