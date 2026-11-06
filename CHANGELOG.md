@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.0] - 2026-11-06
 
 - One project runs on several hosts that share its state: a workspace names its `host`, a key with `count` declares a numbered group, and each host runs its own daemon over one job queue, starting only the jobs it can place and keeping its own provider cooldowns, `perHost` limit pools, herdr tabs and `operator pause`.
 
