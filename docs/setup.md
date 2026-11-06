@@ -8,7 +8,7 @@ what each one decides and why. They follow the setup steps of
 |---|---|---|
 | 1. Install Operator on a host | once per host | the runtime installed, signed-in tools, the state key stored privately, a checklist |
 | 2a. The project's own workflow | at the repository root | a workflow written for this repository alone |
-| 2b. The recommended workflow | at the repository root | the development packs installed and adapted to this repository |
+| 2b. The recommended workflow | at the repository root | the operator packs installed and adapted to this repository |
 
 ## Why the prompts work this way
 
