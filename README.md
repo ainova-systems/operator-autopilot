@@ -66,16 +66,17 @@ bypass branch protection, or record a decision as mine that I did not make. Ever
 the repository's normal change process.
 ````
 
-### 2b. Adopt the recommended workflow from the development packs
+### 2b. Adopt the recommended workflow from the operator packs
 
 ````text
 Goal: this repository is run by the Operator runtime with the recommended pull-request workflow from
-the development packs (@ainova-systems/intelligence-dev-packs), installed and kept up to date through
-intelligence (@ainova-systems/intelligence), and adapted to how this repository already works.
+the operator packs (ainova-systems/operator-packs), installed and kept up to date through intelligence
+(@ainova-systems/intelligence), and adapted to how this repository already works.
 
 Done when:
-- intelligence manages the packs: the `operator` pack is installed, and the `core` pack too unless
-  the repository already has its own equivalents, which the operator profile keys then point to;
+- intelligence manages the packs: the `operator` pack is installed from the operator-packs registry,
+  and the development packs `core` pack (@ainova-systems/intelligence-dev-packs) too unless the
+  repository already has its own equivalents, which the operator profile keys then point to;
 - everything the packs leave to the project is answered in the repository's own rules and
   configuration - never by editing installed pack files - including the profile keys the operator
   pack lists in its README;

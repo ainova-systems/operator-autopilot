@@ -20,8 +20,8 @@ the patterns that worked, and a setup that puts them together for one repository
 | **Runtime** | operations, triggers, pools, jobs, waits, delivery; its workflow-agnostic integrations herdr (terminal placement) and Ainoflow (state, guard pools) | this repository, `src/` |
 | **Setup prompt** | one prompt that makes a repository a managed project from scratch | this repository |
 | **SDLC pattern docs** | documented sample workflows and why each phase decides what it does | this repository, `docs/` |
-| **`operator` pack** | phase skills, generic discovery helpers as scripts inside the skill folders, and the forge contract with its contract test | the development packs repository, installed by intelligence sync |
-| **Platform packs** | one per platform, each implementing the forge contract: `forge-github` now; `forge-gitlab`, `forge-bitbucket`, `tracker-asana` later | the development packs repository |
+| **`operator` pack** | phase skills, generic discovery helpers as scripts inside the skill folders, and the forge contract with its contract test | the operator packs repository, installed by intelligence sync |
+| **Platform packs** | one per platform, each implementing the forge contract: `forge-github` now; `forge-gitlab`, `forge-bitbucket`, `tracker-asana` later | the operator packs repository |
 | **Project workflow** | `operator.yaml`, the workflow configuration, profile keys, the project's own scripts (QA status, QA feedback) and skills | the managed project's repository |
 
 The runtime stays tiny and knows no process. It gains a core feature only when a workflow needs it
@@ -214,7 +214,7 @@ All owner decisions, 2026-10-30. Nothing is open.
 1. The runtime stays tiny and keeps its workflow-agnostic integrations, herdr and Ainoflow. It
    gains a core feature only when needed and only when workflow-agnostic: the subject claim and the
    private work queue.
-2. Everything SDLC-specific ships as intelligence packs in the development packs repository: the
+2. Everything SDLC-specific ships as intelligence packs in the operator packs repository: the
    `operator` pack and one pack per platform, called through `forge_cli`, with no dispatcher. A
    project installs only what it uses, or copies and adapts.
 3. This repository holds the runtime, the setup prompt and the SDLC pattern docs.
