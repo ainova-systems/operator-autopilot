@@ -169,3 +169,21 @@ test('a run whose job another daemon took over is stopped on its own host', asyn
   await vm2.poll();
   await pollUntil(vm2, async () => { try { process.kill(wrapper?.pid ?? 0, 0); return false; } catch { return true; } });
 });
+
+test('a restarted daemon still stops a run taken over before its first observation', async () => {
+  const p = await hosted();
+  const first = p.daemon({ host: 'vm2' });
+  await first.acquireLeader();
+  const { id } = await enqueue(first.jobs, { project: 'demo', workflow: 'demo', operation: 'hosted', subject: 'early', input: { seconds: 30 }, trigger: { id: 'early', name: 'test', kind: 'manual' }, member: 'r1' });
+  await first.poll();
+  const runDir = (await first.jobs.get(id))?.run?.runDir ?? '';
+  await pollUntil(first, async () => (await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'))) !== undefined);
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+  first.stop();
+  await first.jobs.update(id, (job) => { job.status = 'queued'; job.attempt += 1; delete job.run; job.notBefore = new Date(Date.now() + 3_600_000).toISOString(); return job; });
+  await p.backend.locks.release('leader.vm2');
+  const second = p.daemon({ host: 'vm2' });
+  assert.equal(await second.acquireLeader(), true);
+  await second.poll();
+  await pollUntil(second, async () => { try { process.kill(wrapper?.pid ?? 0, 0); return false; } catch { return true; } });
+});

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, open, rm } from 'node:fs/promises';
+import { mkdir, open, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { collectRun, readExit } from './collect.ts';
@@ -153,6 +153,7 @@ export class Daemon {
   private readonly runTokens = new Map<string, string>();
   /** Runs started or adopted here, so one whose job another daemon took over is stopped. */
   private readonly localRuns = new Map<string, { attempt: number; runDir: string }>();
+  private localRunsScanned = false;
   private readonly notified = new Set<string>();
   /** Interactive sessions seen idle without a result: since when, and how often they were nudged. */
   private readonly idle = new Map<string, { since?: number; nudges: number; warned: boolean }>();
@@ -427,6 +428,7 @@ export class Daemon {
    * lease expired - this host lost the state backend for longer than a lease - and requeued it.
    */
   private async stopTakenOverRuns(running: JobRecord[]): Promise<void> {
+    if (!this.localRunsScanned) await this.scanLocalRuns();
     for (const job of running) {
       if (job.run?.runDir && this.mine(job.run.host, job.run.runDir)) this.localRuns.set(job.id, { attempt: job.attempt, runDir: job.run.runDir });
     }
@@ -435,12 +437,34 @@ export class Daemon {
       this.localRuns.delete(id);
       this.runTokens.delete(id);
       if (await readExit(local.runDir)) continue;
-      const wrapper = await readJsonFile<WrapperInfo>(runPath(local.runDir, 'wrapper'));
-      if (!wrapper || !processAlive(wrapper.pid)) continue;
+      // The command can outlive its wrapper, so each is stopped on its own.
+      let stopped = false;
       const command = await readJsonFile<CommandInfo>(runPath(local.runDir, 'command'));
-      if (command && processAlive(command.pid)) signalCommand(command, 'SIGKILL');
-      try { process.kill(wrapper.pid, 'SIGTERM'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-      this.log.warn('stopped a run another daemon took over', { job: id, attempt: local.attempt });
+      if (command && processAlive(command.pid)) { signalCommand(command, 'SIGKILL'); stopped = true; }
+      const wrapper = await readJsonFile<WrapperInfo>(runPath(local.runDir, 'wrapper'));
+      if (wrapper && processAlive(wrapper.pid)) {
+        try { process.kill(wrapper.pid, 'SIGTERM'); stopped = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      }
+      if (stopped) this.log.warn('stopped a run another daemon took over', { job: id, attempt: local.attempt });
+    }
+  }
+
+  /** After a restart: the unfinished runs still alive on this disk, so a taken-over one is stopped too. */
+  private async scanLocalRuns(): Promise<void> {
+    this.localRunsScanned = true;
+    const root = join(this.manifest.runtime.stateDir, 'runs');
+    for (const id of await readdir(root).catch(() => [] as string[])) {
+      for (const name of await readdir(join(root, id)).catch(() => [] as string[])) {
+        if (!/^a\d+$/.test(name)) continue;
+        const runDir = join(root, id, name);
+        const attempt = Number(name.slice(1));
+        if (await readExit(runDir)) continue;
+        const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+        const command = await readJsonFile<CommandInfo>(runPath(runDir, 'command'));
+        if (!(wrapper && processAlive(wrapper.pid)) && !(command && processAlive(command.pid))) continue;
+        const known = this.localRuns.get(id);
+        if (!known || known.attempt < attempt) this.localRuns.set(id, { attempt, runDir });
+      }
     }
   }
 
@@ -728,6 +752,8 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return undefined;
     }
+    this.localRuns.set(job.id, { attempt: job.attempt, runDir: prepared.runDir });
+    if (run.lease) this.runTokens.set(job.id, run.lease.token);
     if (op.engine !== 'command' && (op.tabs === 'per-subject' || op.thread === 'per-subject')) await this.backend.docs.replace(PROVIDER_AFFINITIES, this.affinityKey(job), { provider: op.engine, workflow: job.workflow, subject: job.subject, operation: job.operation }, { ttlMs: SUBJECT_TAB_TTL_MS });
     try {
       if (placement.kind === 'herdr' && placement.paneId) await startInHerdr(this.herdr, placement.paneId, prepared.runDir);
@@ -913,11 +939,11 @@ export class Daemon {
         // given back meanwhile, so the gap never reads as an expired run.
         if ((await endOwnedLock(this.backend.locks, key, held)) === 'ended') this.endingLeases.ended(key);
         const token = await retakeLock(this.backend.locks, key, this.leaseTtl, `${this.host}:${job.attempt}`, undefined, () => this.stopped);
-        if (token !== undefined) changes.lease = { key, token };
+        if (token !== undefined) { changes.lease = { key, token }; this.runTokens.set(job.id, token); }
         else this.log.warn('run lease past its lifetime could not be taken again', { job: job.id });
       } else if (outcome !== 'renewed') {
         const lease = await this.backend.locks.acquire(key, this.leaseTtl, `${this.host}:${job.attempt}`);
-        if (lease.acquired) changes.lease = { key, token: lease.token };
+        if (lease.acquired) { changes.lease = { key, token: lease.token }; this.runTokens.set(job.id, lease.token); }
         // Held by another daemon taking the run over: once it requeues the job, the pass over this
         // host's runs stops this one.
         else this.log.warn('run lease is held by another daemon', { job: job.id });
@@ -927,7 +953,6 @@ export class Daemon {
       const renewed = await this.pools.renew(job.id, run.slot);
       if (renewed.token !== run.slot.token) changes.slot = renewed;
     }
-    if (changes.lease) this.runTokens.set(job.id, changes.lease.token);
     if (Object.keys(changes).length > 0) {
       const updated = await this.jobs.update(job.id, (current) => (current.status === 'running' && current.run ? { ...current, run: { ...current.run, ...changes } } : undefined));
       const lease = changes.lease;
