@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { CONTRACT_VERSION, RESULT_STATUSES, type JsonObject, type ResultStatus } from './contract.ts';
@@ -10,8 +10,10 @@ import { OperatorError } from './errors.ts';
 export type Placement = 'headless' | 'herdr';
 export type Engine = 'claude' | 'codex' | 'command';
 
-export interface LimitPool { kind: 'limit'; name: string; limit: number; slotTtlMs: number; shared: boolean }
-export interface WorkspaceMember { name: string; cwd: string; herdr: string }
+/** `perHost`: each host counts its own limit, e.g. a provider account that differs by host. */
+export interface LimitPool { kind: 'limit'; name: string; limit: number; slotTtlMs: number; shared: boolean; perHost: boolean }
+/** `host`: the one host whose daemon runs this member; a member without one is every host's. */
+export interface WorkspaceMember { name: string; cwd: string; herdr: string; host?: string }
 export interface WorkspacePool { kind: 'workspaces'; name: string; members: WorkspaceMember[] }
 export type PoolSpec = LimitPool | WorkspacePool;
 
@@ -176,13 +178,27 @@ class Reader {
   }
 }
 
+/** The name this host goes by in a manifest's `host` fields: `OPERATOR_HOST`, else the machine's name. */
+export function thisHost(): string {
+  return process.env['OPERATOR_HOST'] || hostname();
+}
+
+/** Whether a manifest names hosts: then each host runs its own daemon and only its own members. */
+export function namesHosts(manifest: Pick<Manifest, 'pools'>): boolean {
+  return [...manifest.pools.values()].some((pool) => pool.kind === 'workspaces' && pool.members.some((member) => member.host !== undefined));
+}
+
+export function isLocal(member: WorkspaceMember, host: string): boolean {
+  return member.host === undefined || member.host === host;
+}
+
 function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, PoolSpec> {
   const pools = new Map<string, PoolSpec>();
   for (const [name, value] of Object.entries(raw)) {
     const path = `pools.${name}`;
     if (!NAME.test(name)) { reader.problem(path, 'pool names are lower-case letters, digits and dashes'); continue; }
     if (!isObject(value)) { reader.problem(path, 'expected a mapping'); continue; }
-    reader.unknownKeys(value, ['limit', 'slotTtl', 'shared', 'workspaces'], path);
+    reader.unknownKeys(value, ['limit', 'slotTtl', 'shared', 'perHost', 'workspaces'], path);
     const hasLimit = value['limit'] !== undefined;
     const hasWorkspaces = value['workspaces'] !== undefined;
     if (hasLimit === hasWorkspaces) { reader.problem(path, 'set exactly one of limit or workspaces'); continue; }
@@ -190,8 +206,9 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
       const limit = reader.integer(value, 'limit', path, 1, 1);
       const slotTtlMs = reader.duration(value, 'slotTtl', path, 4 * 3_600_000);
       if (slotTtlMs > DAY) reader.problem(`${path}.slotTtl`, 'Guard slot leases cannot exceed 24h');
-      if (value['shared'] !== undefined && typeof value['shared'] !== 'boolean') reader.problem(`${path}.shared`, 'expected true or false');
-      pools.set(name, { kind: 'limit', name, limit, slotTtlMs, shared: value['shared'] === true });
+      for (const flag of ['shared', 'perHost']) if (value[flag] !== undefined && typeof value[flag] !== 'boolean') reader.problem(`${path}.${flag}`, 'expected true or false');
+      if (value['shared'] === true && value['perHost'] === true) reader.problem(path, 'set at most one of shared or perHost');
+      pools.set(name, { kind: 'limit', name, limit, slotTtlMs, shared: value['shared'] === true, perHost: value['perHost'] === true });
       continue;
     }
     const rawMembers = value['workspaces'];
@@ -203,10 +220,20 @@ function readPools(reader: Reader, raw: JsonObject, root: string): Map<string, P
       if (!NAME.test(member)) { reader.problem(memberPath, 'workspace names are lower-case letters, digits and dashes'); continue; }
       const memberSpec = isObject(spec) ? spec : {};
       if (spec !== null && spec !== undefined && !isObject(spec)) reader.problem(memberPath, 'expected a mapping with cwd and herdr');
-      reader.unknownKeys(memberSpec, ['cwd', 'herdr'], memberPath);
+      reader.unknownKeys(memberSpec, ['cwd', 'herdr', 'host', 'count'], memberPath);
       const cwd = reader.string(memberSpec, 'cwd', memberPath);
       const herdr = reader.string(memberSpec, 'herdr', memberPath);
-      members.push({ name: member, cwd: cwd === undefined ? root : resolve(root, expandHome(cwd)), herdr: herdr ?? member });
+      const host = reader.string(memberSpec, 'host', memberPath, { pattern: NAME });
+      // `count` makes the key a prefix: `d: { count: 3 }` is d1, d2 and d3, and {name} in cwd and
+      // herdr stands for each one's name.
+      const count = memberSpec['count'] === undefined ? undefined : reader.integer(memberSpec, 'count', memberPath, 1, 1);
+      const names = count === undefined ? [member] : Array.from({ length: count }, (_, index) => `${member}${index + 1}`);
+      for (const one of names) {
+        if (members.some((existing) => existing.name === one)) { reader.problem(memberPath, `workspace ${one} is declared twice`); continue; }
+        const fill = (text: string | undefined): string | undefined => text?.replaceAll('{name}', one);
+        const dir = fill(cwd);
+        members.push({ name: one, cwd: dir === undefined ? root : resolve(root, expandHome(dir)), herdr: fill(herdr) ?? one, ...(host ? { host } : {}) });
+      }
     }
     pools.set(name, { kind: 'workspaces', name, members });
   }

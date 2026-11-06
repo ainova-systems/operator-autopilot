@@ -31,6 +31,8 @@ export interface JobRun {
   placement: { kind: 'headless' | 'herdr'; workspace?: string; tabId?: string; paneId?: string; degraded?: string; retained?: boolean };
   /** A limit pool held alongside the operation's main pool, e.g. an engine's concurrency. */
   limitSlot?: SlotHold;
+  /** With hosts named, the shared one-run slot of an `exclusive` operation. */
+  exclusiveSlot?: SlotHold;
   slot?: SlotHold;
   lease?: { key: string; token: string };
 }

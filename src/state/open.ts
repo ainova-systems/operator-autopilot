@@ -1,5 +1,5 @@
 import { OperatorError } from '../errors.ts';
-import type { Manifest } from '../manifest.ts';
+import { namesHosts, type Manifest } from '../manifest.ts';
 import { createAinoflowBackend } from './ainoflow.ts';
 import { createFileBackend } from './file.ts';
 import type { Capabilities, StateBackend } from './types.ts';
@@ -27,7 +27,9 @@ export function openState(manifest: Manifest, options: OpenOptions = {}): StateB
 /** What the runtime needs from the state backend for this manifest, and what it found missing. */
 export function capabilityProblems(manifest: Manifest, capabilities: Capabilities): string[] {
   const problems: string[] = [];
-  const needsGuard = [...manifest.pools.values()].some((pool) => pool.kind === 'limit');
+  // With hosts named, an exclusive operation holds a Guard slot too.
+  const exclusive = namesHosts(manifest) && [...manifest.workflows.values()].some((workflow) => workflow.enabled && [...workflow.operations.values()].some((op) => op.exclusive));
+  const needsGuard = exclusive || [...manifest.pools.values()].some((pool) => pool.kind === 'limit');
   const features = ['storageIfMatch', 'storageWhereFilter', ...(needsGuard ? ['guardConcurrency'] : [])];
   for (const feature of features) if (capabilities.features[feature] !== true) problems.push(`feature ${feature} is not available`);
   const minimums: Record<string, number> = { shieldLocksMonthly: 5000, ...(needsGuard ? { guardChecksMonthly: 5000 } : {}), ...manifest.state.require };

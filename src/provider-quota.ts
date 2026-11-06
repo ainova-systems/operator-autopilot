@@ -150,12 +150,18 @@ export function quotaFromLines(text: string, provider: Provider, now = Date.now(
   return quota;
 }
 
-export async function rememberQuota(docs: DocStore, quota: QuotaWait): Promise<QuotaWait> {
+/** A provider's cooldown record: one per host when the manifest names hosts, whose accounts and limits differ. */
+export function cooldownKey(provider: Provider, host?: string): string {
+  return host === undefined ? provider : `${provider}.${host}`;
+}
+
+export async function rememberQuota(docs: DocStore, quota: QuotaWait, host?: string): Promise<QuotaWait> {
+  const key = cooldownKey(quota.provider, host);
   const ttlMs = Math.max(DEFAULT_QUOTA_WAIT_MS, Date.parse(quota.until) - Date.now()) + DEFAULT_QUOTA_WAIT_MS;
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const existing = await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, quota.provider);
+    const existing = await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, key);
     if (!existing) {
-      if (await docs.create(PROVIDER_COOLDOWNS, quota.provider, quota, ttlMs) === 'created') return quota;
+      if (await docs.create(PROVIDER_COOLDOWNS, key, quota, ttlMs) === 'created') return quota;
       continue;
     }
     const prior = existing.value;
@@ -169,12 +175,12 @@ export async function rememberQuota(docs: DocStore, quota: QuotaWait): Promise<Q
     }
     // Repeated watchdog messages cannot slide the default window or discard a known reset.
     if (!quota.explicitReset && Date.parse(prior.until) > observed) return prior;
-    if (await docs.replace(PROVIDER_COOLDOWNS, quota.provider, quota, { etag: existing.etag, missingIsConflict: true, ttlMs }) === 'written') return quota;
+    if (await docs.replace(PROVIDER_COOLDOWNS, key, quota, { etag: existing.etag, missingIsConflict: true, ttlMs }) === 'written') return quota;
   }
   throw new OperatorError('STATE_CONTENTION', `provider ${quota.provider} cooldown kept changing under eight consecutive updates`);
 }
 
-export async function coolingProvider(docs: DocStore, provider: Provider, now: number): Promise<QuotaWait | undefined> {
-  const value = (await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, provider))?.value;
+export async function coolingProvider(docs: DocStore, provider: Provider, now: number, host?: string): Promise<QuotaWait | undefined> {
+  const value = (await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, cooldownKey(provider, host)))?.value;
   return value && Date.parse(value.until) > now ? value : undefined;
 }

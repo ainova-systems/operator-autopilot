@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readCodexAgent } from './codex-agent.ts';
 import type { Herdr } from './herdr.ts';
 import { errorText } from './log.ts';
-import type { Manifest, OperationSpec } from './manifest.ts';
+import { isLocal, thisHost, type Manifest, type OperationSpec } from './manifest.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,7 +28,8 @@ async function onPath(binary: string): Promise<boolean> {
 
 function workingDirectories(manifest: Manifest, op: OperationSpec): string[] {
   const pool = op.pool ? manifest.pools.get(op.pool) : undefined;
-  return pool?.kind === 'workspaces' ? pool.members.map((member) => member.cwd) : [manifest.root];
+  // Each host checks only the members it runs: another host's directories are not here.
+  return pool?.kind === 'workspaces' ? pool.members.filter((member) => isLocal(member, thisHost())).map((member) => member.cwd) : [manifest.root];
 }
 
 /** File arguments in a command line, e.g. the script of `node scripts/discover.mjs`. */
@@ -69,7 +70,7 @@ export async function validateProject(manifest: Manifest, warnings: string[], op
       if (op.schema && !existsSync(resolve(manifest.root, op.schema))) report.problems.push(`${where}: schema ${op.schema} does not exist`);
       if (op.placement === 'herdr') {
         const pool = op.pool ? manifest.pools.get(op.pool) : undefined;
-        if (pool?.kind === 'workspaces') for (const member of pool.members) herdrWorkspaces.add(member.herdr);
+        if (pool?.kind === 'workspaces') for (const member of pool.members) { if (isLocal(member, thisHost())) herdrWorkspaces.add(member.herdr); }
         else if (manifest.herdr.workspace) herdrWorkspaces.add(manifest.herdr.workspace);
         else report.warnings.push(`${where}: placement herdr without a herdr workspace (herdr.workspace or a workspaces pool); it will run headless`);
       }

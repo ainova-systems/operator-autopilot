@@ -6,7 +6,7 @@ import { claudeSessionExists, claudeSessionPath } from './claude-session.ts';
 import { loadEnvFile } from './env.ts';
 import { quotaFromLines, readEventTail, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
-import { readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type LaunchSpec, type WrapperInfo } from './runfiles.ts';
+import { processIdentity, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type LaunchSpec, type WrapperInfo } from './runfiles.ts';
 
 const HEARTBEAT_MS = 5_000;
 const KILL_GRACE_MS = 10_000;
@@ -76,7 +76,8 @@ export async function runJobExec(runDir: string): Promise<number> {
   // The heartbeat exists before wrapper.json does, so an observer never sees a wrapper without one.
   const beat = (): Promise<void> => writeFile(runPath(runDir, 'heartbeat'), new Date().toISOString());
   await beat();
-  const wrapper: WrapperInfo = { pid: process.pid, host: hostname(), startedAt: new Date().toISOString() };
+  const self = processIdentity(process.pid);
+  const wrapper: WrapperInfo = { pid: process.pid, host: launch.host ?? hostname(), startedAt: new Date().toISOString(), ...(self ? { identity: self } : {}) };
   await writeJsonAtomic(runPath(runDir, 'wrapper'), wrapper);
   const heartbeat = setInterval(() => {
     beat().catch((error: unknown) => process.stderr.write(`operator: heartbeat write failed: ${(error as Error).message}\n`));
@@ -143,7 +144,8 @@ export async function runJobExec(runDir: string): Promise<number> {
   const runCommand = (argv: string[]): Promise<ExitInfo> => new Promise<ExitInfo>((resolveExit) => {
     const [command, ...args] = argv;
     const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: attended ? 'inherit' : ['ignore', 'pipe', 'pipe'], detached: !attended });
-    const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
+    const identity = child.pid === undefined ? undefined : processIdentity(child.pid);
+    const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}), ...(identity ? { identity } : {}) };
     current = info;
     if (info) void writeJsonAtomic(runPath(runDir, 'command'), info).catch(() => undefined);
     const keep = (chunk: Buffer): void => { if (head.length < HEAD_CHARS) head += chunk.toString('utf8').slice(0, HEAD_CHARS - head.length); };

@@ -1,12 +1,12 @@
 import type { SlotHold } from './jobs.ts';
 import { EndingLocks, endOwnedLock, retakeLock } from './locks.ts';
 import type { Logger } from './log.ts';
-import type { Manifest, WorkspaceMember } from './manifest.ts';
+import { isLocal, namesHosts, type Manifest, type WorkspaceMember } from './manifest.ts';
 import type { StateBackend } from './state/types.ts';
 
 export type PoolDecision =
   | { granted: true; hold: SlotHold; member?: WorkspaceMember }
-  | { granted: false; waitingFor: string; retryAfterMs: number };
+  | { granted: false; waitingFor: string; retryAfterMs: number; elsewhere?: true };
 
 const LOCAL_RETRY_MS = 15_000;
 const REMOTE_RETRY_MIN_MS = 30_000;
@@ -24,6 +24,8 @@ export function memberLockKey(pool: string, member: string): string {
 export interface PoolHooks {
   notify?: (title: string, body: string) => Promise<void>;
   stopping?: () => boolean;
+  /** This daemon's host: it takes only members without a host or with this one. */
+  host?: string;
 }
 
 export class Pools {
@@ -62,12 +64,19 @@ export class Pools {
   async acquire(poolName: string, jobId: string, options: { member?: string; read?: boolean } = {}): Promise<PoolDecision> {
     const pool = this.manifest.pools.get(poolName);
     if (!pool) return { granted: false, waitingFor: `pool ${poolName} is not configured`, retryAfterMs: LOCAL_RETRY_MS };
+    // With hosts named, several daemons read the same queue: a job another host's members serve is
+    // left to that host, and a waiting reason names nothing one host sees and another does not.
+    const host = this.hooks.host;
+    const hosts = host !== undefined && namesHosts(this.manifest);
+    const local = pool.kind === 'workspaces' ? pool.members.filter((m) => host === undefined || isLocal(m, host)) : [];
+    if (pool.kind === 'workspaces' && local.length === 0) return { granted: false, waitingFor: `pool ${poolName} has no workspace on this host`, retryAfterMs: LOCAL_RETRY_MS, elsewhere: true };
     const holds = this.holds(poolName);
     const existing = holds.get(jobId);
     if (existing) return { granted: true, hold: existing };
     if (pool.kind === 'workspaces' && (options.member !== undefined || options.read)) {
       const member = pool.members.find((m) => m.name === options.member);
       if (!member) return { granted: false, waitingFor: options.member === undefined ? `read access to pool ${poolName} needs a member named by the request` : `pool ${poolName} has no member ${options.member}`, retryAfterMs: LOCAL_RETRY_MS };
+      if (host !== undefined && !isLocal(member, host)) return { granted: false, waitingFor: `workspace ${member.name} runs on host ${member.host}`, retryAfterMs: LOCAL_RETRY_MS, elsewhere: true };
       const key = memberLockKey(poolName, member.name);
       if (options.read) {
         const hold: SlotHold = { pool: poolName, kind: 'workspaces', key, token: '', global: false, member: member.name, read: true };
@@ -89,17 +98,17 @@ export class Pools {
       return { granted: true, hold, member };
     }
     if (pool.kind === 'limit') {
-      if (holds.size >= pool.limit) return { granted: false, waitingFor: `pool ${poolName} full (${holds.size}/${pool.limit} held by this host)`, retryAfterMs: LOCAL_RETRY_MS };
-      const key = `pool.${poolName}`;
+      if (holds.size >= pool.limit) return { granted: false, waitingFor: hosts ? `pool ${poolName} full` : `pool ${poolName} full (${holds.size}/${pool.limit} held by this host)`, retryAfterMs: LOCAL_RETRY_MS };
+      const key = pool.perHost && host !== undefined ? `pool.${poolName}.${host}` : `pool.${poolName}`;
       const grant = await this.backend.slots.acquire(key, pool.limit, pool.slotTtlMs, { global: pool.shared });
-      if (!grant.granted) return { granted: false, waitingFor: `pool ${poolName} full (limit ${pool.limit}${pool.shared ? ', shared' : ''})`, retryAfterMs: Math.max(REMOTE_RETRY_MIN_MS, grant.retryAfterMs) };
+      if (!grant.granted) return { granted: false, waitingFor: hosts ? `pool ${poolName} full` : `pool ${poolName} full (limit ${pool.limit}${pool.shared ? ', shared' : ''})`, retryAfterMs: Math.max(REMOTE_RETRY_MIN_MS, grant.retryAfterMs) };
       const hold: SlotHold = { pool: poolName, kind: 'limit', key, token: grant.token, global: pool.shared };
       holds.set(jobId, hold);
       return { granted: true, hold };
     }
     const busy = new Set([...holds.values()].filter((hold) => !hold.read).map((hold) => hold.member));
     let lapsing = 0;
-    for (const member of pool.members) {
+    for (const member of local) {
       if (busy.has(member.name)) continue;
       const key = memberLockKey(poolName, member.name);
       const left = this.ending.remaining(key);
@@ -112,7 +121,7 @@ export class Pools {
       holds.set(jobId, hold);
       return { granted: true, hold, member };
     }
-    return { granted: false, waitingFor: `every workspace of pool ${poolName} is busy (${pool.members.map((m) => m.name).join(', ')})`, retryAfterMs: lapsing > 0 ? lapsing : LOCAL_RETRY_MS };
+    return { granted: false, waitingFor: hosts ? `every workspace of pool ${poolName} is busy` : `every workspace of pool ${poolName} is busy (${pool.members.map((m) => m.name).join(', ')})`, retryAfterMs: lapsing > 0 ? lapsing : LOCAL_RETRY_MS };
   }
 
   member(hold: SlotHold): WorkspaceMember | undefined {
