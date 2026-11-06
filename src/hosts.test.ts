@@ -187,3 +187,25 @@ test('a restarted daemon still stops a run taken over before its first observati
   await second.poll();
   await pollUntil(second, async () => { try { process.kill(wrapper?.pid ?? 0, 0); return false; } catch { return true; } });
 });
+
+test('after a restart the superseded attempt is stopped and the current one keeps running', async () => {
+  const p = await hosted();
+  const first = p.daemon({ host: 'vm2' });
+  await first.acquireLeader();
+  const { id } = await enqueue(first.jobs, { project: 'demo', workflow: 'demo', operation: 'hosted', subject: 'twice', input: { seconds: 30 }, trigger: { id: 'twice', name: 'test', kind: 'manual' }, member: 'r1' });
+  await first.poll();
+  const oldDir = (await first.jobs.get(id))?.run?.runDir ?? '';
+  await pollUntil(first, async () => (await readJsonFile<WrapperInfo>(runPath(oldDir, 'wrapper'))) !== undefined);
+  const old = await readJsonFile<WrapperInfo>(runPath(oldDir, 'wrapper'));
+  first.stop();
+  await first.jobs.update(id, (job) => { job.status = 'queued'; job.attempt += 1; job.input = { seconds: 3 }; delete job.run; return job; });
+  await p.backend.locks.release('leader.vm2');
+  await p.backend.locks.release('member.host-slot.r1');
+  const second = p.daemon({ host: 'vm2' });
+  assert.equal(await second.acquireLeader(), true);
+  await pollUntil(second, async () => (await second.jobs.get(id))?.status === 'running');
+  const alive = (pid: number | undefined): boolean => { try { process.kill(pid ?? 0, 0); return true; } catch { return false; } };
+  await pollUntil(second, async () => !alive(old?.pid));
+  await pollUntil(second, async () => (await second.jobs.get(id))?.status === 'done');
+  assert.equal((await second.jobs.get(id))?.attempt, 2);
+});

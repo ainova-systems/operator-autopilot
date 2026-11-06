@@ -18,7 +18,7 @@ import { hostname } from 'node:os';
 import { isLocal, namesHosts, thisHost, type Manifest, type OperationSpec } from './manifest.ts';
 import { clearPause, markQuiet, readPause, type PauseRecord } from './pause.ts';
 import { Pools } from './pools.ts';
-import { ageMs, processAlive, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
+import { ageMs, bootedAt, processAlive, processStartedAt, readJsonFile, runPath, writeJsonAtomic, type CommandInfo, type ExitInfo, type WrapperInfo } from './runfiles.ts';
 import type { Acquired, StateBackend } from './state/types.ts';
 import { dueFirings } from './triggers.ts';
 import { WaitStore } from './waits.ts';
@@ -50,6 +50,9 @@ const WAIT_SWEEP_MS = 60_000;
 const TAB_RETRY_MS = 60_000;
 // A dispatch the state backend failed is tried again after this, not on every poll.
 const BACKEND_RETRY_MS = 30_000;
+// How far a process's start may sit from what its run recorded, and how soon a run starts its command.
+const PROCESS_START_SLACK_MS = 10_000;
+const COMMAND_START_WITHIN_MS = 10 * 60_000;
 // Guard slot leases end within a day.
 const DAY_MS = 86_400_000;
 const QUOTA_RESUME_RETRY_MS = 60_000;
@@ -151,8 +154,8 @@ export class Daemon {
   private readonly renewedAt = new Map<string, number>();
   /** The run lease token this daemon last took per job, ahead of the job record that may not have saved it. */
   private readonly runTokens = new Map<string, string>();
-  /** Runs started or adopted here, so one whose job another daemon took over is stopped. */
-  private readonly localRuns = new Map<string, { attempt: number; runDir: string }>();
+  /** Runs started or adopted here, by run directory, so one whose job another daemon took over is stopped. */
+  private readonly localRuns = new Map<string, { jobId: string; attempt: number }>();
   private localRunsScanned = false;
   private readonly notified = new Set<string>();
   /** Interactive sessions seen idle without a result: since when, and how often they were nudged. */
@@ -430,22 +433,32 @@ export class Daemon {
   private async stopTakenOverRuns(running: JobRecord[]): Promise<void> {
     if (!this.localRunsScanned) await this.scanLocalRuns();
     for (const job of running) {
-      if (job.run?.runDir && this.mine(job.run.host, job.run.runDir)) this.localRuns.set(job.id, { attempt: job.attempt, runDir: job.run.runDir });
+      if (job.run?.runDir && this.mine(job.run.host, job.run.runDir)) this.localRuns.set(job.run.runDir, { jobId: job.id, attempt: job.attempt });
     }
-    for (const [id, local] of this.localRuns) {
-      if (running.some((job) => job.id === id && job.attempt === local.attempt && job.run?.runDir === local.runDir)) continue;
-      this.localRuns.delete(id);
-      this.runTokens.delete(id);
-      if (await readExit(local.runDir)) continue;
-      // The command can outlive its wrapper, so each is stopped on its own.
+    for (const [runDir, local] of this.localRuns) {
+      if (running.some((job) => job.id === local.jobId && job.attempt === local.attempt && job.run?.runDir === runDir)) continue;
+      this.localRuns.delete(runDir);
+      if (!running.some((job) => job.id === local.jobId)) this.runTokens.delete(local.jobId);
+      if (await readExit(runDir)) continue;
+      // A process id can be reused: only a wrapper started when its run says, on this boot, and a
+      // command started within its run's first minutes are signalled. The command can outlive its
+      // wrapper, so each is stopped on its own.
+      const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+      const since = wrapper ? Date.parse(wrapper.startedAt) : NaN;
+      const boot = await bootedAt();
+      if (!wrapper || !Number.isFinite(since) || boot === undefined || since < boot) continue;
       let stopped = false;
-      const command = await readJsonFile<CommandInfo>(runPath(local.runDir, 'command'));
-      if (command && processAlive(command.pid)) { signalCommand(command, 'SIGKILL'); stopped = true; }
-      const wrapper = await readJsonFile<WrapperInfo>(runPath(local.runDir, 'wrapper'));
-      if (wrapper && processAlive(wrapper.pid)) {
+      const command = await readJsonFile<CommandInfo>(runPath(runDir, 'command'));
+      const commandStart = command ? await processStartedAt(command.pid) : undefined;
+      if (command && commandStart !== undefined && commandStart >= since - PROCESS_START_SLACK_MS && commandStart <= since + COMMAND_START_WITHIN_MS) {
+        signalCommand(command, 'SIGKILL');
+        stopped = true;
+      }
+      const wrapperStart = await processStartedAt(wrapper.pid);
+      if (wrapperStart !== undefined && Math.abs(wrapperStart - since) <= PROCESS_START_SLACK_MS) {
         try { process.kill(wrapper.pid, 'SIGTERM'); stopped = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
       }
-      if (stopped) this.log.warn('stopped a run another daemon took over', { job: id, attempt: local.attempt });
+      if (stopped) this.log.warn('stopped a run another daemon took over', { job: local.jobId, attempt: local.attempt });
     }
   }
 
@@ -462,8 +475,7 @@ export class Daemon {
         const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
         const command = await readJsonFile<CommandInfo>(runPath(runDir, 'command'));
         if (!(wrapper && processAlive(wrapper.pid)) && !(command && processAlive(command.pid))) continue;
-        const known = this.localRuns.get(id);
-        if (!known || known.attempt < attempt) this.localRuns.set(id, { attempt, runDir });
+        if (!this.localRuns.has(runDir)) this.localRuns.set(runDir, { jobId: id, attempt });
       }
     }
   }
@@ -752,7 +764,7 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return undefined;
     }
-    this.localRuns.set(job.id, { attempt: job.attempt, runDir: prepared.runDir });
+    this.localRuns.set(prepared.runDir, { jobId: job.id, attempt: job.attempt });
     if (run.lease) this.runTokens.set(job.id, run.lease.token);
     if (op.engine !== 'command' && (op.tabs === 'per-subject' || op.thread === 'per-subject')) await this.backend.docs.replace(PROVIDER_AFFINITIES, this.affinityKey(job), { provider: op.engine, workflow: job.workflow, subject: job.subject, operation: job.operation }, { ttlMs: SUBJECT_TAB_TTL_MS });
     try {

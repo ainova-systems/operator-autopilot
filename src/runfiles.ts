@@ -90,3 +90,19 @@ export function processAlive(pid: number): boolean {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
+
+/** When the system booted (epoch ms), from /proc; undefined where /proc does not answer. */
+export async function bootedAt(): Promise<number | undefined> {
+  const btime = Number((await readFile('/proc/stat', 'utf8').catch(() => '')).match(/^btime (\d+)$/m)?.[1]);
+  return Number.isFinite(btime) && btime > 0 ? btime * 1000 : undefined;
+}
+
+/** When a process started (epoch ms), from /proc; undefined where /proc does not answer. */
+export async function processStartedAt(pid: number): Promise<number | undefined> {
+  const boot = await bootedAt();
+  const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => undefined);
+  if (boot === undefined || stat === undefined) return undefined;
+  // Field 22, start time in clock ticks since boot, counted after the parenthesised command name.
+  const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+  return Number.isFinite(ticks) ? boot + ticks * 10 : undefined;
+}
