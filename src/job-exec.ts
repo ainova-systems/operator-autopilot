@@ -76,7 +76,7 @@ export async function runJobExec(runDir: string): Promise<number> {
   // The heartbeat exists before wrapper.json does, so an observer never sees a wrapper without one.
   const beat = (): Promise<void> => writeFile(runPath(runDir, 'heartbeat'), new Date().toISOString());
   await beat();
-  const self = await processIdentity(process.pid);
+  const self = processIdentity(process.pid);
   const wrapper: WrapperInfo = { pid: process.pid, host: launch.host ?? hostname(), startedAt: new Date().toISOString(), ...(self ? { identity: self } : {}) };
   await writeJsonAtomic(runPath(runDir, 'wrapper'), wrapper);
   const heartbeat = setInterval(() => {
@@ -144,9 +144,10 @@ export async function runJobExec(runDir: string): Promise<number> {
   const runCommand = (argv: string[]): Promise<ExitInfo> => new Promise<ExitInfo>((resolveExit) => {
     const [command, ...args] = argv;
     const child = spawn(command ?? 'false', args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: attended ? 'inherit' : ['ignore', 'pipe', 'pipe'], detached: !attended });
-    const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}) };
+    const identity = child.pid === undefined ? undefined : processIdentity(child.pid);
+    const info: CommandInfo | undefined = child.pid === undefined ? undefined : { pid: child.pid, ...(attended ? { group: false } : {}), ...(identity ? { identity } : {}) };
     current = info;
-    if (info) void processIdentity(info.pid).then((identity) => writeJsonAtomic(runPath(runDir, 'command'), identity ? { ...info, identity } : info)).catch(() => undefined);
+    if (info) void writeJsonAtomic(runPath(runDir, 'command'), info).catch(() => undefined);
     const keep = (chunk: Buffer): void => { if (head.length < HEAD_CHARS) head += chunk.toString('utf8').slice(0, HEAD_CHARS - head.length); };
     child.stdout?.on('data', (chunk: Buffer) => { process.stdout.write(chunk); output.write(chunk); keep(chunk); });
     child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); output.write(chunk); keep(chunk); });

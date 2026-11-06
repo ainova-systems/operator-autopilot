@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Provider } from './provider-quota.ts';
@@ -94,11 +95,20 @@ export function processAlive(pid: number): boolean {
 /** A process as the kernel knows it: this boot's id and its start time in clock ticks, which a reused pid does not share. */
 export interface ProcessIdentity { boot: string; ticks: number }
 
-/** The identity of a live process, or undefined where /proc does not answer. */
-export async function processIdentity(pid: number): Promise<ProcessIdentity | undefined> {
-  const boot = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8').catch(() => '')).trim();
-  const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => undefined);
-  if (!boot || stat === undefined) return undefined;
+/**
+ * The identity of a live process, or undefined where /proc does not answer. Synchronous on purpose:
+ * read in the same tick as `spawn`, the child cannot have been reaped, so its pid is still its own.
+ */
+export function processIdentity(pid: number): ProcessIdentity | undefined {
+  let boot: string;
+  let stat: string;
+  try {
+    boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return undefined;
+  }
+  if (!boot) return undefined;
   // Field 22, the start time, counted after the parenthesised command name.
   const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
   return Number.isInteger(ticks) ? { boot, ticks } : undefined;
@@ -107,6 +117,6 @@ export async function processIdentity(pid: number): Promise<ProcessIdentity | un
 /** Whether `pid` is still the process recorded with `identity`; false when either cannot be read. */
 export async function sameProcess(pid: number, identity: ProcessIdentity | undefined): Promise<boolean> {
   if (!identity) return false;
-  const now = await processIdentity(pid);
+  const now = processIdentity(pid);
   return now !== undefined && now.boot === identity.boot && now.ticks === identity.ticks;
 }

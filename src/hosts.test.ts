@@ -211,7 +211,7 @@ test('after a restart the superseded attempt is stopped and the current one keep
 });
 
 test('a process counts as the recorded one only while boot and start ticks match', async () => {
-  const self = await processIdentity(process.pid);
+  const self = processIdentity(process.pid);
   if (!self) return; // no /proc here: nothing is ever signalled from a record
   assert.equal(await sameProcess(process.pid, self), true);
   assert.equal(await sameProcess(process.pid, { ...self, ticks: self.ticks + 1 }), false, 'a reused pid starts at another tick');
