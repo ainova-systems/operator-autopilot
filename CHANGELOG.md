@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.1] - 2026-11-07
 
 - A per-subject tab whose pane holds an agent session no run started, such as one herdr resumes after a restart, is closed and replaced by a new tab that continues the session, instead of receiving the next run's launch command as a prompt; herdr's `pane process-info` decides whether a pane is back at its shell.
 
