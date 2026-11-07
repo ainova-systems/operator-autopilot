@@ -25,6 +25,19 @@ test('the herdr adapter opens its own tab and names it, using the CLI\'s JSON an
   assert.deepEqual(calls.at(-1), ['tab', 'close', 'wA:t3']);
 });
 
+test('a pane is at its shell only while the shell holds its terminal', async () => {
+  const info = (shell: number, group: number) => JSON.stringify({ result: { process_info: { pane_id: 'wA:p3', shell_pid: shell, foreground_process_group_id: group } } });
+  let answer = info(100, 100);
+  const calls: string[][] = [];
+  const herdr = createHerdr(async (args) => { calls.push(args); return answer; });
+  assert.equal(await herdr.atShell('wA:p3'), true);
+  assert.deepEqual(calls[0], ['pane', 'process-info', '--pane', 'wA:p3']);
+  answer = info(100, 140);
+  assert.equal(await herdr.atShell('wA:p3'), false);
+  answer = JSON.stringify({ result: { process_info: { pane_id: 'wA:p3' } } });
+  assert.equal(await herdr.atShell('wA:p3'), undefined);
+});
+
 test('herdr being absent reads as unavailable, not as an error', async () => {
   const herdr = createHerdr(async () => { throw new Error('spawn herdr ENOENT'); });
   assert.equal(await herdr.available(), false);

@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- A per-subject tab whose pane holds an agent session no run started, such as one herdr resumes after a restart, is closed and replaced by a new tab that continues the session, instead of receiving the next run's launch command as a prompt; herdr's `pane process-info` decides whether a pane is back at its shell.
+
 ## [0.10.0] - 2026-11-06
 
 - One project runs on several hosts that share its state: a workspace names its `host`, a key with `count` declares a numbered group, and each host runs its own daemon over one job queue, starting only the jobs it can place and keeping its own provider cooldowns, `perHost` limit pools, herdr tabs and `operator pause`.

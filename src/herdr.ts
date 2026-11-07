@@ -18,6 +18,11 @@ export interface Herdr {
   /** `gone` when the tab was already closed, for example by hand. */
   closeTab(tabId: string): Promise<'closed' | 'gone'>;
   agentStatus(paneId: string): Promise<string | undefined>;
+  /**
+   * True when the pane's shell holds its terminal, false when a program it started does - an agent
+   * session included. Undefined when this herdr does not say.
+   */
+  atShell(paneId: string): Promise<boolean | undefined>;
   notify(title: string, body: string): Promise<void>;
 }
 
@@ -102,6 +107,12 @@ export function createHerdr(exec: HerdrExec = defaultHerdrExec): Herdr {
     async agentStatus(paneId: string): Promise<string | undefined> {
       const info = result(await exec(['pane', 'get', paneId]), 'pane get');
       return (info['pane'] as { agent_status?: string } | undefined)?.agent_status;
+    },
+    async atShell(paneId: string): Promise<boolean | undefined> {
+      const info = result(await exec(['pane', 'process-info', '--pane', paneId]), 'pane process-info');
+      const process = info['process_info'] as { shell_pid?: unknown; foreground_process_group_id?: unknown } | undefined;
+      if (typeof process?.shell_pid !== 'number' || typeof process.foreground_process_group_id !== 'number') return undefined;
+      return process.foreground_process_group_id === process.shell_pid;
     },
     async notify(title: string, body: string): Promise<void> {
       await exec(['notification', 'show', title, '--body', body, '--sound', 'request']);

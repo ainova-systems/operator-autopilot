@@ -94,6 +94,7 @@ async function fixture(options: { live?: boolean; limit?: boolean; timeout?: str
     setTitle: async () => undefined,
     closeTab: async () => 'gone',
     agentStatus: async () => status,
+    atShell: async () => undefined,
     notify: async () => undefined,
   };
   return {
