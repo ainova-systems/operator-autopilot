@@ -1139,6 +1139,65 @@ test('a claude step in a per-subject tab starts a session under a known id, and 
   }
 });
 
+test('a per-subject tab holding an agent session no run started is replaced, and the new tab continues the session', async () => {
+  const p = await project({ extraOperations: CODE_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const { herdr, created, closed } = tabHerdr();
+    const stray = new Set<string>();
+    const typedInto: string[] = [];
+    const daemon = p.daemon({ herdr: {
+      ...herdr,
+      runInPane: async (paneId, command) => { typedInto.push(paneId); await herdr.runInPane(paneId, command); },
+      atShell: async (paneId) => !stray.has(paneId),
+    } });
+    await daemon.acquireLeader();
+    const first = await runOnce(daemon, 'code', 'pr-5', 'code-1');
+    assert.equal(first?.status, 'done');
+    // A herdr restart ends the run's wrapper and resumes the agent session bare in the same pane.
+    const wrapper = await readJsonFile<WrapperInfo>(runPath(first?.run?.runDir ?? '', 'wrapper'));
+    if (processAlive(wrapper?.pid ?? 0)) process.kill(wrapper?.pid ?? 0, 'SIGTERM');
+    stray.add('wT:p1');
+    const second = await runOnce(daemon, 'code', 'pr-5', 'code-2');
+    assert.equal(second?.status, 'done');
+    assert.deepEqual(closed, ['wT:t1']);
+    assert.deepEqual(created, ['wT:t1', 'wT:t2']);
+    assert.deepEqual(typedInto, ['wT:p1', 'wT:p2'], 'the wrapper is never typed into the stray session');
+    assert.equal(second?.run?.placement.tabId, 'wT:t2');
+    const [call1, call2] = await claude.calls();
+    const id = call1?.[call1.indexOf('--session-id') + 1];
+    assert.deepEqual(call2?.slice(call2.indexOf('--resume'), call2.indexOf('--resume') + 2), ['--resume', id]);
+    assert.ok(p.lines.some((line) => line.includes('holds an agent session no run started')));
+    await endAll(daemon);
+  } finally {
+    claude.restore();
+  }
+});
+
+test('a session recovered from a replaced per-subject tab continues even when the run cannot get a new tab', async () => {
+  const p = await project({ extraOperations: CODE_OPERATION });
+  const claude = await fakeClaude(p);
+  try {
+    const { herdr, closed } = tabHerdr();
+    const stray = new Set<string>();
+    let workspace: string | undefined = 'wT';
+    const daemon = p.daemon({ herdr: { ...herdr, findWorkspace: async () => workspace, atShell: async (paneId) => !stray.has(paneId) } });
+    await daemon.acquireLeader();
+    assert.equal((await runOnce(daemon, 'code', 'pr-5', 'code-1'))?.status, 'done');
+    stray.add('wT:p1');
+    workspace = undefined;
+    const second = await runOnce(daemon, 'code', 'pr-5', 'code-2');
+    assert.equal(second?.status, 'done');
+    assert.deepEqual(closed, ['wT:t1']);
+    assert.match(second?.run?.placement.degraded ?? '', /herdr workspace .* not found/);
+    const [call1, call2] = await claude.calls();
+    const id = call1?.[call1.indexOf('--session-id') + 1];
+    assert.deepEqual(call2?.slice(call2.indexOf('--resume'), call2.indexOf('--resume') + 2), ['--resume', id]);
+  } finally {
+    claude.restore();
+  }
+});
+
 test('a kept tab is not closed when its keepTab runs out while someone works in it, and is closed once its pane is idle', async () => {
   const p = await project({ extraOperations: '      look:     { kind: interactive, engine: command, command: node scripts/session.mjs, placement: herdr, keepTab: 4s, timeout: 5m }' });
   const closes: string[] = [];

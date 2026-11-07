@@ -690,12 +690,13 @@ export class Daemon {
     const placement = pending.placement;
     const member = pending.slot?.member;
     let kept: SubjectTab | undefined;
+    let reuse: { tab?: SubjectTab; retain: boolean; busy?: string; sessionId?: string } | undefined;
     let retain = false;
     if (op.placement === 'herdr') {
       if (!herdrWorkspace) placement.degraded = 'no herdr workspace configured';
       else {
         try {
-          const reuse = op.tabs === 'per-subject' ? await this.reusableTab(job, member) : { retain: false };
+          reuse = op.tabs === 'per-subject' ? await this.reusableTab(job, member) : { retain: false };
           if (reuse.busy) return reuse.busy;
           kept = reuse.tab;
           retain = reuse.retain;
@@ -718,7 +719,9 @@ export class Daemon {
     if (op.kind === 'interactive' && !attended) placement.degraded = `${placement.degraded ?? 'no terminal'}; runs as an agent`;
     // A per-subject tab is recorded before anything else can fail, so a failed start cannot leak it.
     // A retained claude tab continues its session; the first run in it starts one under a known id.
-    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' ? { id: job.claudeSessionId ?? randomUUID(), resume: Boolean(job.claudeSessionId) } : undefined;
+    // A session recovered from a replaced tab continues wherever the run lands, a tab-less run included.
+    const continued = job.claudeSessionId ?? reuse?.sessionId;
+    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' ? { id: continued ?? randomUUID(), resume: Boolean(continued) } : undefined;
     if (retain && placement.kind === 'herdr' && placement.tabId && placement.paneId && placement.workspace) {
       // The wrapper decides whether the session can be resumed: it runs where the session does.
       if (op.engine === 'claude' && kept?.sessionId) session = { id: kept.sessionId, resume: true };
@@ -785,7 +788,7 @@ export class Daemon {
    * The kept tab a per-subject run reuses, or why the run waits for it. `retain` is false when the
    * run gets a tab of its own that closes after it, because herdr is not there.
    */
-  private async reusableTab(job: JobRecord, member: string | undefined): Promise<{ tab?: SubjectTab; retain: boolean; busy?: string }> {
+  private async reusableTab(job: JobRecord, member: string | undefined): Promise<{ tab?: SubjectTab; retain: boolean; busy?: string; sessionId?: string }> {
     if (!(await this.herdr.available())) return { retain: false };
     const key = subjectTabKey(job.workflow, job.subject, job.operation, member);
     const kept = (await this.backend.docs.get<SubjectTab>(SUBJECT_TABS_COLLECTION, key))?.value;
@@ -806,7 +809,20 @@ export class Daemon {
     if (use === 'in-use' || use === 'confirming') return { retain: true, busy: `per-subject tab ${kept.tabId} is in use` };
     if (!(await this.endSession(kept.runDir))) return { retain: true, busy: `per-subject tab ${kept.tabId} still runs a session this host cannot end` };
     // The next wrapper is typed into the pane, so the pane must be back at its shell first.
-    if (!(await this.paneSettled(kept.paneId))) return { retain: true, busy: `per-subject tab ${kept.tabId} is not back at its shell` };
+    const settled = await this.paneSettled(kept.paneId);
+    if (settled === 'stray') {
+      // An agent session no run of ours started holds the pane, typically one herdr restored after a
+      // restart: typed there, the wrapper would reach it as a prompt. The tab is closed with it, and
+      // the run opens a new one that continues the subject's session.
+      try {
+        if ((await this.herdr.closeTab(kept.tabId)) === 'closed') this.log.warn('the per-subject tab holds an agent session no run started; closed it, and a new tab continues the session', { job: job.id, tab: kept.tabId, pane: kept.paneId, session: kept.sessionId });
+      } catch (error) {
+        return { retain: true, busy: `per-subject tab ${kept.tabId} holds an agent session no run started, and herdr did not close it: ${errorText(error)}` };
+      }
+      await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
+      return { retain: true, ...(kept.sessionId ? { sessionId: kept.sessionId } : {}) };
+    }
+    if (settled === 'busy') return { retain: true, busy: `per-subject tab ${kept.tabId} is not back at its shell` };
     this.log.info('reusing the per-subject tab', { job: job.id, tab: kept.tabId, pane: kept.paneId, session: kept.sessionId });
     return { tab: kept, retain: true };
   }
@@ -833,15 +849,19 @@ export class Daemon {
   }
 
   /**
-   * Waits briefly for a pane whose session this daemon just ended to read as free again. `unknown` is
-   * a shell here: nobody started an agent in the moment since the session ended.
+   * Waits briefly for a pane whose session this daemon just ended to be back at its shell. `stray`
+   * when an agent still sits at its prompt there: no wrapper of ours runs it, so nothing this daemon
+   * ends will free the pane. A herdr that does not say who holds the pane falls back to the agent
+   * status, where `unknown` is a shell: nobody started an agent in the moment since the session ended.
    */
-  private async paneSettled(paneId: string): Promise<boolean> {
+  private async paneSettled(paneId: string): Promise<'shell' | 'busy' | 'stray'> {
     const deadline = Date.now() + PANE_SETTLE_MS;
     for (;;) {
+      const shell = await this.herdr.atShell(paneId).catch(() => undefined);
+      if (shell === true) return 'shell';
       const status = await this.herdr.agentStatus(paneId).catch(() => undefined);
-      if (status === 'idle' || status === 'done' || status === 'unknown') return true;
-      if (Date.now() >= deadline) return false;
+      if (shell === undefined && (status === 'idle' || status === 'done' || status === 'unknown')) return 'shell';
+      if (Date.now() >= deadline) return shell === false && (status === 'idle' || status === 'done') ? 'stray' : 'busy';
       await sleep(200);
     }
   }

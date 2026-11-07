@@ -182,7 +182,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   result, may be doing work that closing it would cut off: the close waits for a later poll, an ended
   subject's tab leaves the registry and waits in the close retries, and the next run stays queued,
   saying why. A session on another host, or a pane not back at its shell, also keeps the next run
-  waiting. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
+  waiting. A pane is back at its shell when herdr's `pane process-info` shows the shell holding its
+  terminal; an agent still sitting idle or done there after the run's session ended is one no run
+  started - herdr resumes the sessions of its panes after a restart - so the runtime closes that tab
+  and the next run opens a new one that continues the subject's session. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
   warning and one owner notification, sent again on later polls until herdr delivers it. Timing: an
   ended subject's tab closes in the poll that ends it when its pane reads idle, done or gone, and on
   the next poll when it reads `unknown`; a tab still in use is asked again every minute, so it closes
