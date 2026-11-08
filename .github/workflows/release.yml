@@ -10,12 +10,14 @@ name: Release
 # A pull request that changes this workflow, the Dockerfile or the package manifest runs the same
 # build and smoke checks without publishing anything.
 #
+# A final release also points `next` at itself, unless `next` holds a newer release candidate.
+#
 # Authenticates to npm through trusted publishing (GitHub Actions OIDC): no npm token is stored or
 # passed. It depends on the trusted publisher configured for the package on npmjs.com -
 # organisation ainova-systems, repository operator-autopilot, workflow file release.yml, no
-# environment, direct `npm publish` allowed - and on npm 11.5.1 or later, which the runner's
-# Node 24 ships. Renaming this file breaks publishing until that configuration names the new file.
-# The image is pushed with the workflow's own token.
+# environment, direct `npm publish` and `npm dist-tag` both allowed. Renaming this file breaks
+# publishing until that configuration names the new file. The image is pushed with the workflow's
+# own token.
 
 on:
   release:
@@ -58,6 +60,15 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later and `npm dist-tag` through it 11.21.0 or later;
+      # the runner's Node 24 ships an older npm. Installed before the pack test, so the npm that
+      # packs the package publishes it.
+      - name: Install npm 11.21.1
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.21.1
+          npm --version
 
       - name: Determine version
         id: ver
@@ -121,6 +132,10 @@ jobs:
       - name: Publish
         if: github.event_name == 'release'
         run: npm publish --provenance --access public --tag "${{ steps.ver.outputs.channel }}"
+
+      - name: Point next at the final release
+        if: github.event_name == 'release' && steps.ver.outputs.channel == 'latest'
+        run: node scripts/align-next.mjs "${{ steps.ver.outputs.version }}"
 
   image:
     name: image ${{ needs.npm.outputs.version }}

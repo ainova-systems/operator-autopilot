@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Releases are published to npm through npm trusted publishing (GitHub Actions OIDC) with provenance; the release workflow no longer uses a stored npm token.
+- A final release points npm's `next` dist-tag at itself unless `next` holds a newer release candidate, so `@ainova-systems/operator@next` no longer installs a stale release candidate.
 
 ## [0.10.1] - 2026-11-07
 
