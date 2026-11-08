@@ -10,8 +10,12 @@ name: Release
 # A pull request that changes this workflow, the Dockerfile or the package manifest runs the same
 # build and smoke checks without publishing anything.
 #
-# Needs the NPM_TOKEN repository secret: a granular token with publish rights on the
-# ainova-systems npm organisation. The image is pushed with the workflow's own token.
+# Authenticates to npm through trusted publishing (GitHub Actions OIDC): no npm token is stored or
+# passed. It depends on the trusted publisher configured for the package on npmjs.com -
+# organisation ainova-systems, repository operator-autopilot, workflow file release.yml, no
+# environment, direct `npm publish` allowed - and on npm 11.5.1 or later, which the runner's
+# Node 24 ships. Renaming this file breaks publishing until that configuration names the new file.
+# The image is pushed with the workflow's own token.
 
 on:
   release:
@@ -37,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing (OIDC) and provenance
     outputs:
       version: ${{ steps.ver.outputs.version }}
       channel: ${{ steps.ver.outputs.channel }}
@@ -48,12 +52,12 @@ jobs:
           ref: ${{ github.event.release.tag_name || github.sha }}
           fetch-depth: 0
 
+      # No dependency cache: the job that can publish restores nothing another run wrote.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
 
       - name: Determine version
         id: ver
@@ -117,8 +121,6 @@ jobs:
       - name: Publish
         if: github.event_name == 'release'
         run: npm publish --provenance --access public --tag "${{ steps.ver.outputs.channel }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   image:
     name: image ${{ needs.npm.outputs.version }}
