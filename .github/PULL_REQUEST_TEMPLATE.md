@@ -1,10 +1,10 @@
 <!-- See CONTRIBUTING.md for setup and the code standards. -->
 
-**What changed**
+## What changed
 
-**Why**
+## Why
 
-**How to confirm it**
+## Manual Verification
 
 ## Checks
 
