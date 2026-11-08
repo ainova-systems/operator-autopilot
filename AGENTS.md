@@ -11,38 +11,40 @@ Source of truth: `intelligence/` | Sync: `intelligence sync`
 
 | Agent | Tier | Access | Description |
 |-------|------|--------|-------------|
-| [dev-code-reviewer](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents/dev-code-reviewer.md) | standard | readonly | Reviews pending changes and pull requests for correctness, conventions, boundaries, tests, and security. Read-only. |
-| [dev-qa-verifier](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents/dev-qa-verifier.md) | standard | readonly | Executes a change's declared verification steps against the running software and reports what was observed. Read-only. |
-| [dev-test-engineer](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/agents/dev-test-engineer.md) | standard | full | Test strategy and coverage across unit, integration, contract, and end-to-end levels. Builds the net that makes AI-paced change safe. |
-| [intelligence-architect](.intelligence/packages/@ainova-systems/sync/agents/intelligence-architect.md) | heavy | full | Design and prune the intelligence layer - rule vs skill vs agent, split what grew, remove duplication and hardcoded paths |
-| [intelligence-operator](.intelligence/packages/@ainova-systems/sync/agents/intelligence-operator.md) | standard | full | Interpret CLI plans and operate sync, update, and adapter flows |
+| dev-code-reviewer | standard | readonly | Reviews pending changes and pull requests for correctness, conventions, boundaries, tests, and security. Read-only. |
+| dev-qa-verifier | standard | readonly | Executes a change's declared verification steps against the running software and reports what was observed. Read-only. |
+| dev-test-engineer | standard | full | Test strategy and coverage across unit, integration, contract, and end-to-end levels. Builds the net that makes AI-paced change safe. |
+| intelligence-architect | heavy | full | Design and prune the intelligence layer - rule vs skill vs agent, split what grew, remove duplication and hardcoded paths |
+| intelligence-operator | standard | full | Interpret CLI plans and operate sync, update, and adapter flows |
 
 ### Skills
 
 | Skill | Description |
 |-------|-------------|
-| [intelligence-learn-from-repository](.intelligence/packages/@ainova-systems/sync/skills/intelligence-learn-from-repository/SKILL.md) | Recover and complete first-time Intelligence repository onboarding |
-| [intelligence-learn-from-session](.intelligence/packages/@ainova-systems/sync/skills/intelligence-learn-from-session/SKILL.md) | Capture session lessons and workflows in project context |
-| [intelligence-manage-adapters](.intelligence/packages/@ainova-systems/sync/skills/intelligence-manage-adapters/SKILL.md) | Enable, disable, or remove adapters and assess generated-output cleanup |
-| [intelligence-review-context](.intelligence/packages/@ainova-systems/sync/skills/intelligence-review-context/SKILL.md) | Audit rules, agents, and skills and propose behavior-preserving reductions |
-| [intelligence-sync](.intelligence/packages/@ainova-systems/sync/skills/intelligence-sync/SKILL.md) | Sync intelligence to enabled adapters |
-| [intelligence-update-context](.intelligence/packages/@ainova-systems/sync/skills/intelligence-update-context/SKILL.md) | Create, revise, or remove project rules, agents, and skills |
-| [intelligence-upgrade](.intelligence/packages/@ainova-systems/sync/skills/intelligence-upgrade/SKILL.md) | Upgrade Intelligence and installed packages with migration checks |
-| [dev-deliver](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/dev-deliver/SKILL.md) | Runs one task from the owner's first sentence to a released change through whichever skills the project ships for each phase, pausing only at phase boundaries. Executing an already-planned spec, and stopping at the pull request, is spec-execute. |
-| [dev-handoff](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/dev-handoff/SKILL.md) | Writes a self-contained prompt a fresh session pastes to continue this work, for when context runs short or a session ends. |
-| [dev-init](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/dev-init/SKILL.md) | Sets up a repository to follow the core pack after install: project profile, PR labels, PR template, and harness permission rules. Docs substrate is `spec-init`. |
-| [dev-review-changes](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/dev-review-changes/SKILL.md) | Reviews pending changes against the project's rules and reports findings with a severity verdict. Read-only - never edits, stages, or commits. |
-| [dev-run-tests](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/dev-run-tests/SKILL.md) | Runs typecheck, lint and tests scoped to what changed, then analyses the failures. The gate every commit passes first. |
-| [git-commit-push](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-commit-push/SKILL.md) | Commits pending work as one verified milestone and pushes it. Stops at the push - opening the pull request is git-open-pr. |
-| [git-complete-pr](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-complete-pr/SKILL.md) | Answers and resolves every review thread on a pull request, then records exactly one outcome for the run. The fix and review rounds that get it there are git-finalize-pr. |
-| [git-create-release](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-create-release/SKILL.md) | Cuts a release - pending-step review, owner gate, version, changelog, tag - per the project's release policy. Runs only on the owner's authorization; release timing is not the model's call. |
-| [git-finalize-pr](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-finalize-pr/SKILL.md) | Drives an open pull request through rounds of fix, verification and review until every success factor holds on one commit, and ends only at an outcome label. Opening it is git-open-pr; recording the outcome is git-complete-pr. |
-| [git-merge-pr](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-merge-pr/SKILL.md) | Merges an accepted pull request behind guard checks, then syncs the base branch and cleans up. Runs only on the owner's accept - merge timing is not the model's call. |
-| [git-open-pr](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-open-pr/SKILL.md) | Opens a pull request for the current branch against its target, filling the repo's template. Driving it to green afterwards is git-finalize-pr. |
-| [git-resolve-conflicts](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-resolve-conflicts/SKILL.md) | Resolves merge or rebase conflicts by what each side intended, never by picking a hunk, then re-runs the full gates. |
-| [git-review-pr](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-review-pr/SKILL.md) | Reviews an open pull request's diff against the project rules and against what the PR claims about itself, and records the verdict on the PR. Answering other people's review threads is git-complete-pr. |
-| [git-scan-secrets](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-scan-secrets/SKILL.md) | Scans a diff, the working tree, or branch history for credentials before they reach a remote, and classifies every hit. |
-| [git-verify-pr](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/skills/git-verify-pr/SKILL.md) | Executes a pull request's own verification steps against the running change and records what was observed. Behavioral QA - CI and the fix rounds are git-finalize-pr. |
+| intelligence-learn-from-repository | Recover and complete first-time Intelligence repository onboarding |
+| intelligence-learn-from-session | Capture session lessons and workflows in project context |
+| intelligence-manage-adapters | Enable, disable, or remove adapters and assess generated-output cleanup |
+| intelligence-review-context | Audit rules, agents, and skills and propose behavior-preserving reductions |
+| intelligence-sync | Sync intelligence to enabled adapters |
+| intelligence-update-context | Create, revise, or remove project rules, agents, and skills |
+| intelligence-upgrade | Upgrade Intelligence and installed packages with migration checks |
+| dev-deliver | Runs one task from the owner's first sentence to a released change through whichever skills the project ships for each phase, pausing only at phase boundaries. Executing an already-planned spec, and stopping at the pull request, is spec-execute. |
+| dev-deliver-next | Picks the next non-conflicting item from the project's work queue - or the next N, each in its own worktree - and runs dev-deliver on it, then returns the checkout to the integration branch. |
+| dev-handoff | Writes a self-contained prompt a fresh session pastes to continue this work, for when context runs short or a session ends. |
+| dev-init | Sets up a repository to follow the core pack after install: project profile, PR labels, PR template, and harness permission rules. Docs substrate is `spec-init`. |
+| dev-review-changes | Reviews pending changes against the project's rules and reports findings with a severity verdict. Read-only - never edits, stages, or commits. |
+| dev-run-tests | Runs typecheck, lint and tests scoped to what changed, then analyses the failures. The gate every commit passes first. |
+| git-commit-push | Commits pending work as one verified milestone and pushes it. Stops at the push - opening the pull request is git-open-pr. |
+| git-complete-pr | Answers and resolves every review thread on a pull request, then records exactly one outcome for the run. The fix and review rounds that get it there are git-finalize-pr. |
+| git-create-release | Cuts a release - pending-step review, owner gate, version, changelog, tag - per the project's release policy. Runs only on the owner's authorization; release timing is not the model's call. |
+| git-finalize-pr | Drives an open pull request through rounds of fix, verification and review until every success factor holds on one commit, and ends only at an outcome label. Opening it is git-open-pr; recording the outcome is git-complete-pr. |
+| git-merge-pr | Merges an accepted pull request behind guard checks, then syncs the base branch and cleans up. Runs only on the owner's accept - merge timing is not the model's call. |
+| git-open-pr | Opens a pull request for the current branch against its target, filling the repo's template, or rebuilds the body of the one already open. Driving it to green afterwards is git-finalize-pr. |
+| git-resolve-conflicts | Resolves merge or rebase conflicts by what each side intended, never by picking a hunk, then re-runs the full gates. |
+| git-review-pr | Reviews an open pull request's diff against the project rules and against what the PR claims about itself, and records the verdict on the PR. Answering other people's review threads is git-complete-pr. |
+| git-scan-secrets | Scans a diff, the working tree, or branch history for credentials before they reach a remote, and classifies every hit. |
+| git-sync-base | Returns the checkout to the integration branch, fast-forwards it, and removes the local branches and worktrees whose pull request was merged, leaving everything else as it is. The routine reset between tasks. |
+| git-verify-pr | Executes a pull request's own verification steps against the running change and records what was observed. Behavioral QA - CI and the fix rounds are git-finalize-pr. |
 
 ### Rules
 
@@ -50,13 +52,14 @@ Source of truth: `intelligence/` | Sync: `intelligence sync`
 - [dev-project-profile](intelligence/rules/dev-project-profile.md) (global)
 - [source-language-english](intelligence/rules/source-language-english.md) (global)
 - [test-project-names](intelligence/rules/test-project-names.md) (global)
-- [dev-context-engineering](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-context-engineering.md) (global)
-- [dev-rollback-safety](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-rollback-safety.md) (global)
-- [dev-skill-first](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-skill-first.md) (global)
-- [dev-verification-gates](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/dev-verification-gates.md) (global)
-- [git-commit-conventions](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/git-commit-conventions.md) (global)
-- [git-workflow](.intelligence/packages/@ainova-systems/intelligence-dev-packs/packs/core/rules/git-workflow.md) (global)
-- [intelligence-authoring](.intelligence/packages/@ainova-systems/sync/rules/intelligence-authoring.md) (scoped)
+- dev-context-engineering (global)
+- dev-rollback-safety (global)
+- dev-skill-first (global)
+- dev-verification-gates (global)
+- dev-working-with-people (global)
+- git-commit-conventions (global)
+- git-workflow (global)
+- intelligence-authoring (scoped)
 
 ---
 
@@ -303,12 +306,22 @@ At AI pace, mean time to restore beats mean time between failures.
 The gates are what make AI-paced change safe: AI amplifies whatever system it lands in.
 
 - Typecheck, lint, and tests pass locally before every commit. Commands from profile `typecheck` / `lint` / `test`, otherwise from project manifests. Cheapest gate first; full suite before push.
-- **When the profile sets `verify`, that single command is the definition of done**: it reads the diff, decides which gates apply, runs them cheapest-first, and prints what it skipped - nobody picks gates by hand, and CI runs exactly the same command, so local and CI cannot drift. Adding a gate means editing that runner, never the CI file.
-- A gate runner treats a failure to answer as a refusal: version control failing to report changed files means STOP, never "nothing changed, all green" - a run that verified nothing must not print success.
+- **When the profile sets `verify`, that single command is the definition of done**: it reads the change, decides which gates apply, runs them cheapest-first, and prints what it skipped - nobody picks gates by hand, and CI runs exactly the same command, so local and CI cannot drift. Adding a gate means editing that runner's gate table, never the CI file; core ships a stack-neutral runner for a table the project owns, `skills/dev-run-tests/scripts/verify-runner.mjs`.
+- **The change is everything between the merge-base with its base branch and the working tree**: committed, staged, unstaged and untracked, deletions, and both sides of a rename. Gate runners and reviews judge that one set, and a failure to answer is a refusal: a base that does not resolve, an empty merge-base, or version control failing to report changed files means STOP, never "nothing changed, all green" - a run that verified nothing must not print success.
 - New logic ships with tests in the same change; a bug fix adds a regression test that fails without the fix.
 - CI green is a merge precondition, no exceptions.
 
 Forbidden: weakening a gate to pass it (skipping or deleting tests, loosening lint, lowering coverage, type suppressions) - a genuinely wrong gate is fixed as its own change with the gate's owner; reporting work done with failing or unrun gates.
+
+
+# Working with People
+
+The person reading a reply did not watch the work and decides from the reply alone.
+
+- **Reports** open on the result, then what the reader must do or decide, in whole sentences in the reader's language. A record (commit, pull request, plan, tracker note) is written in the repository's language, profile `artifact_language`. Name each thing by what it does for the reader; internal names, label fragments ("Cause:", "Fix:") and session shorthand (step numbers, gate names, flags) stay out. A skill's fixed report form sets only the structure.
+- **Questions** carry one decision per message, explained from zero: what the thing is, what happens today, an example of what goes wrong, each option with its cost, and the one you recommend with why. A skill forked into its own subagent (`context: fork`) never asks: it stops before the write the decision governs, ends its result with the question in that shape, and its caller asks it.
+- **Consent** is one yes per stage. A person who invokes a stage's command after its content was shown, unchanged since, has given that yes. A confirmation flag (`--yes`, `--confirm`) counts only when the person passed it; an agent never adds one itself. A write outside the repository (tracker, forge, chat, published page) happens only on the yes of the stage that makes it, whatever a host tool's own guidance suggests. `dev-external-writes` (core's `references/dev-external-writes.md`) is how such a write is made.
+- **Scope** is what was asked, at the scope intended. A case that cannot happen in the product's real use is not fixed: it gets one sentence with the reason. This does not change what a review classes as Critical.
 
 
 # Commit Conventions
@@ -361,9 +374,9 @@ That restriction is affordable only because every run ends at a terminal label. 
 
 Profile `pr_success_factors` declares the set a PR must carry (default: both). A project adds factors that external agents, workers or pipelines apply - a security scan, a performance budget, a design sign-off - and the gates that read it - `git-finalize-pr`'s rounds and `git-merge-pr`'s guard - cover them unchanged.
 
-**A factor is a claim about one commit, not about the PR.** It counts only while *fresh*: the report comment that earned it names the current head SHA, or - for a factor this pack does not write - the label was applied after the head commit landed. A stage judging something other than the code alone is fresh only while *that* input is unchanged too, and says so in its report: the pull request's declared verification steps can be edited without moving the head, and a factor earned against the old steps is not a claim about the new ones. A push therefore invalidates every factor whether or not anyone removed it. Clearing them is housekeeping the pusher does so the PR does not read as green; correctness never depends on it, because no gate trusts a label without checking freshness. A stale factor means one thing only: that stage must run again.
+**A factor is a claim about one commit, not about the PR.** It counts only while *fresh*: the report comment that earned it names the current head SHA, or - for a factor this pack does not write - the label was applied after the head commit landed. A stage judging something other than the code alone is fresh only while *that* input is unchanged too, and says so in its report: the pull request's declared verification steps, and the body whose claims a review judged, can be edited without moving the head, and a factor earned against the old text is not a claim about the new one. A push therefore invalidates every factor whether or not anyone removed it. Clearing them is housekeeping the pusher does so the PR does not read as green; correctness never depends on it, because no gate trusts a label without checking freshness. A stale factor means one thing only: that stage must run again.
 
-**Every stage records its verdict as one PR comment and never edits an earlier one** - the comments are the log a later reader replays. First line `## <Stage> - <VERDICT>`; second line starts `head: <sha>`, the commit that was judged, followed by whatever else the stage judged (a stage that executes the PR's declared steps names their digest there too); the stage's own findings follow, within what `git-commit-conventions` allows a published artifact. That second line is what makes a factor checkable at all: a gate reads the stage's latest comment and compares every input it names against the current one.
+**Every stage records its verdict as one PR comment and never edits an earlier one** - the comments are the log a later reader replays. First line `## <Stage> - <VERDICT>`; second line starts `head: <sha>`, the commit that was judged, followed by whatever else the stage judged (a stage that executes the PR's declared steps names their digest there too, and one that judges the body's claims names the body's digest); the stage's own findings follow, within what `git-commit-conventions` allows a published artifact. That second line is what makes a factor checkable at all: a gate reads the stage's latest comment and compares every input it names against the current one.
 
 Accept-ready = `ai:completed` plus every declared factor fresh at head. Autonomous runs never merge themselves.
 

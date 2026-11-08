@@ -44,3 +44,4 @@ AGENTS.override.md
 !/fixtures/demo/data/inbox/
 /fixtures/demo/data/inbox/*
 !/fixtures/demo/data/inbox/.gitkeep
+/.playwright-mcp/*
