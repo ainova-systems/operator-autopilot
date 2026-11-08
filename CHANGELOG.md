@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Releases are published to npm through npm trusted publishing (GitHub Actions OIDC) with provenance; the release workflow no longer uses a stored npm token.
+- A final release points npm's `next` dist-tag at itself unless `next` holds a newer release candidate, so `@ainova-systems/operator@next` no longer installs a stale release candidate.
+
 ## [0.10.1] - 2026-11-07
 
 - A per-subject tab whose pane holds an agent session no run started, such as one herdr resumes after a restart, is closed and replaced by a new tab that continues the session, instead of receiving the next run's launch command as a prompt; herdr's `pane process-info` decides whether a pane is back at its shell.

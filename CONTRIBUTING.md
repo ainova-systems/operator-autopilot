@@ -42,8 +42,13 @@ A release is a GitHub Release on `master`; `.github/workflows/release.yml` does 
 2. After it merges, publish a GitHub Release tagged `vX.Y.Z` on `master`, or `vX.Y.Z-rc.N` marked
    as a prerelease.
 3. The workflow checks that the tag matches `package.json` and sits on `master`, runs the gates,
-   publishes the package to npm (`latest`, or `next` for a release candidate) with provenance, and
-   pushes the image to GHCR (`X.Y.Z`, plus `latest` for a final release).
+   publishes the package to npm (`latest`, or `next` for a release candidate) with provenance,
+   points `next` at a final release unless `next` holds a newer release candidate, and pushes the
+   image to GHCR (`X.Y.Z`, plus `latest` for a final release).
 
-Publishing needs the `NPM_TOKEN` repository secret: a granular npm token with publish rights on the
-`ainova-systems` organisation.
+Publishing authenticates through npm trusted publishing (GitHub Actions OIDC), so no npm token is
+stored in the repository. It depends on the trusted publisher configured for
+`@ainova-systems/operator` on npmjs.com: organisation `ainova-systems`, repository
+`operator-autopilot`, workflow file `release.yml`, no environment, direct `npm publish` and
+`npm dist-tag` allowed. Renaming the workflow file breaks publishing until that configuration names
+the new file.
