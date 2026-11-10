@@ -331,7 +331,9 @@ exits nonzero, fails. The fallback run answers once: it keeps no session, tab or
 for the subject, a retry starts afresh, and it never touches the operation's Codex thread, which
 the next Codex run continues. Because the conversation lives in that thread, the subject's Codex
 affinity and an idle Codex tab do not pin a new task of such an operation to Codex: each new
-review during a Codex cooldown may run on Claude.
+review during a Codex cooldown may run on Claude. A subject whose older Codex job is only queued,
+for example waiting for the quota reset, counts as idle: a new review may run on Claude meanwhile,
+and the older one later resumes the Codex thread, which stays intact.
 
 `operator job <id>` / `operator jobs --json` show `provider`, `quotaWait.until`, and the reason for
 waiting; `operator state get provider-cooldowns claude` reads the cached provider deadline. These

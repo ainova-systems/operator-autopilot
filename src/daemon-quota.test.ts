@@ -45,6 +45,7 @@ const done = () => {
   process.exit(0);
 };
 if (setting.mode === 'done' || setting.mode === 'retryable') await done();
+if (setting.mode === 'hold') await new Promise(() => { const timer = setInterval(() => { if (existsSync(join(data, 'continue-' + input.subject))) { clearInterval(timer); done(); } }, 25); });
 if (setting.mode === 'auth') { process.stderr.write('Authentication failed\\n'); process.exit(1); }
 const event = provider === 'claude'
   ? { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', ...(setting.reset ? { resetsAt: setting.reset / 1000 } : {}) } }
@@ -544,6 +545,29 @@ for (const placement of ['headless', 'herdr'] as const) {
     } finally { await f.cleanup(); }
   });
 }
+
+test('a new review waits for Codex while the subject tab still runs a Codex review, even during a Codex cooldown', async () => {
+  const f = await fixture({ review: 'herdr' });
+  try {
+    await f.modes({ mode: 'done' }, { mode: 'hold' });
+    const daemon = f.p.daemon({ herdr: f.herdr }); await daemon.acquireLeader();
+    const first = await review(daemon, 'pr-7', 'first');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(first))?.status === 'running'
+      && (await f.p.backend.docs.list<{ provider?: string; jobId: string }>(SUBJECT_TABS_COLLECTION)).some((item) => item.value.provider === 'codex' && item.value.jobId === first)
+      && (await f.calls()).length === 1);
+    const reset = Date.now() + 60_000;
+    await cache(f.p, 'codex', reset);
+    const second = await review(daemon, 'pr-7', 'second');
+    await daemon.poll();
+    const waiting = (await daemon.jobs.get(second))!;
+    assert.equal(waiting.status, 'queued');
+    assert.equal(waiting.provider, 'codex');
+    assert.equal(waiting.notBefore, new Date(reset).toISOString());
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
+    await writeFile(join(f.p.data, 'continue-pr-7'), 'continue');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(first))?.status === 'done');
+  } finally { await f.cleanup(); }
+});
 
 test('a usage limit hit by a Claude review pins it to Claude without spending a retry, and leaves the Codex cooldown alone', async () => {
   const f = await fixture({ review: 'headless' });
