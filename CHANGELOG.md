@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- A task of a `fallback: claude` operation is no longer held to Codex by its own history: a started, retried or quota-limited review runs on Claude while Codex is in a usage-limit cooldown, and quota waits queued by an older daemon are decided again when the daemon starts.
+
 ## [0.11.0] - 2026-11-10
 
 - A Codex agent operation with a schema may declare `fallback: claude`: while Codex is in a usage-limit cooldown, a new task runs once on Claude, without file-editing tools and limited to the project's own permission rules, with the same `output.json` and `then`.

@@ -363,12 +363,23 @@ export class Daemon {
 
   /**
    * A pause ends when the service starts again: it exists to let running jobs finish before the
-   * service or its host goes down, and a restart is that moment passing.
+   * service or its host goes down, and a restart is that moment passing. A quota wait was decided
+   * by the daemon that queued it, so each is decided again against this manifest and the current
+   * cooldowns: a job still pinned to a cooling provider gets the same wait back.
    */
   async resumeAfterRestart(): Promise<void> {
     const pause = await readPause(this.backend.docs, this.hostScope);
     if (pause && (await clearPause(this.backend.docs, this.hostScope))) this.log.info('resumed: a pause ends when the service starts', { pausedSince: pause.since, by: pause.by });
     this.paused = undefined;
+    for (const job of await this.jobs.list('queued')) {
+      if (!job.quotaWait || !job.notBefore) continue;
+      const reopened = await this.jobs.update(job.id, (current) => {
+        if (current.status !== 'queued' || !current.quotaWait || !current.notBefore) return undefined;
+        delete current.notBefore;
+        return current;
+      });
+      if (reopened) this.log.info('quota wait is decided again after the restart', { job: job.id, provider: job.quotaWait.provider, until: job.quotaWait.until });
+    }
   }
 
   /** Reads the pause switch, logging each change of it. */
@@ -544,12 +555,16 @@ export class Daemon {
       const threadOnly = op.fallback === 'claude' && retained?.provider === 'codex' && !retained.sessionId
         && (await this.jobs.get(retained.jobId))?.status !== 'running';
       const conversation = threadOnly ? undefined : retained?.provider ?? (retained?.sessionId ? 'claude' : undefined);
-      // A new record may continue a conversation: it is not a new logical task.
-      const pinned = job.provider ?? conversation ?? (op.fallback === 'claude' ? undefined : affinity)
-        ?? (job.attempt > 1 || job.history.some((item) => item.event === 'started') ? op.engine : undefined);
+      // A new record may continue a conversation: it is not a new logical task. A `fallback: claude`
+      // operation is pinned only by a Codex task its subject tab still runs: its conversation lives in
+      // the thread, the Claude run starts afresh, and either answers the same schema, so its own
+      // provider, a retry or an earlier start never hold it to Codex.
+      const pinned = op.fallback === 'claude' ? conversation
+        : job.provider ?? conversation ?? affinity
+          ?? (job.attempt > 1 || job.history.some((item) => item.event === 'started') ? op.engine : undefined);
       let provider: Provider = pinned ?? op.engine;
       let cooldown = await coolingProvider(this.backend.docs, provider, now.getTime(), this.hostScope);
-      // Only a new, not-started task may move to the operation's declared fallback provider.
+      // Only an unpinned task may move to the operation's declared fallback provider.
       if (cooldown && !pinned && op.fallback && op.fallback !== provider) {
         const alternate = await coolingProvider(this.backend.docs, op.fallback, now.getTime(), this.hostScope);
         if (!alternate) { provider = op.fallback; cooldown = undefined; }
@@ -766,8 +781,8 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return undefined;
     }
-    // A task moves to its fallback provider once, at its first start; later attempts keep it.
-    if (!job.provider && (op.contractResult || op.structuredOutput)) this.log.info('job runs on its fallback provider while the configured one is in a usage-limit cooldown', { job: job.id, operation: job.operation, subject: job.subject, provider: op.engine });
+    // Logged when a task moves to its fallback provider; a pinned retry on that provider is not a move.
+    if (job.provider !== op.engine && (op.contractResult || op.structuredOutput)) this.log.info('job runs on its fallback provider while the configured one is in a usage-limit cooldown', { job: job.id, operation: job.operation, subject: job.subject, provider: op.engine });
     this.localRuns.set(prepared.runDir, { jobId: job.id, attempt: job.attempt });
     if (run.lease) this.runTokens.set(job.id, run.lease.token);
     if (op.engine !== 'command' && (op.tabs === 'per-subject' || op.thread === 'per-subject')) await this.backend.docs.replace(PROVIDER_AFFINITIES, this.affinityKey(job), { provider: op.engine, workflow: job.workflow, subject: job.subject, operation: job.operation }, { ttlMs: SUBJECT_TAB_TTL_MS });
@@ -1125,20 +1140,22 @@ export class Daemon {
     const quota = await rememberQuota(this.backend.docs, evidence, this.hostScope);
     const op = this.operation(job);
     const anyHost = op !== undefined && this.placementHere({ ...job, ...(run.slot?.member ? { member: run.slot.member } : {}) }, op) === 'any';
+    // A `fallback: claude` task is not pinned: its next start chooses the provider from the cooldowns.
+    const switchable = op?.fallback === 'claude';
     await this.releaseRun(job.id, run);
     await this.jobs.update(job.id, (current) => {
       if (current.status !== 'running' || current.attempt !== job.attempt) return undefined;
       current.status = 'queued';
-      current.provider = evidence.provider;
+      if (!switchable) current.provider = evidence.provider;
       if (run.slot?.member) current.member = run.slot.member;
       current.retryCount = job.retryCount ?? job.attempt - 1;
       current.attempt += 1;
       // A job any host may run waits only for this host's reset; another host's accounts may be free.
-      if (!anyHost) current.notBefore = quota.until;
+      if (!anyHost && !switchable) current.notBefore = quota.until;
       current.waitingFor = `${evidence.provider} usage limit until ${quota.until}`;
       current.quotaWait = quota;
       delete current.run;
-      addHistory(current, 'quota wait', `${evidence.provider} until ${quota.until}; same provider resumes`);
+      addHistory(current, 'quota wait', `${evidence.provider} until ${quota.until}; ${switchable ? 'the next start chooses the provider' : 'same provider resumes'}`);
       return current;
     });
     this.renewedAt.delete(job.id);
