@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-10
+
 - The Claude fallback run takes the operation's agent instructions as an appended system prompt instead of `--agent`: an agent definition's `tools` list left out the tool Claude answers a schema with, so the run ended in prose and failed with no structured output.
 
 ## [0.11.3] - 2026-11-10
