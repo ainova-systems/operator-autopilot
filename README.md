@@ -326,9 +326,11 @@ keep their output contract and read-only sandbox.
 defines `.claude/agents/<agent>.md` (`operator validate` warns otherwise). Without one, the default
 Codex prompt names the Codex agent file, so a project using this fallback gives the operation its
 own prompt or a Claude agent definition. Codex model and CLI arguments are not forwarded. The
-Claude fallback run has no file-editing tools (Edit, Write and NotebookEdit are removed), runs
-unattended under `--permission-mode dontAsk` so it never waits on a permission prompt, and every
-other tool is limited to what the project's own permission rules allow. That is not Codex's
+Claude fallback run has no file-editing tools (Edit, Write and NotebookEdit are removed), may read
+any file (`Read(//**)`, as Codex's read-only sandbox does - the input file lives in the run
+directory), runs unattended under `--permission-mode dontAsk` so it never waits on a permission
+prompt, and every other tool is limited to what the project's own permission rules allow; the
+project's deny rules, a `Read(.env)` deny included, still apply. That is not Codex's
 read-only sandbox: a command those rules allow still runs. The runtime writes the
 `structured_output` of Claude's final result to the run's `output.json`, so the result and the
 `then` operation are exactly those of a Codex run; a run that ends without structured output, or

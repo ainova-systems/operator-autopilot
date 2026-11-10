@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The Claude fallback run may read any file, as Codex's read-only sandbox does; under `dontAsk` it could not read the operation's input file in the run directory and ended without an answer.
+
 ## [0.11.1] - 2026-11-10
 
 - A task of a `fallback: claude` operation is no longer held to Codex by its own history: a started, retried or quota-limited review runs on Claude while Codex is in a usage-limit cooldown, and quota waits queued by an older daemon are decided again when the daemon starts.
