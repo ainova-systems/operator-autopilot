@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-10
+
 - The Claude fallback run may read any file, as Codex's read-only sandbox does; under `dontAsk` it could not read the operation's input file in the run directory and ended without an answer.
 
 ## [0.11.1] - 2026-11-10
