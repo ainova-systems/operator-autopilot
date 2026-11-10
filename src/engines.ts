@@ -128,12 +128,12 @@ export function codexFallback(op: OperationSpec): OperationSpec {
 }
 
 /**
- * The permissions of a Claude stand-in for a Codex schema operation. It has no file-editing tools,
- * and it runs unattended: `dontAsk` never waits on a prompt, so every other tool is limited to what
- * the project's own permission rules allow. This is not a sandbox; a command those rules allow runs.
+ * The permissions of a Claude stand-in for a Codex schema operation. It has no file-editing tools and
+ * reads any file, as Codex's read-only sandbox does: the input file lives in the run directory and its
+ * inputs may name files outside the working directory. It runs unattended: `dontAsk` never waits on a
+ * prompt, so every other tool is limited to what the project's own permission rules allow, and the
+ * project's deny rules still apply. This is not a sandbox; a command those rules allow runs.
  */
-// Reads anywhere, like Codex's read-only sandbox: the operation's input file lives in the run
-// directory and its inputs may name files outside the working directory, which dontAsk would refuse.
 export const CLAUDE_FALLBACK_ARGS: readonly string[] = ['--permission-mode', 'dontAsk', '--allowedTools', 'Read(//**)', '--disallowedTools', 'Edit,Write,NotebookEdit'];
 
 /**
