@@ -73,7 +73,8 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
       const outputArgs = context.attended || op.args.some((arg) => arg === '--output-format' || arg.startsWith('--output-format=')) ? [] : ['--output-format', 'stream-json', '--verbose'];
       const argv = (session: string[]): string[] => ['claude', ...(context.attended ? [] : ['-p']), prompt, ...session, ...(op.model ? ['--model', op.model] : []), ...structured, ...op.args, ...outputArgs];
       const output = outputPath ? { outputPath } : {};
-      if (!context.session) return { argv: argv([]), ...output };
+      // A structured-output run answers once, so it never starts or resumes a session.
+      if (!context.session || op.structuredOutput) return { argv: argv([]), ...output };
       const { id, resume } = context.session;
       const resumeArgv = argv(['--resume', id]);
       const freshArgv = argv(['--session-id', id]);
@@ -127,22 +128,22 @@ export function codexFallback(op: OperationSpec): OperationSpec {
 }
 
 /**
- * The read-only posture of a Claude stand-in for Codex's read-only sandbox: the file-editing tools
- * are removed, and `dontAsk` denies every other action the project's permission rules do not
- * already allow, instead of asking a person nobody is there to be.
+ * The permissions of a Claude stand-in for a Codex schema operation. It has no file-editing tools,
+ * and it runs unattended: `dontAsk` never waits on a prompt, so every other tool is limited to what
+ * the project's own permission rules allow. This is not a sandbox; a command those rules allow runs.
  */
-export const CLAUDE_READ_ONLY_ARGS: readonly string[] = ['--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit'];
+export const CLAUDE_FALLBACK_ARGS: readonly string[] = ['--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit'];
 
 /**
  * Creates a Claude-compatible task only for an explicitly opted-in codex schema operation. It
- * answers once with the schema's structured output and keeps nothing for the subject: no session
- * tab, no provider affinity, and never the operation's Codex thread, which a later Codex run continues.
+ * answers once with the schema's structured output and keeps nothing for the subject: no session,
+ * tab or provider affinity, and never the operation's Codex thread, which a later Codex run continues.
  */
 export function claudeFallback(op: OperationSpec): OperationSpec {
   const { model: _model, fallback: _fallback, ...base } = op;
   return {
     ...base, engine: 'claude', kind: 'agent', structuredOutput: true,
-    args: [...CLAUDE_READ_ONLY_ARGS],
+    args: [...CLAUDE_FALLBACK_ARGS],
     prompt: op.prompt ?? DEFAULT_CODEX_PROMPT,
     thread: 'none',
     tabs: 'per-job',

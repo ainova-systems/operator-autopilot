@@ -433,6 +433,9 @@ for (const placement of ['headless', 'herdr'] as const) {
       assert.equal(args.includes('-c'), false);
       assert.equal(args.includes('gpt-test'), false);
       assert.equal(job.provider, 'claude');
+      // It answers once: no Claude session is started or kept for a retry to resume.
+      assert.equal(calls[0]!.sessionId, undefined);
+      assert.equal(job.claudeSessionId, undefined);
       // In herdr the run is a per-job pane of its own; the runtime still reads its answer from the run's output.
       assert.ok(job.history.some((item) => item.event === 'started' && item.detail?.startsWith(placement === 'herdr' ? 'herdr pane' : 'headless')));
       assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), { verdict: 'pass', subject: 'pr-1' });
@@ -508,34 +511,74 @@ test('a new Codex review waits for the earlier reset while both providers cool d
   } finally { await f.cleanup(); }
 });
 
-test('a Claude review leaves the subject\'s Codex thread to the next Codex run; an affinity keeps Codex', async () => {
+for (const placement of ['headless', 'herdr'] as const) {
+  test(`a second review during a Codex cooldown falls back to Claude despite the subject's Codex affinity, and Codex continues its thread after (${placement})`, async () => {
+    const f = await fixture({ review: placement });
+    try {
+      await f.modes({ mode: 'done' }, { mode: 'done' });
+      const daemon = f.p.daemon(placement === 'herdr' ? { herdr: f.herdr } : {}); await daemon.acquireLeader();
+      const first = await review(daemon, 'pr-5', 'first');
+      await pollUntil(daemon, async () => (await daemon.jobs.get(first))?.status === 'done');
+      const [thread] = await f.p.backend.docs.list<{ threadId: string; updatedAt: string }>('threads');
+      assert.equal(thread?.value.threadId, 'thread-pr-5');
+      const affinities = (await f.p.backend.docs.list<{ provider: string }>(PROVIDER_AFFINITIES)).map((item) => item.value);
+      assert.deepEqual(affinities.map((value) => value.provider), ['codex']);
+      const tabs = (await f.p.backend.docs.list<{ provider?: string }>(SUBJECT_TABS_COLLECTION)).map((item) => item.value);
+      assert.deepEqual(tabs.map((tab) => tab.provider), placement === 'herdr' ? ['codex'] : []);
+      // The subject's Codex affinity (and, in herdr, its idle Codex tab) does not hold the next review.
+      await cache(f.p, 'codex', Date.now() + 60_000);
+      const second = await review(daemon, 'pr-5', 'second');
+      await pollUntil(daemon, async () => (await daemon.jobs.get(second))?.status === 'done');
+      assert.equal((await daemon.jobs.get(second))?.provider, 'claude');
+      assert.equal((await daemon.jobs.get(second))?.codexThreadId, undefined);
+      assert.deepEqual((await f.p.backend.docs.list('threads')).map((item) => item.value), [thread!.value]);
+      assert.deepEqual((await f.p.backend.docs.list(PROVIDER_AFFINITIES)).map((item) => item.value), affinities);
+      assert.deepEqual((await f.p.backend.docs.list(SUBJECT_TABS_COLLECTION)).map((item) => item.value), tabs);
+      // After the reset the next Codex review continues the subject's own thread.
+      await f.p.backend.docs.delete(PROVIDER_COOLDOWNS, 'codex');
+      const third = await review(daemon, 'pr-5', 'third');
+      await pollUntil(daemon, async () => (await daemon.jobs.get(third))?.status === 'done');
+      const calls = await f.calls();
+      assert.deepEqual(calls.map((call) => call.provider), ['codex', 'claude', 'codex']);
+      assert.deepEqual(calls[2]!.args.slice(0, 3), ['exec', 'resume', 'thread-pr-5']);
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('a usage limit hit by a Claude review pins it to Claude without spending a retry, and leaves the Codex cooldown alone', async () => {
   const f = await fixture({ review: 'headless' });
   try {
-    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const claudeReset = Date.now() + 60_000;
+    const codexCooldown = await cache(f.p, 'codex', claudeReset + 60_000);
+    await f.modes({ mode: 'quota', reset: claudeReset }, { mode: 'done' });
     const daemon = f.p.daemon(); await daemon.acquireLeader();
-    const first = await review(daemon, 'pr-5', 'first');
-    await pollUntil(daemon, async () => (await daemon.jobs.get(first))?.status === 'done');
-    const [thread] = await f.p.backend.docs.list<{ threadId: string; updatedAt: string }>('threads');
-    assert.equal(thread?.value.threadId, 'thread-pr-5');
-    // While the subject's Codex affinity lasts, a cooldown makes it wait for Codex.
-    await cache(f.p, 'codex', Date.now() + 60_000);
-    const pinned = await review(daemon, 'pr-5', 'pinned');
-    await daemon.poll();
-    assert.equal((await daemon.jobs.get(pinned))?.status, 'queued');
-    assert.equal((await daemon.jobs.get(pinned))?.provider, 'codex');
-    // Once it has lapsed, a new task runs on Claude and keeps nothing of its own for the subject.
-    for (const { key } of await f.p.backend.docs.list(PROVIDER_AFFINITIES)) await f.p.backend.docs.delete(PROVIDER_AFFINITIES, key);
-    const fallback = await review(daemon, 'pr-5', 'fallback');
-    await pollUntil(daemon, async () => (await daemon.jobs.get(fallback))?.status === 'done');
-    assert.equal((await daemon.jobs.get(fallback))?.provider, 'claude');
-    assert.equal((await daemon.jobs.get(fallback))?.codexThreadId, undefined);
-    assert.deepEqual((await f.p.backend.docs.list('threads')).map((item) => item.value), [thread!.value]);
-    assert.deepEqual(await f.p.backend.docs.list(PROVIDER_AFFINITIES), []);
-    // After the reset the waiting Codex task continues the subject's own thread.
+    const id = await review(daemon, 'pr-6');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && Boolean((await daemon.jobs.get(id))?.quotaWait));
+    const waiting = (await daemon.jobs.get(id))!;
+    assert.equal(waiting.provider, 'claude');
+    assert.equal(waiting.quotaWait?.provider, 'claude');
+    assert.equal(waiting.notBefore, new Date(claudeReset).toISOString());
+    assert.equal(waiting.retryCount, 0);
+    assert.equal(waiting.attempt, 2);
+    const cooldowns = Object.fromEntries((await f.p.backend.docs.list<QuotaWait>(PROVIDER_COOLDOWNS)).map((item) => [item.key, item.value]));
+    assert.equal(cooldowns['claude']?.until, new Date(claudeReset).toISOString());
+    assert.deepEqual(cooldowns['codex'], codexCooldown);
+    // With Codex free and Claude limited again, the started task still waits for Claude.
     await f.p.backend.docs.delete(PROVIDER_COOLDOWNS, 'codex');
-    await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + 60_001)); return (await daemon.jobs.get(pinned))?.status === 'done'; });
+    const later = claudeReset + 120_000;
+    await cache(f.p, 'claude', later);
+    await daemon.poll(new Date(claudeReset + 1));
+    assert.equal((await daemon.jobs.get(id))?.status, 'queued');
+    assert.equal((await daemon.jobs.get(id))?.notBefore, new Date(later).toISOString());
+    assert.equal((await f.calls()).length, 1);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    // The clock runs on from past the reset, so a run lease being given back lapses as it would.
+    const skew = later + 1_000 - Date.now();
+    await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + skew)); return (await daemon.jobs.get(id))?.status === 'done'; });
     const calls = await f.calls();
-    assert.deepEqual(calls.map((call) => call.provider), ['codex', 'claude', 'codex']);
-    assert.deepEqual(calls[2]!.args.slice(0, 3), ['exec', 'resume', 'thread-pr-5']);
+    assert.deepEqual(calls.map((call) => call.provider), ['claude', 'claude']);
+    // The retry starts a fresh answer: nothing to resume.
+    assert.equal(calls[1]!.args.some((arg) => arg === '--resume' || arg === '--session-id'), false);
+    assert.equal((await daemon.jobs.get(id))?.retryCount, 0);
   } finally { await f.cleanup(); }
 });

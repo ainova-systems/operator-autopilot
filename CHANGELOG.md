@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- A Codex agent operation with a schema may declare `fallback: claude`: a new task runs once on Claude, read-only and with the same `output.json` and `then`, while Codex is in a usage-limit cooldown.
+- A Codex agent operation with a schema may declare `fallback: claude`: while Codex is in a usage-limit cooldown, a new task runs once on Claude, without file-editing tools and limited to the project's own permission rules, with the same `output.json` and `then`.
 
 ## [0.10.2] - 2026-11-08
 

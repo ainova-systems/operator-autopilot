@@ -96,7 +96,7 @@ test('opted-in Codex fallback preserves contract and declared sandbox, without C
   assert.ok(resumed.includes('sandbox_mode="workspace-write"'));
 });
 
-test('opted-in Claude fallback answers a Codex schema once, read-only, with the Codex prompt and no Codex arguments', () => {
+test('opted-in Claude fallback answers a Codex schema once, without editing tools or a session, with the Codex prompt and no Codex arguments', () => {
   const original: OperationSpec = { ...base, engine: 'codex', fallback: 'claude', agent: 'code-reviewer', schema: 'schemas/review.json', model: 'gpt-6.1-sol', thread: 'per-subject', tabs: 'per-subject', placement: 'herdr', access: 'read', then: 'verdict', args: ['-c', 'approval_policy=on-request'], prompt: 'Review {subject} from {input} into {output}.' };
   const fallback = claudeFallback(original);
   assert.equal(fallback.engine, 'claude');
@@ -106,8 +106,10 @@ test('opted-in Claude fallback answers a Codex schema once, read-only, with the 
   const schema = '{"type":"object"}';
   const command = buildCommand(fallback, { ...context, jsonSchema: schema, claudeAgent: true, session: { id: 's-1', resume: false } });
   assert.equal(command.outputPath, '/runs/j1/a1/output.json');
-  assert.deepEqual(command.argv.slice(0, 5), ['claude', '-p', 'Review pr-7 from /runs/j1/a1/input.json into /runs/j1/a1/output.json.', '--session-id', 's-1']);
-  assert.deepEqual(command.argv.slice(5), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit', '--output-format', 'stream-json', '--verbose']);
+  // It answers once: no session to start or resume, even when one is offered.
+  assert.equal(command.session, undefined);
+  assert.deepEqual(command.argv.slice(0, 3), ['claude', '-p', 'Review pr-7 from /runs/j1/a1/input.json into /runs/j1/a1/output.json.']);
+  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit', '--output-format', 'stream-json', '--verbose']);
   assert.equal(command.argv.includes('-c'), false);
   assert.equal(command.argv.includes('gpt-6.1-sol'), false);
   // Without a Claude definition of the agent in the run's checkout, the run goes without --agent.

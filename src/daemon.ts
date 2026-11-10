@@ -539,8 +539,13 @@ export class Daemon {
       const affinity = op.tabs === 'per-subject' || op.thread === 'per-subject'
         ? (await this.backend.docs.get<{ provider: Provider }>(PROVIDER_AFFINITIES, this.affinityKey(job)))?.value.provider
         : undefined;
+      // A Codex operation that may fall back to Claude keeps its conversation in its thread, which the
+      // Claude run never touches: its affinity and an idle Codex tab do not pin the next task to Codex.
+      const threadOnly = op.fallback === 'claude' && retained?.provider === 'codex' && !retained.sessionId
+        && (await this.jobs.get(retained.jobId))?.status !== 'running';
+      const conversation = threadOnly ? undefined : retained?.provider ?? (retained?.sessionId ? 'claude' : undefined);
       // A new record may continue a conversation: it is not a new logical task.
-      const pinned = job.provider ?? retained?.provider ?? (retained?.sessionId ? 'claude' : undefined) ?? affinity
+      const pinned = job.provider ?? conversation ?? (op.fallback === 'claude' ? undefined : affinity)
         ?? (job.attempt > 1 || job.history.some((item) => item.event === 'started') ? op.engine : undefined);
       let provider: Provider = pinned ?? op.engine;
       let cooldown = await coolingProvider(this.backend.docs, provider, now.getTime(), this.hostScope);
@@ -722,7 +727,8 @@ export class Daemon {
     // A retained claude tab continues its session; the first run in it starts one under a known id.
     // A session recovered from a replaced tab continues wherever the run lands, a tab-less run included.
     const continued = job.claudeSessionId ?? reuse?.sessionId;
-    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' ? { id: continued ?? randomUUID(), resume: Boolean(continued) } : undefined;
+    // A structured-output stand-in answers once: a retry starts fresh rather than resume a half-finished answer.
+    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' && !op.structuredOutput ? { id: continued ?? randomUUID(), resume: Boolean(continued) } : undefined;
     if (retain && placement.kind === 'herdr' && placement.tabId && placement.paneId && placement.workspace) {
       // The wrapper decides whether the session can be resumed: it runs where the session does.
       if (op.engine === 'claude' && kept?.sessionId) session = { id: kept.sessionId, resume: true };
