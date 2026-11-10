@@ -269,7 +269,8 @@ capacity. If that cap ends a quota-limited run, the same job queues until reset 
 saved Claude session or Codex thread. This does not spend ordinary retries. `attempt` counts
 physical launches; `retryCount` counts ordinary failed retries. Every launch keeps its own run
 files. An automatically assigned workspace stays pinned through quota recovery and ordinary retries.
-An already-started queued task, a retry, and a new round in a retained conversation never switch provider.
+An already-started queued task, a retry, and a new round in a retained conversation never switch provider,
+except in an operation with `fallback: claude` (below).
 
 Fallback is **opt-in per compatible operation**, in either direction: a Claude operation may
 declare `fallback: codex`, and a Codex agent operation with a `schema` may declare
@@ -305,7 +306,10 @@ with its provider. A retained
 conversation for the same subject and operation also counts as started. Its provider is pinned
 until the subject ends. If both providers are cooling down, new tasks stay queued until the first
 usable reset; existing tasks wait for their own provider. A waiting live task keeps its workspace
-lease, so fallback cannot borrow that workspace.
+lease, so fallback cannot borrow that workspace. An operation with `fallback: claude` is the
+exception, described below. When the daemon starts, every queued job waiting for a provider reset
+is decided again against the current manifest and cooldowns; a job still pinned to a cooling
+provider gets the same wait back.
 
 Enabling fallback declares that the prompt/skill can be performed by either engine. Codex runs as
 an agent, retains the original task input and result contract, and uses its own conversation.
@@ -330,11 +334,14 @@ read-only sandbox: a command those rules allow still runs. The runtime writes th
 `then` operation are exactly those of a Codex run; a run that ends without structured output, or
 exits nonzero, fails. The fallback run answers once: it keeps no session, tab or provider affinity
 for the subject, a retry starts afresh, and it never touches the operation's Codex thread, which
-the next Codex run continues. Because the conversation lives in that thread, the subject's Codex
-affinity and an idle Codex tab do not pin a new task of such an operation to Codex: each new
-review during a Codex cooldown may run on Claude. A subject whose older Codex job is only queued,
-for example waiting for the quota reset, counts as idle: a new review may run on Claude meanwhile,
-and the older one later resumes the Codex thread, which stays intact.
+the next Codex run continues. Because the conversation lives in that thread, nothing in a task's
+own history pins such an operation to Codex: not the subject's Codex affinity, not an idle Codex
+tab, not an earlier start, a retry, or a Codex run that hit the usage limit. Each start chooses
+from the cooldowns: during a Codex cooldown it runs on Claude when Claude is free, a task whose
+Claude run hit the limit returns to Codex when Codex is free, and while both cool down it waits
+for the earlier reset. Only a Codex review the subject tab is still running holds a new task to
+Codex. A subject whose older Codex job is only queued, for example waiting for the quota reset,
+counts as idle.
 
 `operator job <id>` / `operator jobs --json` show `provider`, `quotaWait.until`, and the reason for
 waiting; `operator state get provider-cooldowns claude` reads the cached provider deadline. These

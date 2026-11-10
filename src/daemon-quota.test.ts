@@ -471,7 +471,7 @@ test('a Claude review without structured output fails instead of passing on its 
   } finally { await f.cleanup(); }
 });
 
-test('a started Codex review waits for Codex on retry instead of moving to Claude', async () => {
+test('a retried Codex review runs on Claude during a Codex cooldown', async () => {
   const f = await fixture({ review: 'headless' });
   try {
     const op = f.p.manifest.workflows.get('demo')!.operations.get('review')!;
@@ -480,15 +480,80 @@ test('a started Codex review waits for Codex on retry instead of moving to Claud
     const daemon = f.p.daemon(); await daemon.acquireLeader();
     const id = await review(daemon, 'pr-3');
     await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && (await daemon.jobs.get(id))!.attempt === 2);
-    const reset = Date.now() + 60_000;
-    await cache(f.p, 'codex', reset);
+    assert.equal((await daemon.jobs.get(id))?.provider, 'codex');
+    await cache(f.p, 'codex', Date.now() + 60_000);
     await sleep(200);
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done', 10_000);
+    const job = (await daemon.jobs.get(id))!;
+    assert.equal(job.provider, 'claude');
+    assert.equal(job.attempt, 2);
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex', 'claude']);
+  } finally { await f.cleanup(); }
+});
+
+test('a started Codex review that hits the usage limit runs on Claude at its next start, without spending a retry', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const reset = Date.now() + 60_000;
+    await f.modes({ mode: 'done' }, { mode: 'quota', reset });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-8');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done', 10_000);
+    const job = (await daemon.jobs.get(id))!;
+    assert.equal(job.provider, 'claude');
+    assert.equal(job.attempt, 2);
+    assert.equal(job.retryCount, 0);
+    assert.ok(job.history.some((item) => item.event === 'quota wait' && item.detail?.startsWith('codex until')));
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex', 'claude']);
+    const cooldowns = Object.fromEntries((await f.p.backend.docs.list<QuotaWait>(PROVIDER_COOLDOWNS)).map((item) => [item.key, item.value]));
+    assert.equal(cooldowns['codex']?.until, new Date(reset).toISOString());
+  } finally { await f.cleanup(); }
+});
+
+test('a review an older daemon left waiting for the Codex reset is decided again at start and runs on Claude', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const reset = Date.now() + 60_000;
+    const quota = await cache(f.p, 'codex', reset);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-9');
+    // The state an older daemon wrote: a not-started task held until the reset by its quota wait.
+    await daemon.jobs.update(id, (current) => {
+      current.notBefore = quota.until;
+      current.waitingFor = `available provider usage limit until ${quota.until}`;
+      current.quotaWait = quota;
+      return current;
+    });
     await daemon.poll();
-    const waiting = (await daemon.jobs.get(id))!;
-    assert.equal(waiting.status, 'queued');
-    assert.equal(waiting.provider, 'codex');
-    assert.equal(waiting.notBefore, new Date(reset).toISOString());
-    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
+    assert.equal((await daemon.jobs.get(id))?.status, 'queued');
+    assert.deepEqual(await f.calls(), []);
+    await daemon.resumeAfterRestart();
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done', 10_000);
+    assert.equal((await daemon.jobs.get(id))?.provider, 'claude');
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['claude']);
+  } finally { await f.cleanup(); }
+});
+
+test('a started Claude task without a Claude fallback keeps its provider and its wait across a restart', async () => {
+  const f = await fixture();
+  try {
+    const reset = Date.now() + 60_000;
+    await f.modes({ mode: 'quota', reset });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await task(daemon, 'pinned');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && Boolean((await daemon.jobs.get(id))?.quotaWait));
+    const before = (await daemon.jobs.get(id))!;
+    assert.equal(before.provider, 'claude');
+    assert.equal(before.notBefore, new Date(reset).toISOString());
+    await daemon.resumeAfterRestart();
+    await daemon.poll();
+    const after = (await daemon.jobs.get(id))!;
+    assert.equal(after.status, 'queued');
+    assert.equal(after.provider, 'claude');
+    assert.equal(after.notBefore, new Date(reset).toISOString());
+    assert.equal(after.attempt, before.attempt);
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['claude']);
   } finally { await f.cleanup(); }
 });
 
@@ -569,7 +634,7 @@ test('a new review waits for Codex while the subject tab still runs a Codex revi
   } finally { await f.cleanup(); }
 });
 
-test('a usage limit hit by a Claude review pins it to Claude without spending a retry, and leaves the Codex cooldown alone', async () => {
+test('a usage limit hit by a Claude review requeues it without spending a retry, leaves the Codex cooldown alone, and returns to Codex once Codex is free', async () => {
   const f = await fixture({ review: 'headless' });
   try {
     const claudeReset = Date.now() + 60_000;
@@ -579,7 +644,6 @@ test('a usage limit hit by a Claude review pins it to Claude without spending a 
     const id = await review(daemon, 'pr-6');
     await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && Boolean((await daemon.jobs.get(id))?.quotaWait));
     const waiting = (await daemon.jobs.get(id))!;
-    assert.equal(waiting.provider, 'claude');
     assert.equal(waiting.quotaWait?.provider, 'claude');
     assert.equal(waiting.notBefore, new Date(claudeReset).toISOString());
     assert.equal(waiting.retryCount, 0);
@@ -587,22 +651,15 @@ test('a usage limit hit by a Claude review pins it to Claude without spending a 
     const cooldowns = Object.fromEntries((await f.p.backend.docs.list<QuotaWait>(PROVIDER_COOLDOWNS)).map((item) => [item.key, item.value]));
     assert.equal(cooldowns['claude']?.until, new Date(claudeReset).toISOString());
     assert.deepEqual(cooldowns['codex'], codexCooldown);
-    // With Codex free and Claude limited again, the started task still waits for Claude.
+    // With Codex free and Claude limited again, the task returns to Codex instead of waiting for Claude.
     await f.p.backend.docs.delete(PROVIDER_COOLDOWNS, 'codex');
-    const later = claudeReset + 120_000;
-    await cache(f.p, 'claude', later);
-    await daemon.poll(new Date(claudeReset + 1));
-    assert.equal((await daemon.jobs.get(id))?.status, 'queued');
-    assert.equal((await daemon.jobs.get(id))?.notBefore, new Date(later).toISOString());
-    assert.equal((await f.calls()).length, 1);
+    await cache(f.p, 'claude', claudeReset + 120_000);
     await f.modes({ mode: 'done' }, { mode: 'done' });
     // The clock runs on from past the reset, so a run lease being given back lapses as it would.
-    const skew = later + 1_000 - Date.now();
-    await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + skew)); return (await daemon.jobs.get(id))?.status === 'done'; });
-    const calls = await f.calls();
-    assert.deepEqual(calls.map((call) => call.provider), ['claude', 'claude']);
-    // The retry starts a fresh answer: nothing to resume.
-    assert.equal(calls[1]!.args.some((arg) => arg === '--resume' || arg === '--session-id'), false);
+    const skew = claudeReset + 1_000 - Date.now();
+    await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + skew)); return (await daemon.jobs.get(id))?.status === 'done'; }, 10_000);
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['claude', 'codex']);
+    assert.equal((await daemon.jobs.get(id))?.provider, 'codex');
     assert.equal((await daemon.jobs.get(id))?.retryCount, 0);
   } finally { await f.cleanup(); }
 });
