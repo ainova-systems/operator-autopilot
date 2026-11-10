@@ -325,7 +325,8 @@ keep their output contract and read-only sandbox.
 `--json-schema` set to the operation's schema, and the instructions of `.claude/agents/<agent>.md`
 (frontmatter removed) as `--append-system-prompt` only when the run's checkout defines it (`operator
 validate` warns otherwise). It is not `--agent`: an agent's `tools` list leaves out the tool Claude
-answers a schema with, and the run would end in prose. Without one, the default
+answers a schema with, and the run would end in prose. The agent's frontmatter (`tools`, `model` and
+the rest) therefore does not apply; what the run may do is the permissions above. Without one, the default
 Codex prompt names the Codex agent file, so a project using this fallback gives the operation its
 own prompt or a Claude agent definition. Codex model and CLI arguments are not forwarded. The
 Claude fallback run has no file-editing tools (Edit, Write and NotebookEdit are removed), may read

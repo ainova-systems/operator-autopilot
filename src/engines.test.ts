@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { buildCommand, CLAUDE_FALLBACK_DENIES, CLAUDE_FALLBACK_READS, claudeFallback, codexFallback, findCodexThread, onProvider } from './engines.ts';
+import { agentBody } from './launch.ts';
 import type { OperationSpec } from './manifest.ts';
 
 const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
@@ -141,4 +142,12 @@ test('the Claude fallback may run only read-only git commands and sha256sum', ()
   assert.ok(CLAUDE_FALLBACK_READS.includes('Read(//**)'));
   // git diff/log/show --output=<file> writes a file; the deny rule wins over the allow rules.
   assert.ok(CLAUDE_FALLBACK_DENIES.includes('Bash(git * --output*)'));
+});
+
+test('an agent definition passes its instructions without the frontmatter', () => {
+  assert.equal(agentBody('---\nname: x\ntools: Read\n---\nReview.\n'), 'Review.');
+  assert.equal(agentBody('---\r\nname: x\r\n---\r\nReview.\r\n'), 'Review.');
+  assert.equal(agentBody('\uFEFF---\nname: x\n---\nReview.'), 'Review.');
+  assert.equal(agentBody('---\n---\nReview.'), 'Review.');
+  assert.equal(agentBody('Review.'), 'Review.');
 });

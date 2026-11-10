@@ -131,5 +131,5 @@ export async function startInHerdr(herdr: Herdr, paneId: string, runDir: string)
 
 /** A Claude agent definition without its frontmatter: the instructions an appended system prompt carries. */
 export function agentBody(text: string): string {
-  return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim();
+  return text.replace(/^\uFEFF/, '').replace(/^---\r?\n(?:[\s\S]*?\r?\n)?---(?:\r?\n|$)/, '').trim();
 }
