@@ -131,7 +131,8 @@ export function codexFallback(op: OperationSpec): OperationSpec {
  * The permissions of a Claude stand-in for a Codex schema operation. It has no file-editing tools and
  * reads any file, as Codex's read-only sandbox does: the input file lives in the run directory and its
  * inputs may name files outside the working directory. It may run the read-only git commands a review
- * needs (rev-parse, merge-base, diff, log, show, status, with or without `-C`) and `sha256sum`. It
+ * needs (rev-parse, merge-base, diff, log, show, status, with or without `-C`) and `sha256sum`; git's
+ * `--output` option, which writes a file, is denied (`CLAUDE_FALLBACK_DENIES`). It
  * runs unattended: `dontAsk` never waits on a prompt, so every other tool is limited to what the
  * project's own permission rules allow, and the project's deny rules still apply. This is not a
  * sandbox; a command those rules allow runs.
@@ -141,7 +142,8 @@ export const CLAUDE_FALLBACK_READS: readonly string[] = [
   ...['rev-parse', 'merge-base', 'diff', 'log', 'show', 'status'].flatMap((sub) => [`Bash(git ${sub} *)`, `Bash(git -C * ${sub} *)`]),
   'Bash(sha256sum *)',
 ];
-export const CLAUDE_FALLBACK_ARGS: readonly string[] = ['--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', 'Edit,Write,NotebookEdit'];
+export const CLAUDE_FALLBACK_DENIES: readonly string[] = ['Edit,Write,NotebookEdit', 'Bash(git * --output*)'];
+export const CLAUDE_FALLBACK_ARGS: readonly string[] = ['--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', ...CLAUDE_FALLBACK_DENIES];
 
 /**
  * Creates a Claude-compatible task only for an explicitly opted-in codex schema operation. It

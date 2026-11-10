@@ -329,7 +329,8 @@ own prompt or a Claude agent definition. Codex model and CLI arguments are not f
 Claude fallback run has no file-editing tools (Edit, Write and NotebookEdit are removed), may read
 any file (`Read(//**)`, as Codex's read-only sandbox does - the input file lives in the run
 directory), may run the read-only git commands a review needs (`rev-parse`, `merge-base`,
-`diff`, `log`, `show`, `status`, with or without `-C`) and `sha256sum`, runs unattended under `--permission-mode dontAsk` so it never waits on a permission
+`diff`, `log`, `show`, `status`, with or without `-C`) and `sha256sum` - git's `--output`
+option, which writes a file, is denied - runs unattended under `--permission-mode dontAsk` so it never waits on a permission
 prompt, and every other tool is limited to what the project's own permission rules allow; the
 project's deny rules, a `Read(.env)` deny included, still apply. That is not Codex's
 read-only sandbox: a command those rules allow still runs. The runtime writes the
