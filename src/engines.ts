@@ -37,8 +37,13 @@ export interface CommandContext {
   session?: { id: string; resume: boolean };
   /** The schema's JSON text, which a structured-output claude run passes to `--json-schema`. */
   jsonSchema?: string;
-  /** The operation's agent has a Claude definition (`.claude/agents/<agent>.md`) in the run's working directory. */
-  claudeAgent?: boolean;
+  /**
+   * The body of the operation's Claude agent definition (`.claude/agents/<agent>.md` in the run's
+   * working directory, frontmatter removed). A structured-output run takes it as an appended system
+   * prompt rather than `--agent`: an agent's `tools` list leaves out the tool Claude answers a
+   * `--json-schema` with, and the run then ends in prose with no structured output.
+   */
+  claudeAgentPrompt?: string;
 }
 
 export const DEFAULT_CLAUDE_PROMPT = 'Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
@@ -67,7 +72,7 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
       const outputPath = op.structuredOutput ? join(context.runDir, 'output.json') : undefined;
       if (op.structuredOutput && context.jsonSchema === undefined) throw new Error(`operation ${op.name}: a structured-output claude run needs its schema`);
       const prompt = renderPrompt(op.prompt ?? DEFAULT_CLAUDE_PROMPT, outputPath ? { ...values, output: outputPath } : values);
-      const structured = op.structuredOutput ? ['--json-schema', context.jsonSchema ?? '', ...(op.agent && context.claudeAgent ? ['--agent', op.agent] : [])] : [];
+      const structured = op.structuredOutput ? ['--json-schema', context.jsonSchema ?? '', ...(context.claudeAgentPrompt ? ['--append-system-prompt', context.claudeAgentPrompt] : [])] : [];
       // A session takes the prompt as its first message and stays open; -p answers once and exits.
       // A per-subject tab names its session, so the next run of the operation continues it.
       const outputArgs = context.attended || op.args.some((arg) => arg === '--output-format' || arg.startsWith('--output-format=')) ? [] : ['--output-format', 'stream-json', '--verbose'];

@@ -46,7 +46,8 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
   const codexAgent = op.engine === 'codex' && op.agent ? await readCodexAgent(join(options.cwd, '.codex', 'agents', `${op.agent}.toml`)) : undefined;
   // Claude takes the schema itself, and the agent only where the run's checkout defines it for Claude.
   const jsonSchema = op.structuredOutput && op.schema ? JSON.stringify(JSON.parse(await readFile(resolve(manifest.root, op.schema), 'utf8'))) : undefined;
-  const claudeAgent = op.structuredOutput && op.agent ? existsSync(join(options.cwd, '.claude', 'agents', `${op.agent}.md`)) : false;
+  const claudeAgentFile = op.structuredOutput && op.agent ? join(options.cwd, '.claude', 'agents', `${op.agent}.md`) : undefined;
+  const claudeAgentPrompt = claudeAgentFile && existsSync(claudeAgentFile) ? agentBody(await readFile(claudeAgentFile, 'utf8')) : undefined;
   const command = buildCommand(op, {
     root: manifest.root,
     cwd: options.cwd,
@@ -61,7 +62,7 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     ...(options.attended ? { attended: true } : {}),
     ...(options.session ? { session: options.session } : {}),
     ...(jsonSchema !== undefined ? { jsonSchema } : {}),
-    ...(claudeAgent ? { claudeAgent } : {}),
+    ...(claudeAgentPrompt ? { claudeAgentPrompt } : {}),
   });
   const input: OperationInput = {
     contract: CONTRACT_VERSION,
@@ -126,4 +127,9 @@ export async function openHerdrTab(herdr: Herdr, workspace: string, cwd: string,
 
 export async function startInHerdr(herdr: Herdr, paneId: string, runDir: string): Promise<void> {
   await herdr.runInPane(paneId, [process.execPath, CLI_ENTRY, 'job-exec', runDir].map(shellQuote).join(' '));
+}
+
+/** A Claude agent definition without its frontmatter: the instructions an appended system prompt carries. */
+export function agentBody(text: string): string {
+  return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim();
 }

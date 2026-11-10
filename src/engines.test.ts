@@ -104,17 +104,19 @@ test('opted-in Claude fallback answers a Codex schema once, without editing tool
   assert.equal(fallback.tabs, 'per-job');
   assert.equal(fallback.then, 'verdict');
   const schema = '{"type":"object"}';
-  const command = buildCommand(fallback, { ...context, jsonSchema: schema, claudeAgent: true, session: { id: 's-1', resume: false } });
+  const command = buildCommand(fallback, { ...context, jsonSchema: schema, claudeAgentPrompt: 'Review.', session: { id: 's-1', resume: false } });
   assert.equal(command.outputPath, '/runs/j1/a1/output.json');
   // It answers once: no session to start or resume, even when one is offered.
   assert.equal(command.session, undefined);
   assert.deepEqual(command.argv.slice(0, 3), ['claude', '-p', 'Review pr-7 from /runs/j1/a1/input.json into /runs/j1/a1/output.json.']);
-  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', ...CLAUDE_FALLBACK_DENIES, '--output-format', 'stream-json', '--verbose']);
+  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--append-system-prompt', 'Review.', '--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', ...CLAUDE_FALLBACK_DENIES, '--output-format', 'stream-json', '--verbose']);
   assert.equal(command.argv.includes('-c'), false);
   assert.equal(command.argv.includes('gpt-6.1-sol'), false);
-  // Without a Claude definition of the agent in the run's checkout, the run goes without --agent.
+  // The agent's instructions are an appended system prompt, never --agent, whose tools list would
+  // leave out the structured-output tool; without a Claude definition in the checkout, neither.
+  assert.equal(command.argv.includes('--agent'), false);
   const bare = buildCommand(fallback, { ...context, jsonSchema: schema }).argv;
-  assert.equal(bare.includes('--agent'), false);
+  assert.equal(bare.includes('--append-system-prompt'), false);
   const { prompt: _prompt, ...unprompted } = original;
   assert.match(buildCommand(claudeFallback(unprompted), { ...context, jsonSchema: schema }).argv[2]!, /^Act as the code-reviewer agent defined in \/repo\/\.codex\/agents\/code-reviewer\.toml for subject pr-7\./);
   assert.throws(() => buildCommand(fallback, context), /needs its schema/);
