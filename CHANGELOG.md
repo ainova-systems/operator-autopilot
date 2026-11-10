@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- A Codex agent operation with a schema may declare `fallback: claude`: a new task runs once on Claude, read-only and with the same `output.json` and `then`, while Codex is in a usage-limit cooldown.
+
 ## [0.10.2] - 2026-11-08
 
 - Releases are published to npm through npm trusted publishing (GitHub Actions OIDC) with provenance; the release workflow no longer uses a stored npm token.

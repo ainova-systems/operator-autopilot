@@ -33,10 +33,18 @@ export interface OperationSpec {
   name: string;
   kind: OperationKind;
   engine: Engine;
-  /** Explicit opt-in: new Claude tasks may run in Codex during a provider cooldown. */
-  fallback?: 'codex';
+  /**
+   * Explicit opt-in: new tasks may run on the other provider while their own is in a usage-limit
+   * cooldown. `codex` serves a claude operation; `claude` serves a codex schema operation.
+   */
+  fallback?: 'codex' | 'claude';
   /** Internal effective operation: Codex must return the original Claude result contract. */
   contractResult?: boolean;
+  /**
+   * Internal effective operation: Claude answers with the structured output the schema requires,
+   * which the runtime writes to the run's output.json as Codex would.
+   */
+  structuredOutput?: boolean;
   command?: string;
   skill?: string;
   agent?: string;
@@ -250,7 +258,10 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
   if (typeof engineValue !== 'string' || !ENGINES.includes(engineValue as Engine)) { reader.problem(`${path}.engine`, `expected one of ${ENGINES.join(', ')}`); return undefined; }
   const engine = engineValue as Engine;
   const fallback = value['fallback'];
-  if (fallback !== undefined && (fallback !== 'codex' || engine !== 'claude')) reader.problem(`${path}.fallback`, 'only claude operations may opt into fallback: codex');
+  if (fallback !== undefined && fallback !== 'codex' && fallback !== 'claude') reader.problem(`${path}.fallback`, 'expected codex (for a claude operation) or claude (for a codex schema operation)');
+  if (fallback === 'codex' && engine !== 'claude') reader.problem(`${path}.fallback`, 'only claude operations may opt into fallback: codex');
+  // Claude stands in only where the runtime collects the answer itself: a codex agent with a schema.
+  if (fallback === 'claude' && (engine !== 'codex' || kind !== 'agent' || value['schema'] === undefined)) reader.problem(`${path}.fallback`, 'only codex agent operations with a schema may opt into fallback: claude');
   if (kind === 'script' && engine !== 'command') reader.problem(`${path}.engine`, 'a script runs its command; engines are for agents');
   if (kind === 'interactive' && engine === 'codex') reader.problem(`${path}.engine`, 'an interactive operation runs claude or a command; codex runs as an agent');
 
@@ -307,6 +318,7 @@ function readOperation(reader: Reader, name: string, value: unknown, path: strin
     kind,
     engine,
     ...(fallback === 'codex' && engine === 'claude' ? { fallback: 'codex' as const } : {}),
+    ...(fallback === 'claude' && engine === 'codex' && kind === 'agent' && schema ? { fallback: 'claude' as const } : {}),
     args: Array.isArray(args) ? args.map(String) : [],
     thread: thread === 'per-subject' ? 'per-subject' : 'none',
     placement: placement === 'herdr' ? 'herdr' : 'headless',

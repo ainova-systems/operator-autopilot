@@ -9,7 +9,7 @@ import type { Herdr } from './herdr.ts';
 import { DEFAULT_QUOTA_WAIT_MS, PROVIDER_COOLDOWNS, quotaFromEvent, rememberQuota, type QuotaWait } from './provider-quota.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo } from './runfiles.ts';
 import { createTestProject, pollUntil, type TestProject } from './test-support/project.ts';
-import type { Daemon } from './daemon.ts';
+import { PROVIDER_AFFINITIES, SUBJECT_TABS_COLLECTION, type Daemon } from './daemon.ts';
 
 const FAKE = `#!/usr/bin/env node
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -35,11 +35,16 @@ if (provider === 'codex') await output(JSON.stringify({ type: 'thread.started', 
 if (setting.noise) await output(JSON.stringify({ type: 'item.completed', item: { text: 'x'.repeat(setting.noise) } }) + '\\n');
 const done = () => {
   if (setting.after === 'auth') { process.stderr.write('Authentication failed\\n'); process.exit(1); }
-  if (provider === 'codex') writeFileSync(args[args.indexOf('-o') + 1], JSON.stringify(result));
+  if (provider === 'codex') writeFileSync(args[args.indexOf('-o') + 1], JSON.stringify(setting.output ?? result));
+  else if (args.includes('--json-schema')) {
+    // Claude's final stream-json event; a run without structured output answers in prose only.
+    const final = { type: 'result', subtype: 'success', is_error: false, result: 'Reviewed.', ...(setting.prose ? {} : { structured_output: setting.output ?? { verdict: 'pass', subject: input.subject } }) };
+    return new Promise(() => process.stdout.write(JSON.stringify(final) + '\\n', () => process.exit(0)));
+  }
   else writeFileSync(process.env.OPERATOR_RESULT, JSON.stringify(result));
   process.exit(0);
 };
-if (setting.mode === 'done' || setting.mode === 'retryable') done();
+if (setting.mode === 'done' || setting.mode === 'retryable') await done();
 if (setting.mode === 'auth') { process.stderr.write('Authentication failed\\n'); process.exit(1); }
 const event = provider === 'claude'
   ? { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', ...(setting.reset ? { resetsAt: setting.reset / 1000 } : {}) } }
@@ -57,12 +62,24 @@ if (setting.mode === 'live' || setting.mode === 'split') {
 }
 `;
 
-type Mode = { mode: string; reset?: number; after?: string; noise?: number; message?: string; endSubjects?: string[] };
-async function fixture(options: { live?: boolean; limit?: boolean; timeout?: string } = {}) {
-  const extra = options.live
+type Mode = { mode: string; reset?: number; after?: string; noise?: number; message?: string; endSubjects?: string[]; output?: unknown; prose?: boolean };
+const REVIEW_SCHEMA = { type: 'object', properties: { verdict: { type: 'string' }, subject: { type: 'string' } }, required: ['verdict'], additionalProperties: false };
+async function fixture(options: { live?: boolean; limit?: boolean; timeout?: string; review?: 'headless' | 'herdr' } = {}) {
+  const taskOp = options.live
     ? `      task: { kind: interactive, engine: claude, fallback: codex, prompt: 'Do the task from {input}; write {result}', placement: herdr, tabs: per-subject, timeout: ${options.timeout ?? '1s'}, ${options.limit ? 'limit: checks,' : ''} args: ['--permission-mode', auto] }`
     : `      task: { kind: agent, engine: claude, fallback: codex, prompt: 'Do the task from {input}; write {result}', timeout: 5s, args: ['--permission-mode', auto] }`;
+  // A read-only Codex review with a schema, whose verdict a follow-on operation reads from {output}.
+  const review = options.review
+    ? `\n      review: { kind: agent, engine: codex, fallback: claude, agent: code-reviewer, schema: review.schema.json, thread: per-subject, ${options.review === 'herdr' ? 'placement: herdr, tabs: per-subject,' : ''} timeout: 5s, args: ['-c', 'approval_policy=on-request'], prompt: 'Review {subject} from {input} into {output}. Answer only with the JSON your output schema requires.', then: verdict }\n      verdict: { kind: script, command: 'true' }`
+    : '';
+  const extra = taskOp + review;
   const p = await createTestProject({ extraOperations: extra });
+  if (options.review) {
+    await writeFile(join(p.root, 'review.schema.json'), JSON.stringify(REVIEW_SCHEMA, null, 2));
+    await mkdir(join(p.root, '.codex', 'agents'), { recursive: true });
+    await writeFile(join(p.root, '.codex', 'agents', 'code-reviewer.toml'), 'model = "gpt-test"\n');
+    p.manifest.workflows.get('demo')!.operations.get('review')!.env = { FAKE_DATA: p.data, CLAUDE_CONFIG_DIR: join(p.root, '.claude') };
+  }
   const bin = join(p.root, 'bin');
   await mkdir(bin);
   for (const provider of ['claude', 'codex']) { const path = join(bin, provider); await writeFile(path, FAKE); await chmod(path, 0o755); }
@@ -385,5 +402,140 @@ test('ending a subject clears threads created by fallback for per-subject Claude
     const second = await task(daemon, 'ended', 'second');
     await pollUntil(daemon, async () => (await daemon.jobs.get(second))?.status === 'done');
     assert.notEqual((await f.calls())[1]!.args[1], 'resume');
+  } finally { await f.cleanup(); }
+});
+
+async function review(daemon: Daemon, subject: string, key = subject) {
+  return (await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'review', subject, input: { head: 'abc' }, trigger: { id: key, name: 'test', kind: 'manual' } })).id;
+}
+
+for (const placement of ['headless', 'herdr'] as const) {
+  test(`a new Codex review falls back to Claude during a Codex cooldown and answers through output.json (${placement})`, async () => {
+    const f = await fixture({ review: placement });
+    try {
+      await cache(f.p, 'codex', Date.now() + 60_000);
+      await f.modes({ mode: 'done' }, { mode: 'done' });
+      await mkdir(join(f.p.root, '.claude', 'agents'), { recursive: true });
+      await writeFile(join(f.p.root, '.claude', 'agents', 'code-reviewer.md'), '---\nname: code-reviewer\n---\nReview.\n');
+      const daemon = f.p.daemon(placement === 'herdr' ? { herdr: f.herdr } : {}); await daemon.acquireLeader();
+      const id = await review(daemon, 'pr-1');
+      await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done');
+      const job = (await daemon.jobs.get(id))!;
+      const outputPath = join(f.p.manifest.runtime.stateDir, 'runs', id, 'a1', 'output.json');
+      const calls = await f.calls();
+      assert.deepEqual(calls.map((call) => call.provider), ['claude']);
+      const args = calls[0]!.args;
+      assert.equal(args[0], '-p');
+      assert.equal(args[1], `Review pr-1 from ${join(f.p.manifest.runtime.stateDir, 'runs', id, 'a1', 'input.json')} into ${outputPath}. Answer only with the JSON your output schema requires.`);
+      assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]!), REVIEW_SCHEMA);
+      assert.equal(args[args.indexOf('--agent') + 1], 'code-reviewer');
+      assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 4), ['--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit']);
+      assert.equal(args.includes('-c'), false);
+      assert.equal(args.includes('gpt-test'), false);
+      assert.equal(job.provider, 'claude');
+      // In herdr the run is a per-job pane of its own; the runtime still reads its answer from the run's output.
+      assert.ok(job.history.some((item) => item.event === 'started' && item.detail?.startsWith(placement === 'herdr' ? 'herdr pane' : 'headless')));
+      assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), { verdict: 'pass', subject: 'pr-1' });
+      assert.deepEqual(job.outcome?.evidence, [outputPath]);
+      const next = (await daemon.jobs.list()).find((other) => other.operation === 'verdict')!;
+      assert.equal(next.subject, 'pr-1');
+      assert.deepEqual(next.input, { head: 'abc', output: outputPath });
+      assert.ok(f.p.lines.some((line) => line.includes('job runs on its fallback provider')));
+      // Nothing of the Claude run is kept for the subject: the next Codex run is not pinned to Claude.
+      assert.deepEqual(await f.p.backend.docs.list('threads'), []);
+      assert.deepEqual(await f.p.backend.docs.list(PROVIDER_AFFINITIES), []);
+      assert.deepEqual(await f.p.backend.docs.list(SUBJECT_TABS_COLLECTION), []);
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('a Claude review without structured output fails instead of passing on its exit status', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    await cache(f.p, 'codex', Date.now() + 60_000);
+    await f.modes({ mode: 'done', prose: true }, { mode: 'done' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-2');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'failed');
+    const job = (await daemon.jobs.get(id))!;
+    assert.equal(job.outcome?.failure?.reason, 'claude returned no structured output for the schema');
+    assert.equal(job.outcome?.exitCode, 0);
+    assert.deepEqual(job.outcome?.next, []);
+    assert.equal((await daemon.jobs.list()).some((other) => other.operation === 'verdict'), false);
+    await assert.rejects(readFile(join(f.p.manifest.runtime.stateDir, 'runs', id, 'a1', 'output.json'), 'utf8'), { code: 'ENOENT' });
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['claude']);
+  } finally { await f.cleanup(); }
+});
+
+test('a started Codex review waits for Codex on retry instead of moving to Claude', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const op = f.p.manifest.workflows.get('demo')!.operations.get('review')!;
+    op.retries = 1; op.retryDelayMs = 100;
+    await f.modes({ mode: 'done' }, { mode: 'auth' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-3');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'queued' && (await daemon.jobs.get(id))!.attempt === 2);
+    const reset = Date.now() + 60_000;
+    await cache(f.p, 'codex', reset);
+    await sleep(200);
+    await daemon.poll();
+    const waiting = (await daemon.jobs.get(id))!;
+    assert.equal(waiting.status, 'queued');
+    assert.equal(waiting.provider, 'codex');
+    assert.equal(waiting.notBefore, new Date(reset).toISOString());
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
+  } finally { await f.cleanup(); }
+});
+
+test('a new Codex review waits for the earlier reset while both providers cool down', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const claudeReset = Date.now() + 60_000;
+    await cache(f.p, 'codex', claudeReset + 60_000);
+    await cache(f.p, 'claude', claudeReset);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-4');
+    await daemon.poll();
+    const waiting = (await daemon.jobs.get(id))!;
+    assert.equal(waiting.status, 'queued');
+    assert.equal(waiting.notBefore, new Date(claudeReset).toISOString());
+    assert.equal(waiting.provider, undefined);
+    assert.deepEqual(await f.calls(), []);
+    await pollUntil(daemon, async () => { await daemon.poll(new Date(claudeReset + 1)); return (await daemon.jobs.get(id))?.status === 'done'; });
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['claude']);
+  } finally { await f.cleanup(); }
+});
+
+test('a Claude review leaves the subject\'s Codex thread to the next Codex run; an affinity keeps Codex', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const first = await review(daemon, 'pr-5', 'first');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(first))?.status === 'done');
+    const [thread] = await f.p.backend.docs.list<{ threadId: string; updatedAt: string }>('threads');
+    assert.equal(thread?.value.threadId, 'thread-pr-5');
+    // While the subject's Codex affinity lasts, a cooldown makes it wait for Codex.
+    await cache(f.p, 'codex', Date.now() + 60_000);
+    const pinned = await review(daemon, 'pr-5', 'pinned');
+    await daemon.poll();
+    assert.equal((await daemon.jobs.get(pinned))?.status, 'queued');
+    assert.equal((await daemon.jobs.get(pinned))?.provider, 'codex');
+    // Once it has lapsed, a new task runs on Claude and keeps nothing of its own for the subject.
+    for (const { key } of await f.p.backend.docs.list(PROVIDER_AFFINITIES)) await f.p.backend.docs.delete(PROVIDER_AFFINITIES, key);
+    const fallback = await review(daemon, 'pr-5', 'fallback');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(fallback))?.status === 'done');
+    assert.equal((await daemon.jobs.get(fallback))?.provider, 'claude');
+    assert.equal((await daemon.jobs.get(fallback))?.codexThreadId, undefined);
+    assert.deepEqual((await f.p.backend.docs.list('threads')).map((item) => item.value), [thread!.value]);
+    assert.deepEqual(await f.p.backend.docs.list(PROVIDER_AFFINITIES), []);
+    // After the reset the waiting Codex task continues the subject's own thread.
+    await f.p.backend.docs.delete(PROVIDER_COOLDOWNS, 'codex');
+    await pollUntil(daemon, async () => { await daemon.poll(new Date(Date.now() + 60_001)); return (await daemon.jobs.get(pinned))?.status === 'done'; });
+    const calls = await f.calls();
+    assert.deepEqual(calls.map((call) => call.provider), ['codex', 'claude', 'codex']);
+    assert.deepEqual(calls[2]!.args.slice(0, 3), ['exec', 'resume', 'thread-pr-5']);
   } finally { await f.cleanup(); }
 });

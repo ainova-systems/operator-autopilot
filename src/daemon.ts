@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { collectRun, readExit } from './collect.ts';
 import type { OperationResult } from './contract.ts';
-import { codexFallback } from './engines.ts';
+import { codexFallback, onProvider } from './engines.ts';
 import { coolingProvider, quotaFromLines, readEventTail, rememberQuota, type Provider, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
 import { HerdrRefusal, type Herdr } from './herdr.ts';
@@ -542,11 +542,12 @@ export class Daemon {
       // A new record may continue a conversation: it is not a new logical task.
       const pinned = job.provider ?? retained?.provider ?? (retained?.sessionId ? 'claude' : undefined) ?? affinity
         ?? (job.attempt > 1 || job.history.some((item) => item.event === 'started') ? op.engine : undefined);
-      let provider = pinned ?? op.engine;
+      let provider: Provider = pinned ?? op.engine;
       let cooldown = await coolingProvider(this.backend.docs, provider, now.getTime(), this.hostScope);
-      if (cooldown && !pinned && provider === 'claude' && op.fallback === 'codex') {
-        const alternate = await coolingProvider(this.backend.docs, 'codex', now.getTime(), this.hostScope);
-        if (!alternate) { provider = 'codex'; cooldown = undefined; }
+      // Only a new, not-started task may move to the operation's declared fallback provider.
+      if (cooldown && !pinned && op.fallback && op.fallback !== provider) {
+        const alternate = await coolingProvider(this.backend.docs, op.fallback, now.getTime(), this.hostScope);
+        if (!alternate) { provider = op.fallback; cooldown = undefined; }
         else if (Date.parse(alternate.until) < Date.parse(cooldown.until)) cooldown = alternate;
       }
       if (cooldown && placement === 'any') {
@@ -568,7 +569,7 @@ export class Daemon {
         if (job.quotaWait?.until !== cooldown.until) this.log.info('job waits for provider quota', { job: job.id, provider, until: cooldown.until });
         return;
       }
-      if (provider === 'codex' && op.engine === 'claude') op = codexFallback(op);
+      op = onProvider(op, provider);
     }
 
     if (op.exclusive) {
@@ -759,6 +760,8 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return undefined;
     }
+    // A task moves to its fallback provider once, at its first start; later attempts keep it.
+    if (!job.provider && (op.contractResult || op.structuredOutput)) this.log.info('job runs on its fallback provider while the configured one is in a usage-limit cooldown', { job: job.id, operation: job.operation, subject: job.subject, provider: op.engine });
     this.localRuns.set(prepared.runDir, { jobId: job.id, attempt: job.attempt });
     if (run.lease) this.runTokens.set(job.id, run.lease.token);
     if (op.engine !== 'command' && (op.tabs === 'per-subject' || op.thread === 'per-subject')) await this.backend.docs.replace(PROVIDER_AFFINITIES, this.affinityKey(job), { provider: op.engine, workflow: job.workflow, subject: job.subject, operation: job.operation }, { ttlMs: SUBJECT_TAB_TTL_MS });
@@ -1135,7 +1138,9 @@ export class Daemon {
       return;
     }
     const configured = this.operation(job);
-    const op = configured && (run.codexContract || job.codexContract) ? codexFallback(configured) : configured;
+    // The run is collected as the operation it executed: a fallback variant when it ran on the other provider.
+    const op = configured && (run.codexContract || job.codexContract) ? codexFallback(configured)
+      : configured && (run.provider ?? job.provider) === 'claude' ? onProvider(configured, 'claude') : configured;
     let result: OperationResult;
     if (!op) {
       result = { contract: 1, status: 'failed', evidence: [], next: [], failure: { reason: 'operation no longer configured', retryable: false } };

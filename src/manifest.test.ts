@@ -218,3 +218,20 @@ workflows:
   }
   assert.throws(() => parseManifest(text('[]').replace('engine: claude', 'engine: codex'), 'm.yaml'), /only claude operations/);
 });
+
+test('Claude fallback is explicit and only for codex agent operations with a schema', () => {
+  const text = (op: string) => `contract: 1
+project: demo
+workflows:
+  w:
+    operations:
+      review: ${op}
+      verdict: { kind: script, command: 'true' }
+`;
+  const fallback = (op: string) => parseManifest(text(op), 'm.yaml').manifest.workflows.get('w')?.operations.get('review')?.fallback;
+  assert.equal(fallback("{ kind: agent, engine: codex, agent: code-reviewer, schema: review.json, fallback: claude, args: ['-c', 'approval_policy=on-request'], then: verdict }"), 'claude');
+  assert.equal(fallback('{ kind: agent, engine: codex, agent: code-reviewer, schema: review.json }'), undefined);
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: codex, agent: code-reviewer, fallback: claude }'), 'm.yaml'), /review\.fallback: only codex agent operations with a schema may opt into fallback: claude/);
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: claude, prompt: Work, fallback: claude }'), 'm.yaml'), /only codex agent operations with a schema/);
+  assert.throws(() => parseManifest(text('{ kind: agent, engine: codex, agent: code-reviewer, schema: review.json, fallback: gemini }'), 'm.yaml'), /review\.fallback: expected codex \(for a claude operation\) or claude \(for a codex schema operation\)/);
+});

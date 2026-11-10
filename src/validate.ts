@@ -57,6 +57,9 @@ export async function validateProject(manifest: Manifest, warnings: string[], op
       }
       if (op.engine === 'claude' || op.engine === 'codex') engines.add(op.engine);
       if (op.fallback) engines.add(op.fallback);
+      if (op.fallback === 'claude' && op.agent) {
+        for (const cwd of cwds) if (!existsSync(join(cwd, '.claude', 'agents', `${op.agent}.md`))) report.warnings.push(`${where}: the claude fallback runs without agent ${op.agent} in ${cwd} (no .claude/agents/${op.agent}.md)`);
+      }
       if (op.skill) {
         for (const cwd of cwds) if (!existsSync(join(cwd, '.claude', 'skills', op.skill, 'SKILL.md'))) report.problems.push(`${where}: skill ${op.skill} is not installed in ${cwd} (.claude/skills/${op.skill}/SKILL.md)`);
       }

@@ -5,7 +5,10 @@ import type { OperationSpec } from './manifest.ts';
 /** The command a run executes, assembled from the operation's configuration. */
 export interface EngineCommand {
   argv: string[];
-  /** Codex writes its last message here; the runtime builds the contract result from it. */
+  /**
+   * Codex writes its last message here, and the runtime writes a structured-output claude run's
+   * answer here; the runtime builds the contract result from it.
+   */
   outputPath?: string;
   /**
    * A claude run in a per-subject tab: the command that resumes its session and the one that starts
@@ -32,6 +35,10 @@ export interface CommandContext {
   attended?: boolean;
   /** A claude session this run starts under a known id, or resumes when `resume` is set. */
   session?: { id: string; resume: boolean };
+  /** The schema's JSON text, which a structured-output claude run passes to `--json-schema`. */
+  jsonSchema?: string;
+  /** The operation's agent has a Claude definition (`.claude/agents/<agent>.md`) in the run's working directory. */
+  claudeAgent?: boolean;
 }
 
 export const DEFAULT_CLAUDE_PROMPT = 'Run the {skill} skill for subject {subject}. The operation input file is {input}. Write the operation result (contract 1) to {result}.';
@@ -56,16 +63,21 @@ export function buildCommand(op: OperationSpec, context: CommandContext): Engine
     case 'command':
       return { argv: ['/bin/sh', '-c', op.command ?? 'false'] };
     case 'claude': {
-      const prompt = renderPrompt(op.prompt ?? DEFAULT_CLAUDE_PROMPT, values);
+      // A structured-output run stands in for a codex schema operation: its prompt renders as Codex's would.
+      const outputPath = op.structuredOutput ? join(context.runDir, 'output.json') : undefined;
+      if (op.structuredOutput && context.jsonSchema === undefined) throw new Error(`operation ${op.name}: a structured-output claude run needs its schema`);
+      const prompt = renderPrompt(op.prompt ?? DEFAULT_CLAUDE_PROMPT, outputPath ? { ...values, output: outputPath } : values);
+      const structured = op.structuredOutput ? ['--json-schema', context.jsonSchema ?? '', ...(op.agent && context.claudeAgent ? ['--agent', op.agent] : [])] : [];
       // A session takes the prompt as its first message and stays open; -p answers once and exits.
       // A per-subject tab names its session, so the next run of the operation continues it.
       const outputArgs = context.attended || op.args.some((arg) => arg === '--output-format' || arg.startsWith('--output-format=')) ? [] : ['--output-format', 'stream-json', '--verbose'];
-      const argv = (session: string[]): string[] => ['claude', ...(context.attended ? [] : ['-p']), prompt, ...session, ...(op.model ? ['--model', op.model] : []), ...op.args, ...outputArgs];
-      if (!context.session) return { argv: argv([]) };
+      const argv = (session: string[]): string[] => ['claude', ...(context.attended ? [] : ['-p']), prompt, ...session, ...(op.model ? ['--model', op.model] : []), ...structured, ...op.args, ...outputArgs];
+      const output = outputPath ? { outputPath } : {};
+      if (!context.session) return { argv: argv([]), ...output };
       const { id, resume } = context.session;
       const resumeArgv = argv(['--resume', id]);
       const freshArgv = argv(['--session-id', id]);
-      return { argv: resume ? resumeArgv : freshArgv, session: { id, resume, resumeArgv, freshArgv } };
+      return { argv: resume ? resumeArgv : freshArgv, ...output, session: { id, resume, resumeArgv, freshArgv } };
     }
     case 'codex': {
       const outputPath = join(context.runDir, 'output.json');
@@ -112,4 +124,35 @@ export function codexFallback(op: OperationSpec): OperationSpec {
     prompt: op.prompt ?? DEFAULT_CLAUDE_PROMPT,
     thread: op.tabs === 'per-subject' ? 'per-subject' : 'none',
   };
+}
+
+/**
+ * The read-only posture of a Claude stand-in for Codex's read-only sandbox: the file-editing tools
+ * are removed, and `dontAsk` denies every other action the project's permission rules do not
+ * already allow, instead of asking a person nobody is there to be.
+ */
+export const CLAUDE_READ_ONLY_ARGS: readonly string[] = ['--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit'];
+
+/**
+ * Creates a Claude-compatible task only for an explicitly opted-in codex schema operation. It
+ * answers once with the schema's structured output and keeps nothing for the subject: no session
+ * tab, no provider affinity, and never the operation's Codex thread, which a later Codex run continues.
+ */
+export function claudeFallback(op: OperationSpec): OperationSpec {
+  const { model: _model, fallback: _fallback, ...base } = op;
+  return {
+    ...base, engine: 'claude', kind: 'agent', structuredOutput: true,
+    args: [...CLAUDE_READ_ONLY_ARGS],
+    prompt: op.prompt ?? DEFAULT_CODEX_PROMPT,
+    thread: 'none',
+    tabs: 'per-job',
+  };
+}
+
+/** The operation a run executes on `provider`: the configured one, or its fallback variant. */
+export function onProvider(op: OperationSpec, provider: string | undefined): OperationSpec {
+  if (provider === 'codex' && op.engine === 'claude') return codexFallback(op);
+  // Claude can stand in only where the runtime collects the answer itself: a codex agent with a schema.
+  if (provider === 'claude' && op.engine === 'codex' && op.kind === 'agent' && op.schema) return claudeFallback(op);
+  return op;
 }
