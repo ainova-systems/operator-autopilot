@@ -322,8 +322,11 @@ invalid JSON or exit zero alone is never success. Existing native Codex output/s
 keep their output contract and read-only sandbox.
 
 `fallback: claude` runs the same rendered prompt (`{output}` included) through `claude -p` with
-`--json-schema` set to the operation's schema, and `--agent <agent>` only when the run's checkout
-defines `.claude/agents/<agent>.md` (`operator validate` warns otherwise). Without one, the default
+`--json-schema` set to the operation's schema, and the instructions of `.claude/agents/<agent>.md`
+(frontmatter removed) as `--append-system-prompt` only when the run's checkout defines it (`operator
+validate` warns otherwise). It is not `--agent`: an agent's `tools` list leaves out the tool Claude
+answers a schema with, and the run would end in prose. The agent's frontmatter (`tools`, `model` and
+the rest) therefore does not apply; what the run may do is the permissions above. Without one, the default
 Codex prompt names the Codex agent file, so a project using this fallback gives the operation its
 own prompt or a Claude agent definition. Codex model and CLI arguments are not forwarded. The
 Claude fallback run has no file-editing tools (Edit, Write and NotebookEdit are removed), may read

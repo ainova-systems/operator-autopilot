@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The Claude fallback run takes the operation's agent instructions as an appended system prompt instead of `--agent`: an agent definition's `tools` list left out the tool Claude answers a schema with, so the run ended in prose and failed with no structured output.
+
 ## [0.11.3] - 2026-11-10
 
 - The Claude fallback run may run the read-only git commands a review needs (`rev-parse`, `merge-base`, `diff`, `log`, `show`, `status`) and `sha256sum`, with git's file-writing `--output` option denied; under `dontAsk` a project that allows no commands left it unable to read the diff.

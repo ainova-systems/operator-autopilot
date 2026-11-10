@@ -430,7 +430,8 @@ for (const placement of ['headless', 'herdr'] as const) {
       assert.equal(args[0], '-p');
       assert.equal(args[1], `Review pr-1 from ${join(f.p.manifest.runtime.stateDir, 'runs', id, 'a1', 'input.json')} into ${outputPath}. Answer only with the JSON your output schema requires.`);
       assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]!), REVIEW_SCHEMA);
-      assert.equal(args[args.indexOf('--agent') + 1], 'code-reviewer');
+      assert.equal(args[args.indexOf('--append-system-prompt') + 1], 'Review.');
+      assert.equal(args.includes('--agent'), false);
       assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--disallowedTools') + 1 + CLAUDE_FALLBACK_DENIES.length), ['--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', ...CLAUDE_FALLBACK_DENIES]);
       assert.equal(args.includes('-c'), false);
       assert.equal(args.includes('gpt-test'), false);
