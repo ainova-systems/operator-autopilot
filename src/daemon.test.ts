@@ -1087,6 +1087,20 @@ test('a result naming ended subjects closes their open waits, and leaves other s
   await assert.rejects(fireTrigger(p.manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'answer', subject: 'pr-5', key: 'q1', input: {} }), /matched no open wait/);
 });
 
+test('a wait that cannot be ended leaves the ended subject\'s tabs closed and the job done', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-7', 'look-7');
+  await daemon.waits.open('demo', 'demo', 'ask-pr-7', 1, { on: 'answer', subject: 'pr-7', key: 'q1', resume: 'answered', input: {} });
+  daemon.waits.close = async () => { throw new Error('state contention'); };
+  const close = await runOnce(daemon, 'close', '', 'close-contended', { subjects: ['pr-7'] });
+  assert.equal(close?.status, 'done');
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.equal((await daemon.waits.listOpen()).length, 1);
+});
+
 test('a restarted daemon reuses the per-subject tab it recorded', async () => {
   const p = await perSubjectProject();
   const { herdr, created } = tabHerdr();
