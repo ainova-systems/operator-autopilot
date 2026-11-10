@@ -3,7 +3,8 @@ import { OperatorError } from './errors.ts';
 import { stableId } from './jobs.ts';
 import type { DocStore } from './state/types.ts';
 
-export type WaitStatus = 'open' | 'resolved' | 'expired';
+/** `ended`: a result named the wait's subject in `endSubjects`, so nothing will answer it. */
+export type WaitStatus = 'open' | 'resolved' | 'expired' | 'ended';
 
 export interface WaitRecord {
   id: string;

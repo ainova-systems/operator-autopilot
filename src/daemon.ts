@@ -871,6 +871,18 @@ export class Daemon {
    * Codex threads. A tab a run or a person still works in moves to the close retries, which close it
    * once that work is over.
    */
+  /** A question on a subject whose work is over will never be answered: its wait ends with it. */
+  private async endSubjectWaits(job: JobRecord, subjects: string[]): Promise<void> {
+    for (const wait of await this.waits.listOpen({ workflow: job.workflow })) {
+      if (!subjects.includes(wait.subject)) continue;
+      try {
+        if (await this.waits.close(wait.id, 'ended', job.id)) this.log.info('the wait of an ended subject closed unanswered', { wait: wait.id, job: wait.jobId, on: wait.on, subject: wait.subject });
+      } catch (error) {
+        this.log.warn('could not end the wait of an ended subject; a later result naming the subject retries', { wait: wait.id, subject: wait.subject, error: errorText(error) });
+      }
+    }
+  }
+
   private async endSubjects(job: JobRecord, subjects: string[]): Promise<void> {
     for (const { key, value } of await this.backend.docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)) {
       if (value.workflow !== job.workflow || !subjects.includes(value.subject)) continue;
@@ -1197,6 +1209,7 @@ export class Daemon {
     await this.releaseRun(job.id, run, result.status === 'noop' ? 0 : op?.keepTabMs ?? 0);
     if (result.endSubjects) {
       try { await this.endSubjects(job, result.endSubjects); } catch (error) { this.log.warn('closing the tabs of ended subjects failed; a later result naming them retries', { job: job.id, error: errorText(error) }); }
+      try { await this.endSubjectWaits(job, result.endSubjects); } catch (error) { this.log.warn('ending the waits of ended subjects failed; a later result naming them retries', { job: job.id, error: errorText(error) }); }
     }
     const finishedAt = new Date().toISOString();
     await this.jobs.update(job.id, (current) => {

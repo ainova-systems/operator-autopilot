@@ -1069,6 +1069,38 @@ test('a result naming ended subjects closes their tabs and ends their sessions',
   await endAll(daemon);
 });
 
+test('a result naming ended subjects closes their open waits, and leaves other subjects\' waits open', async () => {
+  const p = await perSubjectProject();
+  const daemon = p.daemon();
+  await daemon.acquireLeader();
+  for (const subject of ['pr-5', 'pr-6']) {
+    await daemon.waits.open('demo', 'demo', `ask-${subject}`, 1, { on: 'answer', subject, key: 'q1', resume: 'answered', input: {} });
+  }
+  await daemon.waits.open('demo', 'other', 'ask-other', 1, { on: 'answer', subject: 'pr-5', key: 'q1', resume: 'answered', input: {} });
+  const close = await runOnce(daemon, 'close', '', 'close-waits', { subjects: ['pr-5'] });
+  assert.equal(close?.status, 'done');
+  const open = await daemon.waits.listOpen();
+  assert.deepEqual(open.map((wait) => `${wait.workflow}/${wait.subject}`).sort(), ['demo/pr-6', 'other/pr-5']);
+  const ended = (await p.backend.docs.list<{ subject: string; workflow: string; status: string; resolvedBy?: string }>('waits')).find((item) => item.value.subject === 'pr-5' && item.value.workflow === 'demo')?.value;
+  assert.equal(ended?.status, 'ended');
+  assert.equal(ended?.resolvedBy, close?.id);
+  await assert.rejects(fireTrigger(p.manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'answer', subject: 'pr-5', key: 'q1', input: {} }), /matched no open wait/);
+});
+
+test('a wait that cannot be ended leaves the ended subject\'s tabs closed and the job done', async () => {
+  const p = await perSubjectProject();
+  const { herdr, closed } = tabHerdr();
+  const daemon = p.daemon({ herdr });
+  await daemon.acquireLeader();
+  await runOnce(daemon, 'look', 'pr-7', 'look-7');
+  await daemon.waits.open('demo', 'demo', 'ask-pr-7', 1, { on: 'answer', subject: 'pr-7', key: 'q1', resume: 'answered', input: {} });
+  daemon.waits.close = async () => { throw new Error('state contention'); };
+  const close = await runOnce(daemon, 'close', '', 'close-contended', { subjects: ['pr-7'] });
+  assert.equal(close?.status, 'done');
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.equal((await daemon.waits.listOpen()).length, 1);
+});
+
 test('a restarted daemon reuses the per-subject tab it recorded', async () => {
   const p = await perSubjectProject();
   const { herdr, created } = tabHerdr();
