@@ -109,7 +109,7 @@ test('opted-in Claude fallback answers a Codex schema once, without editing tool
   // It answers once: no session to start or resume, even when one is offered.
   assert.equal(command.session, undefined);
   assert.deepEqual(command.argv.slice(0, 3), ['claude', '-p', 'Review pr-7 from /runs/j1/a1/input.json into /runs/j1/a1/output.json.']);
-  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit', '--output-format', 'stream-json', '--verbose']);
+  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(//**)', '--disallowedTools', 'Edit,Write,NotebookEdit', '--output-format', 'stream-json', '--verbose']);
   assert.equal(command.argv.includes('-c'), false);
   assert.equal(command.argv.includes('gpt-6.1-sol'), false);
   // Without a Claude definition of the agent in the run's checkout, the run goes without --agent.
