@@ -5,6 +5,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { enqueue } from './jobs.ts';
+import { CLAUDE_FALLBACK_READS } from './engines.ts';
 import type { Herdr } from './herdr.ts';
 import { DEFAULT_QUOTA_WAIT_MS, PROVIDER_COOLDOWNS, quotaFromEvent, rememberQuota, type QuotaWait } from './provider-quota.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo } from './runfiles.ts';
@@ -430,7 +431,7 @@ for (const placement of ['headless', 'herdr'] as const) {
       assert.equal(args[1], `Review pr-1 from ${join(f.p.manifest.runtime.stateDir, 'runs', id, 'a1', 'input.json')} into ${outputPath}. Answer only with the JSON your output schema requires.`);
       assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]!), REVIEW_SCHEMA);
       assert.equal(args[args.indexOf('--agent') + 1], 'code-reviewer');
-      assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 6), ['--permission-mode', 'dontAsk', '--allowedTools', 'Read(//**)', '--disallowedTools', 'Edit,Write,NotebookEdit']);
+      assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--disallowedTools') + 2), ['--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', 'Edit,Write,NotebookEdit']);
       assert.equal(args.includes('-c'), false);
       assert.equal(args.includes('gpt-test'), false);
       assert.equal(job.provider, 'claude');
