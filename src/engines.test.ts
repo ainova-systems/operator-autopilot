@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildCommand, codexFallback, findCodexThread } from './engines.ts';
+import { buildCommand, claudeFallback, codexFallback, findCodexThread, onProvider } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
 const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
@@ -94,4 +94,39 @@ test('opted-in Codex fallback preserves contract and declared sandbox, without C
   const resumed = buildCommand(fallback, { ...context, threadId: 'thread-1' }).argv;
   assert.deepEqual(resumed.slice(0, 4), ['codex', 'exec', 'resume', 'thread-1']);
   assert.ok(resumed.includes('sandbox_mode="workspace-write"'));
+});
+
+test('opted-in Claude fallback answers a Codex schema once, without editing tools or a session, with the Codex prompt and no Codex arguments', () => {
+  const original: OperationSpec = { ...base, engine: 'codex', fallback: 'claude', agent: 'code-reviewer', schema: 'schemas/review.json', model: 'gpt-6.1-sol', thread: 'per-subject', tabs: 'per-subject', placement: 'herdr', access: 'read', then: 'verdict', args: ['-c', 'approval_policy=on-request'], prompt: 'Review {subject} from {input} into {output}.' };
+  const fallback = claudeFallback(original);
+  assert.equal(fallback.engine, 'claude');
+  assert.equal(fallback.thread, 'none');
+  assert.equal(fallback.tabs, 'per-job');
+  assert.equal(fallback.then, 'verdict');
+  const schema = '{"type":"object"}';
+  const command = buildCommand(fallback, { ...context, jsonSchema: schema, claudeAgent: true, session: { id: 's-1', resume: false } });
+  assert.equal(command.outputPath, '/runs/j1/a1/output.json');
+  // It answers once: no session to start or resume, even when one is offered.
+  assert.equal(command.session, undefined);
+  assert.deepEqual(command.argv.slice(0, 3), ['claude', '-p', 'Review pr-7 from /runs/j1/a1/input.json into /runs/j1/a1/output.json.']);
+  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--disallowedTools', 'Edit,Write,NotebookEdit', '--output-format', 'stream-json', '--verbose']);
+  assert.equal(command.argv.includes('-c'), false);
+  assert.equal(command.argv.includes('gpt-6.1-sol'), false);
+  // Without a Claude definition of the agent in the run's checkout, the run goes without --agent.
+  const bare = buildCommand(fallback, { ...context, jsonSchema: schema }).argv;
+  assert.equal(bare.includes('--agent'), false);
+  const { prompt: _prompt, ...unprompted } = original;
+  assert.match(buildCommand(claudeFallback(unprompted), { ...context, jsonSchema: schema }).argv[2]!, /^Act as the code-reviewer agent defined in \/repo\/\.codex\/agents\/code-reviewer\.toml for subject pr-7\./);
+  assert.throws(() => buildCommand(fallback, context), /needs its schema/);
+});
+
+test('a run executes the configured operation, or its fallback variant on the other provider', () => {
+  const codexReview: OperationSpec = { ...base, engine: 'codex', fallback: 'claude', agent: 'code-reviewer', schema: 'review.json' };
+  assert.equal(onProvider(codexReview, 'codex'), codexReview);
+  assert.equal(onProvider(codexReview, 'claude').structuredOutput, true);
+  const { schema: _schema, ...schemaless } = codexReview;
+  assert.equal(onProvider(schemaless, 'claude').engine, 'codex');
+  const claudeTask: OperationSpec = { ...base, engine: 'claude', fallback: 'codex', skill: 'work' };
+  assert.equal(onProvider(claudeTask, 'claude'), claudeTask);
+  assert.equal(onProvider(claudeTask, 'codex').contractResult, true);
 });

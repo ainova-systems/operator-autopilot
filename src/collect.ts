@@ -1,4 +1,4 @@
-import { open, readFile } from 'node:fs/promises';
+import { open, readFile, writeFile } from 'node:fs/promises';
 import { CONTRACT_VERSION, parseResult, type OperationResult } from './contract.ts';
 import { findCodexThread } from './engines.ts';
 import type { JobRecord } from './jobs.ts';
@@ -39,10 +39,46 @@ async function readCodexThread(runDir: string): Promise<string | undefined> {
   } finally { await file.close(); }
 }
 
+/** How much of a run's output the final Claude result is looked for in; it is the last event Claude prints. */
+const RESULT_TAIL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The structured output of a Claude run's final result event (`--json-schema`), read from the end of
+ * its output log; undefined unless the run ended in success with one.
+ */
+export async function readClaudeStructuredOutput(runDir: string): Promise<unknown> {
+  let file;
+  try { file = await open(runPath(runDir, 'output'), 'r'); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  let text: string;
+  try {
+    const size = (await file.stat()).size;
+    const start = Math.max(0, size - RESULT_TAIL_BYTES);
+    const buffer = Buffer.alloc(size - start);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
+    text = buffer.subarray(0, bytesRead).toString('utf8');
+  } finally { await file.close(); }
+  const lines = text.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!.trim();
+    if (!line.startsWith('{')) continue;
+    let event: { type?: unknown; subtype?: unknown; is_error?: unknown; structured_output?: unknown };
+    try { event = JSON.parse(line) as typeof event; } catch { continue; }
+    if (event?.type !== 'result') continue;
+    // Only the run's last result counts: a failed or schema-less ending is no answer.
+    if (event.subtype !== 'success' || event.is_error === true || event.structured_output === undefined || event.structured_output === null) return undefined;
+    return event.structured_output;
+  }
+  return undefined;
+}
+
 /**
  * Turns a finished run into a contract result. Exit status and a valid result file together prove
  * the run executed; an exit of 0 alone never counts as success. A Codex run cannot write the
- * result file, so its result is built from its output file and the operation's `then`.
+ * result file, so its result is built from its output file and the operation's `then`; a Claude
+ * stand-in for it gets the same output file, written from its structured output.
  */
 export async function collectRun(job: JobRecord, op: OperationSpec, runDir: string, exit: ExitInfo): Promise<Collected> {
   const threadId = op.engine === 'codex' ? await readCodexThread(runDir) : undefined;
@@ -50,13 +86,19 @@ export async function collectRun(job: JobRecord, op: OperationSpec, runDir: stri
   if (exit.timedOut) return collected(failed(`timed out after ${Math.round(op.timeoutMs / 1000)}s`, true));
   if (exit.error) return collected(failed(`could not start: ${exit.error}`, false));
 
-  if (op.engine === 'codex' && !op.contractResult) {
+  if ((op.engine === 'codex' && !op.contractResult) || op.structuredOutput) {
     const outputPath = `${runDir}/output.json`;
-    if (exit.exitCode !== 0) return collected(failed(`codex exited ${exit.exitCode ?? exit.signal}`, true));
+    if (exit.exitCode !== 0) return collected(failed(`${op.engine} exited ${exit.exitCode ?? exit.signal}`, true));
+    if (op.structuredOutput) {
+      // A Claude stand-in for a codex schema operation: its structured output is the output Codex would have written.
+      const structured = await readClaudeStructuredOutput(runDir);
+      if (structured === undefined) return collected(failed('claude returned no structured output for the schema', true));
+      await writeFile(outputPath, JSON.stringify(structured));
+    }
     const output = await readText(outputPath);
-    if (output === undefined || output.trim() === '') return collected(failed('codex wrote no output', true));
+    if (output === undefined || output.trim() === '') return collected(failed(`${op.engine} wrote no output`, true));
     if (op.schema) {
-      try { JSON.parse(output); } catch { return collected(failed('codex output is not the JSON its schema requires', true)); }
+      try { JSON.parse(output); } catch { return collected(failed(`${op.engine} output is not the JSON its schema requires`, true)); }
     }
     const next = op.then ? [{ operation: op.then, subject: job.subject, input: { ...job.input, output: outputPath } }] : [];
     return collected({ contract: CONTRACT_VERSION, status: 'done', evidence: [outputPath], next });

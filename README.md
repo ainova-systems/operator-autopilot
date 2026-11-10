@@ -271,7 +271,9 @@ physical launches; `retryCount` counts ordinary failed retries. Every launch kee
 files. An automatically assigned workspace stays pinned through quota recovery and ordinary retries.
 An already-started queued task, a retry, and a new round in a retained conversation never switch provider.
 
-Fallback is **opt-in per compatible operation**:
+Fallback is **opt-in per compatible operation**, in either direction: a Claude operation may
+declare `fallback: codex`, and a Codex agent operation with a `schema` may declare
+`fallback: claude`:
 
 ```yaml
 workflows:
@@ -287,10 +289,19 @@ workflows:
         placement: herdr
         tabs: per-subject
         args: ['--permission-mode', auto]
+      review:
+        kind: agent
+        engine: codex
+        fallback: claude
+        agent: code-reviewer
+        schema: review.schema.json
+        thread: per-subject
+        then: review-verdict
 ```
 
-Only a **new task that has not started** can choose Codex when Claude's cooldown is already known.
-The task that first discovers Claude's limit has already started and stays with Claude. A retained
+Only a **new task that has not started** can choose the fallback provider when its own provider's
+cooldown is already known. The task that first discovers the limit has already started and stays
+with its provider. A retained
 conversation for the same subject and operation also counts as started. Its provider is pinned
 until the subject ends. If both providers are cooling down, new tasks stay queued until the first
 usable reset; existing tasks wait for their own provider. A waiting live task keeps its workspace
@@ -305,6 +316,25 @@ Codex uses `on-request` approvals and `read-only` for declared read access; writ
 return its contract as its final JSON message (including from a read-only sandbox); plain text,
 invalid JSON or exit zero alone is never success. Existing native Codex output/schema operations
 keep their output contract and read-only sandbox.
+
+`fallback: claude` runs the same rendered prompt (`{output}` included) through `claude -p` with
+`--json-schema` set to the operation's schema, and `--agent <agent>` only when the run's checkout
+defines `.claude/agents/<agent>.md` (`operator validate` warns otherwise). Without one, the default
+Codex prompt names the Codex agent file, so a project using this fallback gives the operation its
+own prompt or a Claude agent definition. Codex model and CLI arguments are not forwarded. The
+Claude fallback run has no file-editing tools (Edit, Write and NotebookEdit are removed), runs
+unattended under `--permission-mode dontAsk` so it never waits on a permission prompt, and every
+other tool is limited to what the project's own permission rules allow. That is not Codex's
+read-only sandbox: a command those rules allow still runs. The runtime writes the
+`structured_output` of Claude's final result to the run's `output.json`, so the result and the
+`then` operation are exactly those of a Codex run; a run that ends without structured output, or
+exits nonzero, fails. The fallback run answers once: it keeps no session, tab or provider affinity
+for the subject, a retry starts afresh, and it never touches the operation's Codex thread, which
+the next Codex run continues. Because the conversation lives in that thread, the subject's Codex
+affinity and an idle Codex tab do not pin a new task of such an operation to Codex: each new
+review during a Codex cooldown may run on Claude. A subject whose older Codex job is only queued,
+for example waiting for the quota reset, counts as idle: a new review may run on Claude meanwhile,
+and the older one later resumes the Codex thread, which stays intact.
 
 `operator job <id>` / `operator jobs --json` show `provider`, `quotaWait.until`, and the reason for
 waiting; `operator state get provider-cooldowns claude` reads the cached provider deadline. These

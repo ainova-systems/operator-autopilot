@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { collectRun, readExit } from './collect.ts';
 import type { OperationResult } from './contract.ts';
-import { codexFallback } from './engines.ts';
+import { codexFallback, onProvider } from './engines.ts';
 import { coolingProvider, quotaFromLines, readEventTail, rememberQuota, type Provider, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
 import { HerdrRefusal, type Herdr } from './herdr.ts';
@@ -539,14 +539,20 @@ export class Daemon {
       const affinity = op.tabs === 'per-subject' || op.thread === 'per-subject'
         ? (await this.backend.docs.get<{ provider: Provider }>(PROVIDER_AFFINITIES, this.affinityKey(job)))?.value.provider
         : undefined;
+      // A Codex operation that may fall back to Claude keeps its conversation in its thread, which the
+      // Claude run never touches: its affinity and an idle Codex tab do not pin the next task to Codex.
+      const threadOnly = op.fallback === 'claude' && retained?.provider === 'codex' && !retained.sessionId
+        && (await this.jobs.get(retained.jobId))?.status !== 'running';
+      const conversation = threadOnly ? undefined : retained?.provider ?? (retained?.sessionId ? 'claude' : undefined);
       // A new record may continue a conversation: it is not a new logical task.
-      const pinned = job.provider ?? retained?.provider ?? (retained?.sessionId ? 'claude' : undefined) ?? affinity
+      const pinned = job.provider ?? conversation ?? (op.fallback === 'claude' ? undefined : affinity)
         ?? (job.attempt > 1 || job.history.some((item) => item.event === 'started') ? op.engine : undefined);
-      let provider = pinned ?? op.engine;
+      let provider: Provider = pinned ?? op.engine;
       let cooldown = await coolingProvider(this.backend.docs, provider, now.getTime(), this.hostScope);
-      if (cooldown && !pinned && provider === 'claude' && op.fallback === 'codex') {
-        const alternate = await coolingProvider(this.backend.docs, 'codex', now.getTime(), this.hostScope);
-        if (!alternate) { provider = 'codex'; cooldown = undefined; }
+      // Only a new, not-started task may move to the operation's declared fallback provider.
+      if (cooldown && !pinned && op.fallback && op.fallback !== provider) {
+        const alternate = await coolingProvider(this.backend.docs, op.fallback, now.getTime(), this.hostScope);
+        if (!alternate) { provider = op.fallback; cooldown = undefined; }
         else if (Date.parse(alternate.until) < Date.parse(cooldown.until)) cooldown = alternate;
       }
       if (cooldown && placement === 'any') {
@@ -568,7 +574,7 @@ export class Daemon {
         if (job.quotaWait?.until !== cooldown.until) this.log.info('job waits for provider quota', { job: job.id, provider, until: cooldown.until });
         return;
       }
-      if (provider === 'codex' && op.engine === 'claude') op = codexFallback(op);
+      op = onProvider(op, provider);
     }
 
     if (op.exclusive) {
@@ -721,7 +727,8 @@ export class Daemon {
     // A retained claude tab continues its session; the first run in it starts one under a known id.
     // A session recovered from a replaced tab continues wherever the run lands, a tab-less run included.
     const continued = job.claudeSessionId ?? reuse?.sessionId;
-    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' ? { id: continued ?? randomUUID(), resume: Boolean(continued) } : undefined;
+    // A structured-output stand-in answers once: a retry starts fresh rather than resume a half-finished answer.
+    let session: { id: string; resume: boolean } | undefined = op.engine === 'claude' && !op.structuredOutput ? { id: continued ?? randomUUID(), resume: Boolean(continued) } : undefined;
     if (retain && placement.kind === 'herdr' && placement.tabId && placement.paneId && placement.workspace) {
       // The wrapper decides whether the session can be resumed: it runs where the session does.
       if (op.engine === 'claude' && kept?.sessionId) session = { id: kept.sessionId, resume: true };
@@ -759,6 +766,8 @@ export class Daemon {
       this.log.info('job changed before it started; not started', { job: job.id });
       return undefined;
     }
+    // A task moves to its fallback provider once, at its first start; later attempts keep it.
+    if (!job.provider && (op.contractResult || op.structuredOutput)) this.log.info('job runs on its fallback provider while the configured one is in a usage-limit cooldown', { job: job.id, operation: job.operation, subject: job.subject, provider: op.engine });
     this.localRuns.set(prepared.runDir, { jobId: job.id, attempt: job.attempt });
     if (run.lease) this.runTokens.set(job.id, run.lease.token);
     if (op.engine !== 'command' && (op.tabs === 'per-subject' || op.thread === 'per-subject')) await this.backend.docs.replace(PROVIDER_AFFINITIES, this.affinityKey(job), { provider: op.engine, workflow: job.workflow, subject: job.subject, operation: job.operation }, { ttlMs: SUBJECT_TAB_TTL_MS });
@@ -1147,7 +1156,9 @@ export class Daemon {
       return;
     }
     const configured = this.operation(job);
-    const op = configured && (run.codexContract || job.codexContract) ? codexFallback(configured) : configured;
+    // The run is collected as the operation it executed: a fallback variant when it ran on the other provider.
+    const op = configured && (run.codexContract || job.codexContract) ? codexFallback(configured)
+      : configured && (run.provider ?? job.provider) === 'claude' ? onProvider(configured, 'claude') : configured;
     let result: OperationResult;
     if (!op) {
       result = { contract: 1, status: 'failed', evidence: [], next: [], failure: { reason: 'operation no longer configured', retryable: false } };

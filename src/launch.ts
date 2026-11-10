@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { CONTRACT_VERSION, type OperationInput } from './contract.ts';
 import { readCodexAgent } from './codex-agent.ts';
 import { buildCommand, type EngineCommand } from './engines.ts';
@@ -43,6 +44,9 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
   const inputPath = runPath(runDir, 'input');
   const resultPath = runPath(runDir, 'result');
   const codexAgent = op.engine === 'codex' && op.agent ? await readCodexAgent(join(options.cwd, '.codex', 'agents', `${op.agent}.toml`)) : undefined;
+  // Claude takes the schema itself, and the agent only where the run's checkout defines it for Claude.
+  const jsonSchema = op.structuredOutput && op.schema ? JSON.stringify(JSON.parse(await readFile(resolve(manifest.root, op.schema), 'utf8'))) : undefined;
+  const claudeAgent = op.structuredOutput && op.agent ? existsSync(join(options.cwd, '.claude', 'agents', `${op.agent}.md`)) : false;
   const command = buildCommand(op, {
     root: manifest.root,
     cwd: options.cwd,
@@ -56,6 +60,8 @@ export async function prepareRun(manifest: Manifest, job: JobRecord, op: Operati
     ...(codexAgent ? { codexAgent } : {}),
     ...(options.attended ? { attended: true } : {}),
     ...(options.session ? { session: options.session } : {}),
+    ...(jsonSchema !== undefined ? { jsonSchema } : {}),
+    ...(claudeAgent ? { claudeAgent } : {}),
   });
   const input: OperationInput = {
     contract: CONTRACT_VERSION,
