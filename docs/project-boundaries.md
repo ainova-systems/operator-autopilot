@@ -47,7 +47,7 @@ Where each piece the first project carries goes.
 | Queue layout (folders, frontmatter, statuses, quotas), milestone and label names, slots, deciding CI workflows | project | **project** configuration |
 | QA deployment status, QA feedback tickets, review result schema | project scripts | **project** |
 | Phase routing, QA admission and drafts, conflict route, clarification phase, owner signals, merge gates | project | **project**; an anonymized copy in the **SDLC pattern docs** |
-| `dev-deliver-next`, `git-sync-base` | project, staged as a pack | the **core development pack**: not operator-specific |
+| `dev-deliver-next`, `git-to-base` | project, staged as a pack | the **core development pack**: not operator-specific |
 
 ## The forge contract
 
