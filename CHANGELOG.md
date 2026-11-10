@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- A result's `endSubjects` also ends the open waits of those subjects in its workflow (status `ended`), so a question on work that was closed no longer stays open forever.
+
 ## [0.10.2] - 2026-11-08
 
 - Releases are published to npm through npm trusted publishing (GitHub Actions OIDC) with provenance; the release workflow no longer uses a stored npm token.

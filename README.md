@@ -111,8 +111,9 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
 - **Contract 1.** Every run gets an input file (`$OPERATOR_INPUT`) and writes one result file
   (`$OPERATOR_RESULT`): `status` is `done | noop | waiting | needs-input | failed`, with `evidence`,
   `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Optional
-  `endSubjects` names subjects whose work is over: their per-subject tabs close and their sessions
-  and Codex threads are forgotten; a result without it is read as before. Exit 0 without a valid
+  `endSubjects` names subjects whose work is over: their per-subject tabs close, their sessions
+  and Codex threads are forgotten and their open waits in the workflow end unanswered (`ended`);
+  a result without it is read as before. Exit 0 without a valid
   result is a failure.
 - **Dedupe, not exactly-once.** A job's id is derived from (workflow, operation, subject, trigger
   id); the same trigger twice is one job. A `next` request may carry a `key`: requests with the

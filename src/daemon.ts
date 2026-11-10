@@ -872,6 +872,11 @@ export class Daemon {
    * once that work is over.
    */
   private async endSubjects(job: JobRecord, subjects: string[]): Promise<void> {
+    // A question on a subject whose work is over will never be answered: its wait ends with it.
+    for (const wait of await this.waits.listOpen({ workflow: job.workflow })) {
+      if (!subjects.includes(wait.subject) || !(await this.waits.close(wait.id, 'ended', job.id))) continue;
+      this.log.info('the wait of an ended subject closed unanswered', { wait: wait.id, job: wait.jobId, on: wait.on, subject: wait.subject });
+    }
     for (const { key, value } of await this.backend.docs.list<SubjectTab>(SUBJECT_TABS_COLLECTION)) {
       if (value.workflow !== job.workflow || !subjects.includes(value.subject)) continue;
       try {
