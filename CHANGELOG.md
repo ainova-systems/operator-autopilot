@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The Claude fallback run may run the read-only git commands a review needs (`rev-parse`, `merge-base`, `diff`, `log`, `show`, `status`) and `sha256sum`, with git's file-writing `--output` option denied; under `dontAsk` a project that allows no commands left it unable to read the diff.
+
 ## [0.11.2] - 2026-11-10
 
 - The Claude fallback run may read any file, as Codex's read-only sandbox does; under `dontAsk` it could not read the operation's input file in the run directory and ended without an answer.

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildCommand, claudeFallback, codexFallback, findCodexThread, onProvider } from './engines.ts';
+import { buildCommand, CLAUDE_FALLBACK_DENIES, CLAUDE_FALLBACK_READS, claudeFallback, codexFallback, findCodexThread, onProvider } from './engines.ts';
 import type { OperationSpec } from './manifest.ts';
 
 const base: OperationSpec = { name: 'op', kind: 'agent', engine: 'command', args: [], thread: 'none', placement: 'headless', timeoutMs: 1000, retries: 0, retryDelayMs: 1000, exclusive: false, env: {}, notify: [], access: 'write', keepTabMs: 0, tabs: 'per-job' };
@@ -109,7 +109,7 @@ test('opted-in Claude fallback answers a Codex schema once, without editing tool
   // It answers once: no session to start or resume, even when one is offered.
   assert.equal(command.session, undefined);
   assert.deepEqual(command.argv.slice(0, 3), ['claude', '-p', 'Review pr-7 from /runs/j1/a1/input.json into /runs/j1/a1/output.json.']);
-  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--allowedTools', 'Read(//**)', '--disallowedTools', 'Edit,Write,NotebookEdit', '--output-format', 'stream-json', '--verbose']);
+  assert.deepEqual(command.argv.slice(3), ['--json-schema', schema, '--agent', 'code-reviewer', '--permission-mode', 'dontAsk', '--allowedTools', ...CLAUDE_FALLBACK_READS, '--disallowedTools', ...CLAUDE_FALLBACK_DENIES, '--output-format', 'stream-json', '--verbose']);
   assert.equal(command.argv.includes('-c'), false);
   assert.equal(command.argv.includes('gpt-6.1-sol'), false);
   // Without a Claude definition of the agent in the run's checkout, the run goes without --agent.
@@ -129,4 +129,14 @@ test('a run executes the configured operation, or its fallback variant on the ot
   const claudeTask: OperationSpec = { ...base, engine: 'claude', fallback: 'codex', skill: 'work' };
   assert.equal(onProvider(claudeTask, 'claude'), claudeTask);
   assert.equal(onProvider(claudeTask, 'codex').contractResult, true);
+});
+
+test('the Claude fallback may run only read-only git commands and sha256sum', () => {
+  const bash = CLAUDE_FALLBACK_READS.filter((rule) => rule.startsWith('Bash('));
+  const subs = new Set(bash.filter((rule) => rule.startsWith('Bash(git ')).map((rule) => rule.replace(/^Bash\(git (-C \* )?/, '').split(' ')[0]));
+  assert.deepEqual([...subs].sort(), ['diff', 'log', 'merge-base', 'rev-parse', 'show', 'status']);
+  assert.deepEqual(bash.filter((rule) => !rule.startsWith('Bash(git ')), ['Bash(sha256sum *)']);
+  assert.ok(CLAUDE_FALLBACK_READS.includes('Read(//**)'));
+  // git diff/log/show --output=<file> writes a file; the deny rule wins over the allow rules.
+  assert.ok(CLAUDE_FALLBACK_DENIES.includes('Bash(git * --output*)'));
 });
