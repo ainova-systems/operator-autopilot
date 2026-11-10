@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-10
+
 - A Codex agent operation with a schema may declare `fallback: claude`: while Codex is in a usage-limit cooldown, a new task runs once on Claude, without file-editing tools and limited to the project's own permission rules, with the same `output.json` and `then`.
 - A result's `endSubjects` also ends the open waits of those subjects in its workflow (status `ended`), so a question on work that was closed no longer stays open forever.
 
