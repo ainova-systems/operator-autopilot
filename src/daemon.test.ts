@@ -1206,6 +1206,27 @@ test('a per-subject tab holding an agent session no run started is replaced, and
   }
 });
 
+test('the retry of an interrupted run replaces its tab when the run\'s own session holds it, even at a dialog', async () => {
+  const p = await perSubjectProject();
+  const { herdr, created, closed } = tabHerdr();
+  let resumed = false;
+  // After a restart herdr resumes the run's session in its pane, where it stops at a dialog: blocked.
+  const daemon = p.daemon({ herdr: { ...herdr, agentStatus: async (paneId) => (resumed && paneId === 'wT:p1' && !closed.includes('wT:t1') ? 'blocked' : herdr.agentStatus(paneId)) } });
+  await daemon.acquireLeader();
+  await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'toil', subject: 'pr-3', input: { seconds: 5 }, trigger: { id: 'toil-1', name: 'test', kind: 'manual' } });
+  await daemon.poll();
+  const runDir = (await jobsBy(daemon, 'toil', 'pr-3'))[0]?.run?.runDir ?? '';
+  await pollUntil(daemon, async () => (await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'))) !== undefined);
+  const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+  resumed = true;
+  process.kill(wrapper?.pid ?? 0, 'SIGKILL');
+  await pollUntil(daemon, async () => { const job = (await jobsBy(daemon, 'toil', 'pr-3'))[0]; return job?.attempt === 2 && job.status === 'done'; });
+  assert.deepEqual(closed, ['wT:t1']);
+  assert.deepEqual(created, ['wT:t1', 'wT:t2']);
+  assert.ok(p.lines.some((line) => line.includes("holds the session of this job's interrupted run")));
+  await endAll(daemon);
+});
+
 test('a session recovered from a replaced per-subject tab continues even when the run cannot get a new tab', async () => {
   const p = await project({ extraOperations: CODE_OPERATION });
   const claude = await fakeClaude(p);

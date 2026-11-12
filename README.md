@@ -186,7 +186,9 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   waiting. A pane is back at its shell when herdr's `pane process-info` shows the shell holding its
   terminal; an agent still sitting idle or done there after the run's session ended is one no run
   started - herdr resumes the sessions of its panes after a restart - so the runtime closes that tab
-  and the next run opens a new one that continues the subject's session. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
+  and the next run opens a new one that continues the subject's session. The retry of an
+  interrupted run does the same whatever the pane reports: its wrapper is gone, so the session
+  there - resumed by herdr, often stopped at a prompt or a dialog - is that run's own. An episode of use is logged once, and past `runtime.idleNudge` (30m when off) it is a
   warning and one owner notification, sent again on later polls until herdr delivers it. Timing: an
   ended subject's tab closes in the poll that ends it when its pane reads idle, done or gone, and on
   the next poll when it reads `unknown`; a tab still in use is asked again every minute, so it closes
