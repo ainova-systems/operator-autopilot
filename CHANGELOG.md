@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- The retry of an interrupted run replaces its per-subject tab when the pane still reports `working` or `blocked`: after a host restart herdr resumes the run's own session there, often stopped at a dialog, and the retry waited for it to go idle indefinitely.
+- The retry of an interrupted run replaces its per-subject tab when herdr names the session in its pane as the run's own, even while the pane reports `working` or `blocked`: after a host restart herdr resumes that session, often stopped at a dialog, and the retry waited for it to go idle indefinitely. Any other session in the pane still keeps the retry waiting.
 
 ## [0.11.4] - 2026-11-10
 

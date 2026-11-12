@@ -825,11 +825,7 @@ export class Daemon {
     // Someone still works in the kept session - the owner after its result, most likely - so the
     // next step waits rather than ending that work.
     const use = await this.tabUse(kept.tabId, kept.paneId, job.id);
-    // The tab of this job's own interrupted run: its wrapper is gone, so what works there is that run's
-    // session, which herdr resumes after a restart - often stopped at a prompt or a dialog. Nobody else's
-    // work is in it, so the retry does not wait for it to go idle.
-    const lastRun = job.history.findLast((entry) => entry.event === 'started' || entry.event === 'interrupted');
-    if (use === 'in-use' && kept.jobId === job.id && lastRun?.event === 'interrupted') return this.replaceTab(job, key, kept, "holds the session of this job's interrupted run");
+    if (use === 'in-use' && (await this.holdsInterruptedSession(job, kept))) return this.replaceTab(job, key, kept, "holds the session of this job's interrupted run");
     if (use === 'gone') {
       await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
       this.log.info('the per-subject tab is gone; opening a new one with a new session', { job: job.id, tab: kept.tabId });
@@ -845,6 +841,20 @@ export class Daemon {
     if (settled === 'busy') return { retain: true, busy: `per-subject tab ${kept.tabId} is not back at its shell` };
     this.log.info('reusing the per-subject tab', { job: job.id, tab: kept.tabId, pane: kept.paneId, session: kept.sessionId });
     return { tab: kept, retain: true };
+  }
+
+  /**
+   * Whether the busy pane of a kept tab runs the session of this job's own interrupted run: herdr resumes
+   * it after a restart, often stopped at a prompt or a dialog, and names it by id. Its wrapper is gone, so
+   * the retry continues it in a new tab rather than waiting for it to go idle. Any other session there -
+   * or a herdr that does not say - may be someone's work and keeps the retry waiting.
+   */
+  private async holdsInterruptedSession(job: JobRecord, kept: SubjectTab): Promise<boolean> {
+    const session = job.claudeSessionId ?? kept.sessionId;
+    if (kept.jobId !== job.id || !session) return false;
+    const lastRun = job.history.findLast((entry) => entry.event === 'started' || entry.event === 'interrupted');
+    if (lastRun?.event !== 'interrupted') return false;
+    return (await this.herdr.agentSession(kept.paneId).catch(() => undefined)) === session;
   }
 
   /** Closes a kept tab no run can use, so the run opens a new one that continues the subject's session. */
