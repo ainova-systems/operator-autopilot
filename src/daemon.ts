@@ -847,13 +847,15 @@ export class Daemon {
    * Whether the busy pane of a kept tab runs the session of this job's own interrupted run: herdr resumes
    * it after a restart, often stopped at a prompt or a dialog, and names it by id. Its wrapper is gone, so
    * the retry continues it in a new tab rather than waiting for it to go idle. Any other session there -
-   * or a herdr that does not say - may be someone's work and keeps the retry waiting.
+   * or a herdr that does not answer both questions - may be someone's work and keeps the retry waiting.
    */
   private async holdsInterruptedSession(job: JobRecord, kept: SubjectTab): Promise<boolean> {
     const session = job.claudeSessionId ?? kept.sessionId;
     if (kept.jobId !== job.id || !session) return false;
     const lastRun = job.history.findLast((entry) => entry.event === 'started' || entry.event === 'interrupted');
     if (lastRun?.event !== 'interrupted') return false;
+    const status = await this.herdr.agentStatus(kept.paneId).catch(() => undefined);
+    if (status !== 'working' && status !== 'blocked') return false;
     return (await this.herdr.agentSession(kept.paneId).catch(() => undefined)) === session;
   }
 

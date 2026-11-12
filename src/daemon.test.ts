@@ -1228,6 +1228,8 @@ test('the retry of an interrupted run replaces its tab only when herdr names the
     const runDir = job?.run?.runDir ?? '';
     await pollUntil(daemon, async () => (await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'))) !== undefined);
     const wrapper = await readJsonFile<WrapperInfo>(runPath(runDir, 'wrapper'));
+    // The session exists before the restart ends its wrapper, so the retry has one to continue.
+    await pollUntil(daemon, async () => existsSync(join(p.data, 'claude.log')));
     // Another session in the pane may be someone's work: the retry waits for it.
     resumed = 'someone-else';
     process.kill(wrapper?.pid ?? 0, 'SIGKILL');
