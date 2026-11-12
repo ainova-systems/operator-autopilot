@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The retry of an interrupted run replaces its per-subject tab when herdr names the session in its pane as the run's own, even while the pane reports `working` or `blocked`: after a host restart herdr resumes that session, often stopped at a dialog, and the retry waited for it to go idle indefinitely. Any other session in the pane still keeps the retry waiting.
+
 ## [0.11.4] - 2026-11-10
 
 - The Claude fallback run takes the operation's agent instructions as an appended system prompt instead of `--agent`: an agent definition's `tools` list left out the tool Claude answers a schema with, so the run ended in prose and failed with no structured output.

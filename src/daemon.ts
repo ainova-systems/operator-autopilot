@@ -825,6 +825,7 @@ export class Daemon {
     // Someone still works in the kept session - the owner after its result, most likely - so the
     // next step waits rather than ending that work.
     const use = await this.tabUse(kept.tabId, kept.paneId, job.id);
+    if (use === 'in-use' && (await this.holdsInterruptedSession(job, kept))) return this.replaceTab(job, key, kept, "holds the session of this job's interrupted run");
     if (use === 'gone') {
       await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
       this.log.info('the per-subject tab is gone; opening a new one with a new session', { job: job.id, tab: kept.tabId });
@@ -834,21 +835,40 @@ export class Daemon {
     if (!(await this.endSession(kept.runDir))) return { retain: true, busy: `per-subject tab ${kept.tabId} still runs a session this host cannot end` };
     // The next wrapper is typed into the pane, so the pane must be back at its shell first.
     const settled = await this.paneSettled(kept.paneId);
-    if (settled === 'stray') {
-      // An agent session no run of ours started holds the pane, typically one herdr restored after a
-      // restart: typed there, the wrapper would reach it as a prompt. The tab is closed with it, and
-      // the run opens a new one that continues the subject's session.
-      try {
-        if ((await this.herdr.closeTab(kept.tabId)) === 'closed') this.log.warn('the per-subject tab holds an agent session no run started; closed it, and a new tab continues the session', { job: job.id, tab: kept.tabId, pane: kept.paneId, session: kept.sessionId });
-      } catch (error) {
-        return { retain: true, busy: `per-subject tab ${kept.tabId} holds an agent session no run started, and herdr did not close it: ${errorText(error)}` };
-      }
-      await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
-      return { retain: true, ...(kept.sessionId ? { sessionId: kept.sessionId } : {}) };
-    }
+    // An agent session no run of ours started holds the pane, typically one herdr restored after a
+    // restart: typed there, the wrapper would reach it as a prompt.
+    if (settled === 'stray') return this.replaceTab(job, key, kept, 'holds an agent session no run started');
     if (settled === 'busy') return { retain: true, busy: `per-subject tab ${kept.tabId} is not back at its shell` };
     this.log.info('reusing the per-subject tab', { job: job.id, tab: kept.tabId, pane: kept.paneId, session: kept.sessionId });
     return { tab: kept, retain: true };
+  }
+
+  /**
+   * Whether the busy pane of a kept tab runs the session of this job's own interrupted run: herdr resumes
+   * it after a restart, often stopped at a prompt or a dialog, and names it by id. Its wrapper is gone, so
+   * the retry continues it in a new tab rather than waiting for it to go idle. Any other session there -
+   * or a herdr that does not answer both questions - may be someone's work and keeps the retry waiting.
+   */
+  private async holdsInterruptedSession(job: JobRecord, kept: SubjectTab): Promise<boolean> {
+    const session = job.claudeSessionId ?? kept.sessionId;
+    if (kept.jobId !== job.id || !session) return false;
+    const lastRun = job.history.findLast((entry) => entry.event === 'started' || entry.event === 'interrupted');
+    if (lastRun?.event !== 'interrupted') return false;
+    const status = await this.herdr.agentStatus(kept.paneId).catch(() => undefined);
+    if (status !== 'working' && status !== 'blocked') return false;
+    return (await this.herdr.agentSession(kept.paneId).catch(() => undefined)) === session;
+  }
+
+  /** Closes a kept tab no run can use, so the run opens a new one that continues the subject's session. */
+  private async replaceTab(job: JobRecord, key: string, kept: SubjectTab, why: string): Promise<{ retain: boolean; busy?: string; sessionId?: string }> {
+    try {
+      if ((await this.herdr.closeTab(kept.tabId)) === 'closed') this.log.warn(`the per-subject tab ${why}; closed it, and a new tab continues the session`, { job: job.id, tab: kept.tabId, pane: kept.paneId, session: kept.sessionId });
+    } catch (error) {
+      return { retain: true, busy: `per-subject tab ${kept.tabId} ${why}, and herdr did not close it: ${errorText(error)}` };
+    }
+    this.inUse.delete(kept.tabId);
+    await this.backend.docs.delete(SUBJECT_TABS_COLLECTION, key);
+    return { retain: true, ...(kept.sessionId ? { sessionId: kept.sessionId } : {}) };
   }
 
   /**
