@@ -7,7 +7,7 @@ with a backend, a frontend and per-pull-request preview environments; numbers ar
 
 | Piece | Value |
 |---|---|
-| Slots | 3 delivery checkouts, 2 clarification checkouts; a PR lives in the slot its branch names |
+| Slots | 3 delivery and 2 clarification slots, each a locked git worktree of the main checkout; a PR lives in the slot its branch names |
 | Discovery | a script every 5 minutes, exclusive, in the control checkout on the integration branch |
 | Engines | interactive Claude sessions for plan, implement, verify, clarify; a read-only review engine limited to 3 at once; agent runs for intake, review verdict, merge |
 | Queue | task files in the repository with ready / needs-decision status; quotas per source folder |
