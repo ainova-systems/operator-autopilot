@@ -45,7 +45,7 @@ export async function validateProject(manifest: Manifest, warnings: string[], op
   const report: ValidationReport = { problems: [], warnings: [...warnings] };
   const hosts = declaredHosts(manifest);
   if (hosts.length > 0 && !hosts.includes(thisHost())) {
-    report.warnings.push(`no workspace names host ${thisHost()} (hosts: ${hosts.join(', ')}), so no workspace directory was checked; set OPERATOR_HOST to check a host's workspaces`);
+    report.warnings.push(`no workspace names host ${thisHost()} (hosts: ${hosts.join(', ')}), so the directories of workspaces on those hosts were not checked; set OPERATOR_HOST to check a host's workspaces`);
   }
   const engines = new Set<string>();
   const herdrWorkspaces = new Set<string>();

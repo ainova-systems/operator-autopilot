@@ -64,9 +64,9 @@ test('the demo project validates without problems', async () => {
   assert.deepEqual(report.problems, []);
 });
 
-test('a host no workspace names is warned that no workspace directory was checked', async () => {
+test('a host no workspace names is warned that the workspaces of the named hosts were not checked', async () => {
   const p = await createTestProject({
-    pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: "../missing-{name}" }\n',
+    pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: "../missing-{name}" }\n      u: { count: 1, cwd: "../unhosted-{name}" }\n',
     extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }',
   });
   projects.push(p);
@@ -74,8 +74,9 @@ test('a host no workspace names is warned that no workspace directory was checke
   try {
     process.env['OPERATOR_HOST'] = 'laptop';
     const elsewhere = await validateProject(p.manifest, [], { herdr: absentHerdr, describe: false });
-    assert.match(elsewhere.warnings.join('\n'), /no workspace names host laptop \(hosts: vm1\), so no workspace directory was checked/);
+    assert.match(elsewhere.warnings.join('\n'), /no workspace names host laptop \(hosts: vm1\), so the directories of workspaces on those hosts were not checked/);
     assert.deepEqual(elsewhere.problems.filter((problem) => problem.includes('missing-h1')), []);
+    assert.match(elsewhere.problems.join('\n'), /fake-agent\.mjs does not exist in .*unhosted-u1/, 'a member without a host is checked on every host');
     process.env['OPERATOR_HOST'] = 'vm1';
     const here = await validateProject(p.manifest, [], { herdr: absentHerdr, describe: false });
     assert.equal(here.warnings.some((warning) => warning.includes('no workspace names host')), false);

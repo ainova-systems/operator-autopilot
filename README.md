@@ -235,7 +235,8 @@ service's env file (the machine's host name when unset). Once any workspace name
 - provider cooldowns, `perHost` limit pools, herdr tabs and `operator pause` belong to the host,
   because its accounts, its terminal and its restarts are its own (`operator pause`, `resume` and
   `validate` run in a shell take the host from `OPERATOR_HOST` there too: pause and resume refuse a
-  host no workspace names and no daemon runs as, and validate warns that it checked no workspace);
+  host no workspace names and no daemon runs as, and validate warns that it skipped the
+  workspaces of the named hosts);
   other limit pools, run leases,
   claims, the work queue and waits stay shared;
 - an expired run of another host is taken over only after this host holds its run lease, so the

@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - `operator pause` and `operator resume` refuse a host that no workspace names and no daemon runs as, once a manifest names hosts. Run in a shell without the service's `OPERATOR_HOST`, they took the machine's name, paused a host no daemon reads and reported the pause in force.
-- `operator validate` warns when no workspace names this host: it checks only this host's workspace directories, so a shell without `OPERATOR_HOST` checked none of them and still reported ok.
+- `operator validate` warns when no workspace names this host: it checks only this host's workspace directories, so a shell without `OPERATOR_HOST` skipped every named host's workspaces and still reported ok.
 
 ## [0.11.5] - 2026-11-12
 
