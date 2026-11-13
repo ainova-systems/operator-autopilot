@@ -1,6 +1,6 @@
 {
   "name": "@ainova-systems/operator",
-  "version": "0.11.5",
+  "version": "0.11.6",
   "description": "A small generic runtime that runs a project's workflow operations - scripts and agent CLIs - on timers and triggers, with its state in Ainoflow.",
   "keywords": [
     "agents",
