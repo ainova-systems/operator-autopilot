@@ -22,9 +22,9 @@ after(async () => {
   for (const p of projects) await p.cleanup();
 });
 
-async function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+async function cli(args: string[], extraEnv: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await run(process.execPath, [CLI_ENTRY, ...args], { env });
+    const { stdout, stderr } = await run(process.execPath, [CLI_ENTRY, ...args], { env: { ...env, ...extraEnv } });
     return { code: 0, stdout, stderr };
   } catch (error) {
     const failed = error as { code: number; stdout: string; stderr: string };
@@ -226,4 +226,19 @@ test('pause waits until no job runs, says so, and resume ends it', async () => {
   assert.match((await cli(['pause', '--manifest', manifest])).stdout, /already paused since .* by /);
   assert.match((await cli(['resume', '--manifest', manifest])).stdout, /resumed/);
   assert.match((await cli(['resume', '--manifest', manifest])).stdout, /not paused/);
+});
+
+test('a pause on a manifest that names hosts is refused for a host no workspace names', async () => {
+  const p = await createTestProject({
+    pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: . }\n',
+    extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }',
+  });
+  projects.push(p);
+  const manifest = join(p.root, 'operator.yaml');
+  const elsewhere = await cli(['pause', '--manifest', manifest], { OPERATOR_HOST: 'laptop' });
+  assert.equal(elsewhere.code, 2);
+  assert.match(elsewhere.stderr, /this host is laptop, which no workspace names \(vm1\); set OPERATOR_HOST/);
+  assert.equal((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'laptop' })).code, 2);
+  assert.match((await cli(['pause', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /pausing/);
+  assert.match((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /resumed/);
 });
