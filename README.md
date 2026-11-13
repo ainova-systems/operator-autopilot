@@ -132,9 +132,10 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects, or counted per host with `perHost`);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
   The runtime does not create them. Make each agent slot a locked git worktree of the project's
-  main checkout (`git worktree add --lock`): the slots share its objects and remote refs, need no
-  clone or fetch of their own, and between tasks wait detached at the remote integration branch,
-  since the main checkout holds that branch.
+  main checkout (`git worktree add --lock`): the slots share its objects and remote refs, so none
+  needs a clone of its own. The main checkout holds the integration branch, so the project's
+  return-to-base step (core's `git-to-base`, for example) leaves a slot detached at the remote
+  integration branch between tasks.
   The runtime gives every lock back - a workspace, a run lease, the leader lease - by shortening it
   to one second with its token, never by deleting the key, which could remove a successor's lock;
   the next job that wants it retries once that second passed. A lease past its 24h lifetime is
