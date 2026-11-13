@@ -50,6 +50,7 @@ the decisions that are mine.
 Done when:
 - the workflow is described in the repository (operator.yaml, a discovery that decides the next
   operation for each pull request, and one skill per phase) and validated, with tests;
+- each agent slot is a locked git worktree of this checkout, unless I choose separate clones;
 - a dry run lists, for the current pull requests and queue, the operation each would get and why,
   and I agree with every line;
 - the service is installed only after I say go.
@@ -83,6 +84,7 @@ Done when:
   pack lists in its README;
 - operator.yaml and a discovery built on the pack's helpers are validated, with tests, and the pack's
   forge contract test passes against the configured code host;
+- each agent slot is a locked git worktree of this checkout, unless I choose separate clones;
 - a dry run lists, for the current pull requests and queue, the operation each would get and why,
   and I agree with every line;
 - the service is installed only after I say go.
@@ -129,6 +131,11 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   at a time, so a timer slot and a manual trigger cannot both take the same work.
 - **Pools.** `limit` pools are Ainoflow Guard semaphores (optionally shared across projects, or counted per host with `perHost`);
   `workspaces` pools hand out named working directories, each held by a renewable Shield lease.
+  The runtime does not create them. Make each agent slot a locked git worktree of the project's
+  main checkout (`git worktree add --lock`): the slots share its objects and remote refs, so none
+  needs a clone of its own. The main checkout holds the integration branch, so the project's
+  return-to-base step (core's `git-to-base`, for example) leaves a slot detached at the remote
+  integration branch between tasks.
   The runtime gives every lock back - a workspace, a run lease, the leader lease - by shortening it
   to one second with its token, never by deleting the key, which could remove a successor's lock;
   the next job that wants it retries once that second passed. A lease past its 24h lifetime is
