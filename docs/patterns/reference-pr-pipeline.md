@@ -10,7 +10,7 @@ with a backend, a frontend and per-pull-request preview environments; numbers ar
 | Slots | 3 delivery and 2 clarification slots, each a locked git worktree of the main checkout; a PR lives in the slot its branch names |
 | Discovery | a script every 5 minutes, exclusive, in the control checkout on the integration branch |
 | Engines | interactive Claude sessions for plan, implement, verify, clarify; a read-only review engine limited to 3 at once; agent runs for intake, review verdict, merge |
-| Queue | task files in the repository with ready / needs-decision status, and code-host issues carrying a queue label, taken only when the label came from someone who can triage and the text has not changed since; quotas per source |
+| Queue | task files in the repository with ready / needs-decision status, and code-host issues carrying a queue label, taken only when a trusted project account opened the issue, or someone who can triage applied the label and neither title nor text changed since; quotas per source |
 | QA | a preview per ready PR; `readyLimit` 6; isolated test suites for every head, drafts included |
 | Tracker | the code host: milestones for phases, labels for owner signals and factors, comments for questions |
 
