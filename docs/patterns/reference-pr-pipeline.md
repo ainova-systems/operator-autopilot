@@ -10,7 +10,7 @@ with a backend, a frontend and per-pull-request preview environments; numbers ar
 | Slots | 3 delivery and 2 clarification slots, each a locked git worktree of the main checkout; a PR lives in the slot its branch names |
 | Discovery | a script every 5 minutes, exclusive, in the control checkout on the integration branch |
 | Engines | interactive Claude sessions for plan, implement, verify, clarify; a read-only review engine limited to 3 at once; agent runs for intake, review verdict, merge |
-| Queue | task files in the repository with ready / needs-decision status; quotas per source folder |
+| Queue | task files in the repository with ready / needs-decision status, and code-host issues carrying a queue label, taken only when the label came from someone who can triage and the text has not changed since; quotas per source |
 | QA | a preview per ready PR; `readyLimit` 6; isolated test suites for every head, drafts included |
 | Tracker | the code host: milestones for phases, labels for owner signals and factors, comments for questions |
 
@@ -18,7 +18,7 @@ with a backend, a frontend and per-pull-request preview environments; numbers ar
 
 | Operation | Kind | Triggered by discovery when | Ends |
 |---|---|---|---|
-| intake | agent | a delivery slot is free and an eligible item exists | draft PR in In Queue, or the reason nothing fits |
+| intake | agent | a delivery slot is free and an eligible item exists, or a queue issue a merged PR already closes is still open | draft PR in In Queue, or the reason nothing fits; a taken issue gets one comment naming the PR, which closes it on merge |
 | plan | interactive | In Queue | Development, or a question |
 | implement | interactive | Development with work pending; any later phase with a conflict | review request, Verification, or a question |
 | review | agent, read-only | implement pushed a head | review verdict |
