@@ -63,3 +63,24 @@ test('the demo project validates without problems', async () => {
   const report = await validateProject(p.manifest, [], { herdr: absentHerdr, describe: true });
   assert.deepEqual(report.problems, []);
 });
+
+test('a host no workspace names is warned that no workspace directory was checked', async () => {
+  const p = await createTestProject({
+    pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: "../missing-{name}" }\n',
+    extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }',
+  });
+  projects.push(p);
+  const saved = process.env['OPERATOR_HOST'];
+  try {
+    process.env['OPERATOR_HOST'] = 'laptop';
+    const elsewhere = await validateProject(p.manifest, [], { herdr: absentHerdr, describe: false });
+    assert.match(elsewhere.warnings.join('\n'), /no workspace names host laptop \(hosts: vm1\), so no workspace directory was checked/);
+    assert.deepEqual(elsewhere.problems.filter((problem) => problem.includes('missing-h1')), []);
+    process.env['OPERATOR_HOST'] = 'vm1';
+    const here = await validateProject(p.manifest, [], { herdr: absentHerdr, describe: false });
+    assert.equal(here.warnings.some((warning) => warning.includes('no workspace names host')), false);
+    assert.match(here.problems.join('\n'), /fake-agent\.mjs does not exist in .*missing-h1/);
+  } finally {
+    if (saved === undefined) delete process.env['OPERATOR_HOST']; else process.env['OPERATOR_HOST'] = saved;
+  }
+});

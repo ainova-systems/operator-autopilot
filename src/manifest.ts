@@ -191,6 +191,12 @@ export function thisHost(): string {
   return process.env['OPERATOR_HOST'] || hostname();
 }
 
+/** The hosts a manifest's workspaces name, sorted; empty when it names none. */
+export function declaredHosts(manifest: Pick<Manifest, 'pools'>): string[] {
+  const hosts = [...manifest.pools.values()].flatMap((pool) => (pool.kind === 'workspaces' ? pool.members.flatMap((member) => (member.host === undefined ? [] : [member.host])) : []));
+  return [...new Set(hosts)].sort();
+}
+
 /** Whether a manifest names hosts: then each host runs its own daemon and only its own members. */
 export function namesHosts(manifest: Pick<Manifest, 'pools'>): boolean {
   return [...manifest.pools.values()].some((pool) => pool.kind === 'workspaces' && pool.members.some((member) => member.host !== undefined));

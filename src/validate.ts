@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { readCodexAgent } from './codex-agent.ts';
 import type { Herdr } from './herdr.ts';
 import { errorText } from './log.ts';
-import { isLocal, thisHost, type Manifest, type OperationSpec } from './manifest.ts';
+import { declaredHosts, isLocal, thisHost, type Manifest, type OperationSpec } from './manifest.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -43,6 +43,10 @@ export function scriptFiles(command: string): string[] {
  */
 export async function validateProject(manifest: Manifest, warnings: string[], options: ValidateOptions): Promise<ValidationReport> {
   const report: ValidationReport = { problems: [], warnings: [...warnings] };
+  const hosts = declaredHosts(manifest);
+  if (hosts.length > 0 && !hosts.includes(thisHost())) {
+    report.warnings.push(`no workspace names host ${thisHost()} (hosts: ${hosts.join(', ')}), so no workspace directory was checked; set OPERATOR_HOST to check a host's workspaces`);
+  }
   const engines = new Set<string>();
   const herdrWorkspaces = new Set<string>();
   for (const workflow of manifest.workflows.values()) {

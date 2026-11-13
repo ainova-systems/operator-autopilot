@@ -122,6 +122,11 @@ export function subjectTabKey(workflow: string, subject: string, operation: stri
  * queued jobs within their pools, observes running ones through their run directories, and turns
  * each finished run into its follow-on jobs or wait. It never decides anything a skill decides.
  */
+/** The lease a host's daemon holds while it leads: one per host once a manifest names hosts. */
+export function leaderKey(hostScope: string | undefined): string {
+  return hostScope === undefined ? 'leader' : `leader.${hostScope}`;
+}
+
 export class Daemon {
   readonly manifest: Manifest;
   readonly backend: StateBackend;
@@ -197,7 +202,7 @@ export class Daemon {
     return host === hostname() && runDir !== undefined && runDir !== '' && existsSync(runDir);
   }
 
-  private get leaderKey(): string { return this.hostScope === undefined ? 'leader' : `leader.${this.hostScope}`; }
+  private get leaderKey(): string { return leaderKey(this.hostScope); }
   private get leaderFile(): string { return join(this.manifest.runtime.stateDir, 'leader.json'); }
 
   /** Runs until stop(): waits for the leader lease, then ticks. */

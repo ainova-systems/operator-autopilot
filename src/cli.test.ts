@@ -228,7 +228,7 @@ test('pause waits until no job runs, says so, and resume ends it', async () => {
   assert.match((await cli(['resume', '--manifest', manifest])).stdout, /not paused/);
 });
 
-test('a pause on a manifest that names hosts is refused for a host no workspace names', async () => {
+test('a pause on a manifest that names hosts is refused for a host no workspace names and no daemon runs as', async () => {
   const p = await createTestProject({
     pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: . }\n',
     extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }',
@@ -237,8 +237,14 @@ test('a pause on a manifest that names hosts is refused for a host no workspace 
   const manifest = join(p.root, 'operator.yaml');
   const elsewhere = await cli(['pause', '--manifest', manifest], { OPERATOR_HOST: 'laptop' });
   assert.equal(elsewhere.code, 2);
-  assert.match(elsewhere.stderr, /this host is laptop, which no workspace names \(vm1\); set OPERATOR_HOST/);
-  assert.equal((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'laptop' })).code, 2);
+  assert.match(elsewhere.stderr, /no workspace names host laptop and no daemon runs as it \(hosts: vm1\); set OPERATOR_HOST to the daemon's host/);
+  const resumed = await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'laptop' });
+  assert.equal(resumed.code, 2);
+  assert.match(resumed.stderr, /no workspace names host laptop/);
+  // A host whose daemon leads runs the shared work and unhosted members, so its pause is read.
+  assert.equal(await p.daemon({ host: 'laptop' }).acquireLeader(), true);
+  assert.match((await cli(['pause', '--manifest', manifest], { OPERATOR_HOST: 'laptop' })).stdout, /pausing/);
+  assert.match((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'laptop' })).stdout, /resumed/);
   assert.match((await cli(['pause', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /pausing/);
   assert.match((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /resumed/);
 });

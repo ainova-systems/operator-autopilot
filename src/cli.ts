@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { CLAIMS_COLLECTION, isStateKey, liveClaims, releaseClaim, renewClaim, showClaim, takeClaim, type ClaimResult } from './claims.ts';
 import { isMemberName, type JsonObject } from './contract.ts';
-import { Daemon, SUBJECT_TABS_COLLECTION, type SubjectTab } from './daemon.ts';
+import { Daemon, leaderKey, SUBJECT_TABS_COLLECTION, type SubjectTab } from './daemon.ts';
 import { parseDuration } from './duration.ts';
 import { loadEnvFile } from './env.ts';
 import { OperatorError } from './errors.ts';
@@ -14,7 +14,7 @@ import { createHerdr } from './herdr.ts';
 import { runJobExec } from './job-exec.ts';
 import { enqueue, JobStore, type JobStatus } from './jobs.ts';
 import { createLogger, errorText, type LogLevel } from './log.ts';
-import { loadManifest, manifestPath, namesHosts, thisHost, type Manifest } from './manifest.ts';
+import { declaredHosts, loadManifest, manifestPath, namesHosts, thisHost, type Manifest } from './manifest.ts';
 import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
 import { addQueueItem, getQueueItem, listQueue, QUEUE_COLLECTION, queuePriority, queueSourceKind, queueStatus, takeQueueItem, updateQueueItem, type QueueItem, type QueueWrite } from './queue.ts';
 import { redactTokens } from './redact.ts';
@@ -290,25 +290,26 @@ async function commandTabs(values: Values): Promise<number> {
 }
 
 /**
- * The host a pause or resume is for: none when the manifest names no host, else this one. A name no
- * workspace member carries is refused, because no daemon reads that pause - a shell without the
- * service's `OPERATOR_HOST` would pause a host that does not exist and report it done.
+ * The host a pause or resume is for: none when the manifest names no host, else this one. A host no
+ * workspace names and no daemon leads as is refused: no daemon reads its pause, so a shell without
+ * the service's `OPERATOR_HOST` would report a pause nothing obeys.
  */
-function pauseHost(manifest: Manifest): string | undefined {
+async function pauseHost(manifest: Manifest, backend: StateBackend): Promise<string | undefined> {
   if (!namesHosts(manifest)) return undefined;
   const host = thisHost();
-  const hosts = new Set([...manifest.pools.values()].flatMap((pool) => (pool.kind === 'workspaces' ? pool.members.map((member) => member.host) : [])).filter((name): name is string => name !== undefined));
-  if (!hosts.has(host)) throw new UsageError(`this host is ${host}, which no workspace names (${[...hosts].sort().join(', ')}); set OPERATOR_HOST to the host to pause`);
-  return host;
+  const hosts = declaredHosts(manifest);
+  if (hosts.includes(host) || (await backend.locks.exists(leaderKey(host)))) return host;
+  throw new UsageError(`no workspace names host ${host} and no daemon runs as it (hosts: ${hosts.join(', ')}); set OPERATOR_HOST to the daemon's host`);
 }
 
 /** Pauses the project; with --wait returns once no job runs (0), or after --timeout (3). */
 async function commandPause(values: Values): Promise<number> {
   const manifest = load(values);
-  const docs = openForCommand(manifest).docs;
+  const backend = openForCommand(manifest);
+  const docs = backend.docs;
   const store = new JobStore(docs, manifest.runtime.retentionMs);
   const timeoutMs = values.timeout === undefined ? undefined : parseDuration(values.timeout, '--timeout');
-  const host = pauseHost(manifest);
+  const host = await pauseHost(manifest, backend);
   const { pause, created } = await requestPause(docs, `${userInfo().username}@${hostname()}`, values.reason, new Date(), host);
   const running = async (): Promise<number> => (await store.list('running')).filter((job) => host === undefined || job.run?.host === host).length;
   const count = await running();
@@ -325,7 +326,8 @@ async function commandPause(values: Values): Promise<number> {
 
 async function commandResume(values: Values): Promise<number> {
   const manifest = load(values);
-  const ended = await clearPause(openForCommand(manifest).docs, pauseHost(manifest));
+  const backend = openForCommand(manifest);
+  const ended = await clearPause(backend.docs, await pauseHost(manifest, backend));
   print(values, { resumed: ended }, () => (ended ? 'resumed: queued jobs start on the next poll' : 'not paused'));
   return 0;
 }
