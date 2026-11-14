@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_QUOTA_WAIT_MS, coolingProvider, quotaFromEvent, quotaFromLines, rememberQuota } from './provider-quota.ts';
+import { DEFAULT_QUOTA_WAIT_MS, clearCooldown, coolingProvider, quotaFromEvent, quotaFromLines, rememberQuota } from './provider-quota.ts';
 import { createFileBackend } from './state/file.ts';
 
 const now = Date.parse('2026-11-04T12:00:00Z');
@@ -136,5 +136,56 @@ test('at equal observation times explicit reset wins over a longer default in ei
       for (const quota of order) await rememberQuota(backend.docs, quota!);
       assert.equal((await coolingProvider(backend.docs, 'claude', detected))?.until, explicit.until);
     }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+const codexLimit = (detected: number, reset?: number) => quotaFromEvent(reset === undefined
+  ? { type: 'error', message: "You've hit your usage limit" }
+  : { type: 'turn.failed', error: { code: 'usage_limit_reached', resets_at: reset / 1000 } }, 'codex', detected)!;
+
+test('a cleared cooldown stays ended against replayed evidence observed up to the clear, and a later limit starts a new one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'operator-quota-'));
+  try {
+    const backend = createFileBackend(root, 'test');
+    const detected = Date.now();
+    const original = await rememberQuota(backend.docs, codexLimit(detected, detected + 4 * 24 * 3_600_000), 'vm1');
+    const cleared = detected + 60_000;
+    assert.deepEqual(await clearCooldown(backend.docs, 'codex', 'owner@host', cleared, 'vm1'), { ended: original });
+    assert.equal(await coolingProvider(backend.docs, 'codex', cleared, 'vm1'), undefined);
+    // A live run replaying the evidence it saved before the clear, or observed at the same moment,
+    // whether with a reset or the default window, must not restore the cooldown.
+    for (const replay of [original, codexLimit(cleared, cleared + 3_600_000), codexLimit(cleared)]) {
+      await rememberQuota(backend.docs, replay, 'vm1');
+      assert.equal(await coolingProvider(backend.docs, 'codex', cleared + 1_000, 'vm1'), undefined);
+    }
+    assert.deepEqual(await clearCooldown(backend.docs, 'codex', 'owner@host', cleared + 1_000, 'vm1'), {});
+    const again = codexLimit(cleared + 120_000);
+    await rememberQuota(backend.docs, again, 'vm1');
+    assert.equal((await coolingProvider(backend.docs, 'codex', cleared + 180_000, 'vm1'))?.until, again.until);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a clear never erases a limit observed after it began, read first or written under it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'operator-quota-'));
+  try {
+    const backend = createFileBackend(root, 'test');
+    const detected = Date.now();
+    const cleared = detected + 60_000;
+    const newer = codexLimit(cleared + 1_000, cleared + 3_600_000);
+    await rememberQuota(backend.docs, newer);
+    assert.deepEqual(await clearCooldown(backend.docs, 'codex', 'owner@host', cleared), { standing: newer });
+    assert.equal((await coolingProvider(backend.docs, 'codex', cleared, undefined))?.until, newer.until);
+
+    const racing = createFileBackend(root, 'racing');
+    await rememberQuota(racing.docs, codexLimit(detected, detected + 4 * 24 * 3_600_000));
+    let raced = false;
+    // The newer limit lands between the clear's read and its write, so the write meets a changed record.
+    const docs = { ...racing.docs, replace: async <T>(collection: string, key: string, value: T, options?: Parameters<typeof racing.docs.replace>[3]) => {
+      if (!raced && (value as { clearedBy?: string }).clearedBy) { raced = true; await rememberQuota(racing.docs, newer); }
+      return racing.docs.replace(collection, key, value, options);
+    } };
+    assert.deepEqual(await clearCooldown(docs, 'codex', 'owner@host', cleared), { standing: newer });
+    assert.equal(raced, true);
+    assert.equal((await coolingProvider(racing.docs, 'codex', cleared))?.until, newer.until);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

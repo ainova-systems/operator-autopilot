@@ -16,6 +16,7 @@ import { enqueue, JobStore, type JobStatus } from './jobs.ts';
 import { createLogger, errorText, type LogLevel } from './log.ts';
 import { declaredHosts, loadManifest, manifestPath, namesHosts, thisHost, type Manifest } from './manifest.ts';
 import { clearPause, CONTROL_COLLECTION, readPause, requestPause } from './pause.ts';
+import { clearCooldown } from './provider-quota.ts';
 import { addQueueItem, getQueueItem, listQueue, QUEUE_COLLECTION, queuePriority, queueSourceKind, queueStatus, takeQueueItem, updateQueueItem, type QueueItem, type QueueWrite } from './queue.ts';
 import { redactTokens } from './redact.ts';
 import { installService, serviceStatus, uninstallService } from './service.ts';
@@ -46,6 +47,7 @@ Commands:
   pause                            Start no new job while running ones finish; --wait until none runs.
                                    The service resumes by itself when it starts again
   resume                           End a pause
+  cooldown clear <claude|codex>    End this host's usage-limit cooldown of a provider whose usage is back early
   service <install|uninstall|status> <project>
                                    Run the daemon as the systemd user service operator@<project> (Linux)
   state <get|put|list|delete> <collection> [key]
@@ -332,6 +334,26 @@ async function commandResume(values: Values): Promise<number> {
   return 0;
 }
 
+/**
+ * Ends a provider's cooldown on this host after its usage came back before the reset it reported.
+ * The daemon notices the change at its next poll and decides every job waiting for a quota again.
+ */
+async function commandCooldown(values: Values, positionals: string[]): Promise<number> {
+  const [action, provider, ...extra] = positionals;
+  if (action !== 'clear' || (provider !== 'claude' && provider !== 'codex') || extra.length > 0) throw new UsageError('usage: operator cooldown clear <claude|codex>');
+  const manifest = load(values);
+  const backend = openForCommand(manifest);
+  const { ended, standing } = await clearCooldown(backend.docs, provider, `${userInfo().username}@${hostname()}`, Date.now(), await pauseHost(manifest, backend));
+  if (standing) {
+    process.stderr.write(`${provider} hit its usage limit again at ${standing.detectedAt}, after the clear began; it cools down until ${standing.until}\n`);
+    return 1;
+  }
+  print(values, { cleared: ended ?? null }, () => ended
+    ? `cleared: ${provider} was cooling down until ${ended.until}; the daemon decides the jobs waiting for a quota again at its next poll`
+    : `${provider} is not cooling down`);
+  return 0;
+}
+
 async function commandService(values: Values, positionals: string[]): Promise<number> {
   const [action, project] = positionals;
   if (!action || !project) throw new UsageError('usage: operator service <install|uninstall|status> <project>');
@@ -553,6 +575,7 @@ export async function main(argv: string[]): Promise<number> {
       case 'tabs': return await commandTabs(values);
       case 'pause': return await commandPause(values);
       case 'resume': return await commandResume(values);
+      case 'cooldown': return await commandCooldown(values, rest);
       case 'service': return await commandService(values, rest);
       case 'state': return await commandState(values, rest);
       case 'claim': return await commandClaim(values, rest);

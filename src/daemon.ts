@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { collectRun, readExit } from './collect.ts';
 import type { OperationResult } from './contract.ts';
 import { codexFallback, onProvider } from './engines.ts';
-import { coolingProvider, quotaFromLines, readEventTail, rememberQuota, type Provider, type QuotaResume, type QuotaWait } from './provider-quota.ts';
+import { cooldownKey, coolingProvider, PROVIDER_COOLDOWNS, quotaFromLines, readEventTail, rememberQuota, type Provider, type QuotaResume, type QuotaWait } from './provider-quota.ts';
 import { OperatorError } from './errors.ts';
 import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { addHistory, enqueue, JobStore, stableId, type JobRecord, type JobRun, type SlotHold } from './jobs.ts';
@@ -153,6 +153,8 @@ export class Daemon {
   private renewing: Promise<void> | undefined;
   private readonly timerMemo = new Map<string, string>();
   private readonly deferred = new Map<string, number>();
+  /** This host's provider cooldowns as the last poll read them. */
+  private cooldownsSeen?: string;
   private readonly renewedAt = new Map<string, number>();
   /** The run lease token this daemon last took per job, ahead of the job record that may not have saved it. */
   private readonly runTokens = new Map<string, string>();
@@ -376,6 +378,11 @@ export class Daemon {
     const pause = await readPause(this.backend.docs, this.hostScope);
     if (pause && (await clearPause(this.backend.docs, this.hostScope))) this.log.info('resumed: a pause ends when the service starts', { pausedSince: pause.since, by: pause.by });
     this.paused = undefined;
+    await this.reopenQuotaWaits('quota wait is decided again after the restart');
+  }
+
+  /** Lets each queued job's next start decide its quota wait against the current cooldowns. */
+  private async reopenQuotaWaits(message: string): Promise<void> {
     for (const job of await this.jobs.list('queued')) {
       if (!job.quotaWait || !job.notBefore) continue;
       const reopened = await this.jobs.update(job.id, (current) => {
@@ -383,8 +390,26 @@ export class Daemon {
         delete current.notBefore;
         return current;
       });
-      if (reopened) this.log.info('quota wait is decided again after the restart', { job: job.id, provider: job.quotaWait.provider, until: job.quotaWait.until });
+      if (reopened) this.log.info(message, { job: job.id, provider: job.quotaWait.provider, until: job.quotaWait.until });
     }
+  }
+
+  /**
+   * A cooldown that changed since the last poll - ended early by `operator cooldown clear`, or a new
+   * limit - makes every quota wait decided against the old records stale: a freed provider may be the
+   * one a job waits for or the fallback it may move to. Each is decided again, the in-memory deferral
+   * of a job any host may run included. The first poll has nothing to compare with, and a run it
+   * collected may have queued its wait against a cooldown cleared since, so it decides them too.
+   */
+  private async noticeCooldowns(): Promise<void> {
+    const keys = new Set((['claude', 'codex'] as const).map((provider) => cooldownKey(provider, this.hostScope)));
+    const records = (await this.backend.docs.list<QuotaWait>(PROVIDER_COOLDOWNS)).filter((item) => keys.has(item.key));
+    const seen = JSON.stringify(records.sort((a, b) => a.key.localeCompare(b.key)));
+    if (seen === this.cooldownsSeen) return;
+    this.deferred.clear();
+    await this.reopenQuotaWaits('quota wait is decided again against the current cooldowns');
+    // Only a finished reopening consumes the change: one that failed is retried by the next poll.
+    this.cooldownsSeen = seen;
   }
 
   /** Reads the pause switch, logging each change of it. */
@@ -422,6 +447,7 @@ export class Daemon {
     await this.stopTakenOverRuns(running);
     if (this.paused) await this.reportQuiet(this.paused, now);
     else {
+      await this.noticeCooldowns();
       for (const job of await this.jobs.list('queued')) {
         try { await this.dispatch(job, now); } catch (error) { this.log.error('starting a queued job failed', { job: job.id, error: errorText(error) }); }
       }

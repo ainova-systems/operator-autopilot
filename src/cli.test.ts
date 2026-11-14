@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { JobStore, type JobRecord } from './jobs.ts';
 import { CLI_ENTRY } from './launch.ts';
+import { coolingProvider, rememberQuota } from './provider-quota.ts';
 import { createTestProject, type TestProject } from './test-support/project.ts';
 
 const run = promisify(execFile);
@@ -247,4 +248,24 @@ test('a pause on a manifest that names hosts is refused for a host no workspace 
   assert.match((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'laptop' })).stdout, /resumed/);
   assert.match((await cli(['pause', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /pausing/);
   assert.match((await cli(['resume', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /resumed/);
+});
+
+test('cooldown clear ends this host\'s provider cooldown, once, and only for a host a daemon reads', async () => {
+  const p = await createTestProject({
+    pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: . }\n',
+    extraOperations: '      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }',
+  });
+  projects.push(p);
+  const manifest = join(p.root, 'operator.yaml');
+  const now = Date.now();
+  const until = new Date(now + 4 * 24 * 3_600_000).toISOString();
+  await rememberQuota(p.backend.docs, { id: 'w1', provider: 'codex', detectedAt: new Date(now).toISOString(), until, reason: 'codex usage limit', explicitReset: true }, 'vm1');
+  assert.equal((await cli(['cooldown', 'clear', 'gemini', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).code, 2);
+  assert.equal((await cli(['cooldown', 'clear', 'codex', 'extra', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).code, 2);
+  assert.equal((await cli(['cooldown', 'clear', 'codex', '--manifest', manifest], { OPERATOR_HOST: 'laptop' })).code, 2);
+  const cleared = await cli(['cooldown', 'clear', 'codex', '--manifest', manifest], { OPERATOR_HOST: 'vm1' });
+  assert.equal(cleared.code, 0, cleared.stderr);
+  assert.match(cleared.stdout, new RegExp(`cleared: codex was cooling down until ${until}; the daemon decides the jobs waiting for a quota again at its next poll`));
+  assert.equal(await coolingProvider(p.backend.docs, 'codex', Date.now(), 'vm1'), undefined);
+  assert.match((await cli(['cooldown', 'clear', 'codex', '--manifest', manifest], { OPERATOR_HOST: 'vm1' })).stdout, /^codex is not cooling down\n$/);
 });

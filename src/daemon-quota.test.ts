@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { enqueue } from './jobs.ts';
 import { CLAUDE_FALLBACK_DENIES, CLAUDE_FALLBACK_READS } from './engines.ts';
 import type { Herdr } from './herdr.ts';
-import { DEFAULT_QUOTA_WAIT_MS, PROVIDER_COOLDOWNS, quotaFromEvent, rememberQuota, type QuotaWait } from './provider-quota.ts';
+import { DEFAULT_QUOTA_WAIT_MS, PROVIDER_COOLDOWNS, clearCooldown, quotaFromEvent, rememberQuota, type QuotaWait } from './provider-quota.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo } from './runfiles.ts';
 import { createTestProject, pollUntil, type TestProject } from './test-support/project.ts';
 import { PROVIDER_AFFINITIES, SUBJECT_TABS_COLLECTION, type Daemon } from './daemon.ts';
@@ -66,7 +66,7 @@ if (setting.mode === 'live' || setting.mode === 'split') {
 
 type Mode = { mode: string; reset?: number; after?: string; noise?: number; message?: string; endSubjects?: string[]; output?: unknown; prose?: boolean };
 const REVIEW_SCHEMA = { type: 'object', properties: { verdict: { type: 'string' }, subject: { type: 'string' } }, required: ['verdict'], additionalProperties: false };
-async function fixture(options: { live?: boolean; limit?: boolean; timeout?: string; review?: 'headless' | 'herdr' } = {}) {
+async function fixture(options: { live?: boolean; limit?: boolean; timeout?: string; review?: 'headless' | 'herdr'; hosts?: boolean } = {}) {
   const taskOp = options.live
     ? `      task: { kind: interactive, engine: claude, fallback: codex, prompt: 'Do the task from {input}; write {result}', placement: herdr, tabs: per-subject, timeout: ${options.timeout ?? '1s'}, ${options.limit ? 'limit: checks,' : ''} args: ['--permission-mode', auto] }`
     : `      task: { kind: agent, engine: claude, fallback: codex, prompt: 'Do the task from {input}; write {result}', timeout: 5s, args: ['--permission-mode', auto] }`;
@@ -74,8 +74,10 @@ async function fixture(options: { live?: boolean; limit?: boolean; timeout?: str
   const review = options.review
     ? `\n      review: { kind: agent, engine: codex, fallback: claude, agent: code-reviewer, schema: review.schema.json, thread: per-subject, ${options.review === 'herdr' ? 'placement: herdr, tabs: per-subject,' : ''} timeout: 5s, args: ['-c', 'approval_policy=on-request'], prompt: 'Review {subject} from {input} into {output}. Answer only with the JSON your output schema requires.', then: verdict }\n      verdict: { kind: script, command: 'true' }`
     : '';
-  const extra = taskOp + review;
-  const p = await createTestProject({ extraOperations: extra });
+  // A workspace on host vm1 makes the manifest name hosts: a job of a pool-less operation any host may run.
+  const hosted = options.hosts ? '\n      hosted: { kind: agent, engine: command, command: node scripts/fake-agent.mjs, pool: host-slot, timeout: 30m }' : '';
+  const extra = taskOp + review + hosted;
+  const p = await createTestProject({ extraOperations: extra, ...(options.hosts ? { pools: '  host-slot:\n    workspaces:\n      h: { count: 1, host: vm1, cwd: . }\n' } : {}) });
   if (options.review) {
     await writeFile(join(p.root, 'review.schema.json'), JSON.stringify(REVIEW_SCHEMA, null, 2));
     await mkdir(join(p.root, '.codex', 'agents'), { recursive: true });
@@ -136,9 +138,9 @@ async function fixture(options: { live?: boolean; limit?: boolean; timeout?: str
 async function task(daemon: Daemon, subject: string, key = subject) {
   return (await enqueue(daemon.jobs, { project: 'demo', workflow: 'demo', operation: 'task', subject, input: {}, trigger: { id: key, name: 'test', kind: 'manual' } })).id;
 }
-async function cache(p: TestProject, provider: 'claude' | 'codex', reset: number) {
+async function cache(p: TestProject, provider: 'claude' | 'codex', reset: number, host?: string) {
   const event = provider === 'claude' ? { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: reset / 1000 } } : { type: 'error', code: 'usage_limit_reached', resets_at: reset / 1000 };
-  return rememberQuota(p.backend.docs, quotaFromEvent(event, provider)!);
+  return rememberQuota(p.backend.docs, quotaFromEvent(event, provider)!, host);
 }
 
 test('first quota-limited task stays Claude; only a new task falls back and same session resumes without spending retries', async () => {
@@ -520,6 +522,8 @@ test('a review an older daemon left waiting for the Codex reset is decided again
     const quota = await cache(f.p, 'codex', reset);
     await f.modes({ mode: 'done' }, { mode: 'done' });
     const daemon = f.p.daemon(); await daemon.acquireLeader();
+    // The first poll decides every quota wait against the cooldowns it reads; later ones only on a change.
+    await daemon.poll();
     const id = await review(daemon, 'pr-9');
     // The state an older daemon wrote: a not-started task held until the reset by its quota wait.
     await daemon.jobs.update(id, (current) => {
@@ -664,5 +668,85 @@ test('a usage limit hit by a Claude review requeues it without spending a retry,
     assert.deepEqual((await f.calls()).map((call) => call.provider), ['claude', 'codex']);
     assert.equal((await daemon.jobs.get(id))?.provider, 'codex');
     assert.equal((await daemon.jobs.get(id))?.retryCount, 0);
+  } finally { await f.cleanup(); }
+});
+
+test('a cooldown cleared early frees a review waiting for its fallback\'s earlier reset at the next poll', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const claudeReset = Date.now() + 3_600_000;
+    await cache(f.p, 'codex', claudeReset + 7 * 24 * 3_600_000);
+    await cache(f.p, 'claude', claudeReset);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-6');
+    await daemon.poll();
+    await daemon.poll();
+    assert.equal((await daemon.jobs.get(id))?.notBefore, new Date(claudeReset).toISOString());
+    assert.equal((await clearCooldown(f.p.backend.docs, 'codex', 'owner@host', Date.now())).ended?.provider, 'codex');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done');
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
+  } finally { await f.cleanup(); }
+});
+
+test('a cooldown cleared early frees a job any host may run from its in-memory wait at the next poll', async () => {
+  const f = await fixture({ review: 'headless', hosts: true });
+  try {
+    const reset = Date.now() + 7 * 24 * 3_600_000;
+    await cache(f.p, 'codex', reset, 'vm1');
+    await cache(f.p, 'claude', reset, 'vm1');
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const daemon = f.p.daemon({ host: 'vm1' }); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-7');
+    await daemon.poll();
+    await daemon.poll();
+    const waiting = (await daemon.jobs.get(id))!;
+    assert.equal(waiting.status, 'queued');
+    assert.equal(waiting.notBefore, undefined);
+    assert.deepEqual(await f.calls(), []);
+    assert.equal((await clearCooldown(f.p.backend.docs, 'codex', 'owner@host', Date.now(), 'vm1')).ended?.provider, 'codex');
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done');
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
+  } finally { await f.cleanup(); }
+});
+
+test('the first poll decides again a wait queued against a cooldown cleared since', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const cooldown = await cache(f.p, 'codex', Date.now() + 7 * 24 * 3_600_000);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    const daemon = f.p.daemon(); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-8');
+    // A run the first poll collects requeues its job against the cooldown a clear has just ended.
+    await clearCooldown(f.p.backend.docs, 'codex', 'owner@host', Date.now());
+    await daemon.jobs.update(id, (job) => ({ ...job, notBefore: cooldown.until, quotaWait: cooldown }));
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done');
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
+  } finally { await f.cleanup(); }
+});
+
+test('a reopening that failed is retried by the next poll', async () => {
+  const f = await fixture({ review: 'headless' });
+  try {
+    const claudeReset = Date.now() + 3_600_000;
+    await cache(f.p, 'codex', claudeReset + 7 * 24 * 3_600_000);
+    await cache(f.p, 'claude', claudeReset);
+    await f.modes({ mode: 'done' }, { mode: 'done' });
+    let failJobWrite = false;
+    const docs = { ...f.p.backend.docs, replace: async <T>(collection: string, key: string, value: T, options?: Parameters<typeof f.p.backend.docs.replace>[3]) => {
+      if (failJobWrite && collection === 'jobs') { failJobWrite = false; throw new Error('state backend unavailable'); }
+      return f.p.backend.docs.replace(collection, key, value, options);
+    } };
+    const daemon = f.p.daemon({ backend: { ...f.p.backend, docs } }); await daemon.acquireLeader();
+    const id = await review(daemon, 'pr-9');
+    await daemon.poll();
+    await daemon.poll();
+    assert.equal((await daemon.jobs.get(id))?.notBefore, new Date(claudeReset).toISOString());
+    await clearCooldown(f.p.backend.docs, 'codex', 'owner@host', Date.now());
+    failJobWrite = true;
+    await assert.rejects(daemon.poll(), /state backend unavailable/);
+    assert.equal((await daemon.jobs.get(id))?.notBefore, new Date(claudeReset).toISOString());
+    await pollUntil(daemon, async () => (await daemon.jobs.get(id))?.status === 'done');
+    assert.deepEqual((await f.calls()).map((call) => call.provider), ['codex']);
   } finally { await f.cleanup(); }
 });
