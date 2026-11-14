@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-11-14
+
+- `operator cooldown clear <claude|codex>` ends a provider's usage-limit cooldown on this host once its usage is back before the reset it reported. The daemon notices any change of a cooldown at its next poll and decides every queued quota wait again, a job any host may run included. A run replaying evidence observed before the clear cannot restore the cooldown, and a limit observed after it stands. Until now a weekly limit that was reset early kept every run on the fallback provider until the reported reset, because the cooldown record is read-only through `operator state`.
+
 ## [0.11.6] - 2026-11-13
 
 - `operator pause` and `operator resume` refuse a host that no workspace names and no daemon runs as, once a manifest names hosts. Run in a shell without the service's `OPERATOR_HOST`, they took the machine's name, paused a host no daemon reads and reported the pause in force.

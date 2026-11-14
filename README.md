@@ -369,6 +369,13 @@ waiting; `operator state get provider-cooldowns claude` reads the cached provide
 runtime-owned collections are read-only through the state CLI. This behavior applies to wrappers
 started by this version; upgrading the daemon does not replace code in an already-running wrapper.
 
+A provider whose usage comes back before its reported reset - a plan upgraded, a limit reset by the
+provider - is freed with `operator cooldown clear <claude|codex>`, for this host once the manifest
+names hosts. The daemon notices the change at its next poll and decides every job waiting for a quota
+again, so a job waiting for the fallback's reset moves back too. A run replaying evidence observed
+before the clear cannot bring the cooldown back; a limit observed after it starts a new one, and one
+recorded while the clear runs stands - the command then exits 1 naming it.
+
 ## Use
 
 ```bash
@@ -383,6 +390,7 @@ operator claim take|renew|release <subject> --run <id> [--ttl 1h]  |  operator c
 operator queue add --title t --body-file spec.md  |  queue list|get|take|update   # private work queue
 operator pause --wait [--reason text] [--timeout 2h]   # finish running jobs, start none; before a host restart (only this host's, once hosts are named)
 operator resume                                 # also happens by itself when the service starts again
+operator cooldown clear <claude|codex>          # the provider's usage is back before its reported reset
 operator service install <project> --manifest operator.yaml [--env-file secrets.env] [--no-start]
 operator service status <project>  |  operator service uninstall <project>
 ```

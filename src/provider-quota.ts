@@ -16,6 +16,8 @@ export interface QuotaWait {
   reason: string;
   /** Provider-supplied reset time, rather than the four-hour default. */
   explicitReset: boolean;
+  /** Who ended the cooldown before its reset (`operator cooldown clear`); the record is then a lapsed one. */
+  clearedBy?: string;
 }
 
 export interface QuotaResume {
@@ -167,8 +169,9 @@ export async function rememberQuota(docs: DocStore, quota: QuotaWait, host?: str
     const prior = existing.value;
     const observed = Date.parse(quota.detectedAt);
     const previous = Date.parse(prior.detectedAt);
-    // Live runs replay their saved evidence. Arrival order is not observation order.
-    if (observed < previous) return prior;
+    // Live runs replay their saved evidence. Arrival order is not observation order. A clear outranks
+    // evidence observed at the same moment.
+    if (observed < previous || (observed === previous && prior.clearedBy !== undefined)) return prior;
     if (observed === previous) {
       if (prior.explicitReset && !quota.explicitReset) return prior;
       if (prior.explicitReset === quota.explicitReset && Date.parse(quota.until) <= Date.parse(prior.until)) return prior;
@@ -178,6 +181,26 @@ export async function rememberQuota(docs: DocStore, quota: QuotaWait, host?: str
     if (await docs.replace(PROVIDER_COOLDOWNS, key, quota, { etag: existing.etag, missingIsConflict: true, ttlMs }) === 'written') return quota;
   }
   throw new OperatorError('STATE_CONTENTION', `provider ${quota.provider} cooldown kept changing under eight consecutive updates`);
+}
+
+/**
+ * Ends a provider's cooldown before its reset, once its usage is back early. The record becomes a
+ * lapsed cooldown observed now, kept as long as the cleared one would have run: a live run replaying
+ * evidence observed before the clear cannot bring the cooldown back, while a limit observed after it
+ * starts a new one - and one already recorded stands, so the clear never erases newer evidence.
+ */
+export async function clearCooldown(docs: DocStore, provider: Provider, by: string, now: number, host?: string): Promise<{ ended?: QuotaWait; standing?: QuotaWait }> {
+  const key = cooldownKey(provider, host);
+  const at = new Date(now).toISOString();
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const existing = await docs.get<QuotaWait>(PROVIDER_COOLDOWNS, key);
+    if (!existing || Date.parse(existing.value.until) <= now) return {};
+    if (Date.parse(existing.value.detectedAt) > now) return { standing: existing.value };
+    const lapsed: QuotaWait = { id: `cleared-${existing.value.id}`, provider, detectedAt: at, until: at, reason: 'usage back before the reported reset', explicitReset: true, clearedBy: by };
+    const ttlMs = Math.max(DEFAULT_QUOTA_WAIT_MS, Date.parse(existing.value.until) - now) + DEFAULT_QUOTA_WAIT_MS;
+    if (await docs.replace(PROVIDER_COOLDOWNS, key, lapsed, { etag: existing.etag, missingIsConflict: true, ttlMs }) === 'written') return { ended: existing.value };
+  }
+  throw new OperatorError('STATE_CONTENTION', `provider ${provider} cooldown kept changing under eight consecutive updates`);
 }
 
 export async function coolingProvider(docs: DocStore, provider: Provider, now: number, host?: string): Promise<QuotaWait | undefined> {
