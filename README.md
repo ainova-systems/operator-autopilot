@@ -276,6 +276,12 @@ panes are never answered automatically. Unconfirmed continuation delivery retrie
 times, at least a minute apart, checking for activity first; an unresolved delivery notifies the
 owner and leaves the session open. The per-run deadline and delivery state survive a daemon
 restart. A valid completed operation result always wins over earlier quota evidence.
+Once a continuation is recorded as sent, another refusal reporting the same reset starts no new
+quota wait: it has the id of the evidence already recorded, and one whose reset has passed is ignored.
+The active timeout counts down again, so a session that neither completes nor meets a recognised wait
+times out as a retryable failure. With retries left it runs again after the operation's retry delay,
+spending one, and the new run waits on a newly detected limit; with none left (the default), the job
+fails.
 
 The existing wall-time cap still applies to headless runs and any operation holding a
 **nonrenewable `limit` pool**, whether through `pool` or `limit`: a session cannot outlive its Guard
