@@ -12,7 +12,20 @@ import { HerdrRefusal, type Herdr } from './herdr.ts';
 import { processAlive, readJsonFile, runPath, type CommandInfo, type WrapperInfo } from './runfiles.ts';
 import { absentHerdr, createTestProject, jobsBy, pollUntil, type TestProject } from './test-support/project.ts';
 import { fireTrigger } from './triggers.ts';
+import { parseManifest } from './manifest.ts';
 import { clearPause, readPause, requestPause } from './pause.ts';
+
+const VALID_ON_SUBJECT = `
+contract: 1
+project: demo
+state: { provider: ainoflow, namespace: op-demo }
+workflows:
+  demo:
+    triggers:
+      - { on: poke, run: discover, subject: release, input: { from: manifest, keep: 1 } }
+    operations:
+      discover: { kind: script, command: node scripts/discover.mjs }
+`;
 
 const projects: TestProject[] = [];
 async function project(options?: Parameters<typeof createTestProject>[0]): Promise<TestProject> {
@@ -61,6 +74,24 @@ test('the same trigger id twice is one job', async () => {
   assert.equal(second.duplicate, true);
   assert.equal(second.started?.jobId, first.started?.jobId);
   assert.equal((await daemon.jobs.list()).length, 1);
+});
+
+test('a trigger that names no subject takes the subject and input its "on" trigger declares', async () => {
+  const { manifest } = parseManifest(VALID_ON_SUBJECT, '/repo/operator.yaml');
+  const p = await project();
+  const daemon = p.daemon();
+  const plain = await fireTrigger(manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: '', input: { from: 'cli' }, id: 'poke-1' });
+  const named = await fireTrigger(manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: 'item-3', input: {}, id: 'poke-2' });
+  const plainJob = await daemon.jobs.get(plain.started?.jobId ?? '');
+  const namedJob = await daemon.jobs.get(named.started?.jobId ?? '');
+  assert.equal(plainJob?.subject, 'release');
+  assert.deepEqual(plainJob?.input, { from: 'cli', keep: 1 });
+  assert.equal(namedJob?.subject, 'item-3');
+  assert.deepEqual(namedJob?.input, { from: 'manifest', keep: 1 });
+  const repeated = await fireTrigger(manifest, daemon.jobs, daemon.waits, { workflow: 'demo', name: 'poke', subject: 'release', input: { from: 'cli' }, id: 'poke-1' });
+  assert.equal(repeated.duplicate, true);
+  assert.equal(repeated.started?.jobId, plain.started?.jobId);
+  assert.equal((await daemon.jobs.list()).length, 2);
 });
 
 test('a timer slot fires once however often the daemon ticks', async () => {
