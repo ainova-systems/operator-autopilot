@@ -109,7 +109,8 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
 ```
 
 - **Manifest** (`operator.yaml`, next to the project's sources) names workflows, their triggers
-  (`every`, `cron`, `on`), operations and pools.
+  (`every`, `cron`, `on`), operations and pools. A trigger's `subject` and `input` go to the job it
+  starts; for an `on` trigger they are defaults that `operator trigger --subject` and `--input` override.
 - **Contract 1.** Every run gets an input file (`$OPERATOR_INPUT`) and writes one result file
   (`$OPERATOR_RESULT`): `status` is `done | noop | waiting | needs-input | failed`, with `evidence`,
   `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Optional

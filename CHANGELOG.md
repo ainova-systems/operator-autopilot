@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.11.8] - 2026-11-16
+
+- `operator trigger` without `--subject` starts the job on the `subject` its `on` trigger declares, with that trigger's `input` under the request's; both were dropped, so a manual start of a workflow ran on an empty subject.
+
 ## [0.11.7] - 2026-11-14
 
 - `operator cooldown clear <claude|codex>` ends a provider's usage-limit cooldown on this host once its usage is back before the reset it reported. The daemon notices any change of a cooldown at its next poll and decides every queued quota wait again, a job any host may run included. A run replaying evidence observed before the clear cannot restore the cooldown, and a limit observed after it stands. Until now a weekly limit that was reset early kept every run on the fallback provider until the reported reset, because the cooldown record is read-only through `operator state`.

@@ -20,7 +20,7 @@ export type PoolSpec = LimitPool | WorkspacePool;
 export type TriggerSpec =
   | { kind: 'every'; index: number; intervalMs: number; run: string; subject: string; input: JsonObject }
   | { kind: 'cron'; index: number; schedule: CronSchedule; run: string; subject: string; input: JsonObject }
-  | { kind: 'on'; index: number; name: string; run: string };
+  | { kind: 'on'; index: number; name: string; run: string; subject: string; input: JsonObject };
 
 /**
  * What runs and how its end is proven. A script and an agent end on their own; an interactive run
@@ -407,7 +407,7 @@ function readWorkflow(reader: Reader, name: string, value: unknown, pools: Map<s
       try { triggers.push({ kind: 'cron', index, schedule: parseCron(expression, timezone), run, subject, input }); } catch (error) { reader.problem(`${triggerPath}.cron`, (error as Error).message); }
     } else {
       const on = reader.string(trigger, 'on', triggerPath, { pattern: NAME });
-      if (on) triggers.push({ kind: 'on', index, name: on, run });
+      if (on) triggers.push({ kind: 'on', index, name: on, run, subject, input });
     }
   });
   return { name, enabled, timezone, triggers, operations };
