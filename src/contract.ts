@@ -92,16 +92,21 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
   const message = raw['message'];
   if (message !== undefined && typeof message !== 'string') errors.push('message: expected a string');
 
+  // An agent that writes one value where the contract wants a list - one string or a map of
+  // strings as evidence, one request as next - means that list and nothing else, so it is read as
+  // one; failing the run for it would throw away finished work.
+  const rawEvidence = typeof raw['evidence'] === 'string' ? [raw['evidence']] : isObject(raw['evidence']) ? Object.values(raw['evidence']) : raw['evidence'];
   const evidence: string[] = [];
-  if (raw['evidence'] !== undefined) {
-    if (!Array.isArray(raw['evidence']) || raw['evidence'].some((item) => typeof item !== 'string')) errors.push('evidence: expected an array of strings');
-    else evidence.push(...(raw['evidence'] as string[]));
+  if (rawEvidence !== undefined) {
+    if (!Array.isArray(rawEvidence) || rawEvidence.some((item) => typeof item !== 'string')) errors.push('evidence: expected an array of strings');
+    else evidence.push(...(rawEvidence as string[]));
   }
 
+  const rawNext = isObject(raw['next']) ? [raw['next']] : raw['next'];
   const next: NextRequest[] = [];
-  if (raw['next'] !== undefined) {
-    if (!Array.isArray(raw['next'])) errors.push('next: expected an array');
-    else raw['next'].forEach((item: unknown, index: number) => {
+  if (rawNext !== undefined) {
+    if (!Array.isArray(rawNext)) errors.push('next: expected an array');
+    else rawNext.forEach((item: unknown, index: number) => {
       const path = `next[${index}]`;
       if (!isObject(item)) { errors.push(`${path}: expected an object`); return; }
       const operation = item['operation'];

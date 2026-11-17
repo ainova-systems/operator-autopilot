@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-11-17
+
+- A result whose `evidence` is one string or a map of strings, or whose `next` is one request instead of a list, is read as the list it means; such a slip failed the finished run as an invalid result, and the repeated request then mapped to that failed job, so the subject stopped moving.
+
 ## [0.11.8] - 2026-11-16
 
 - `operator trigger` without `--subject` starts the job on the `subject` its `on` trigger declares, with that trigger's `input` under the request's; both were dropped, so a manual start of a workflow ran on an empty subject.
