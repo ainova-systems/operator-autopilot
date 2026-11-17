@@ -102,7 +102,7 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
     else evidence.push(...(rawEvidence as string[]));
   }
 
-  const rawNext = isObject(raw['next']) ? [raw['next']] : raw['next'];
+  const rawNext = isObject(raw['next']) && typeof raw['next']['operation'] === 'string' ? [raw['next']] : raw['next'];
   const next: NextRequest[] = [];
   if (rawNext !== undefined) {
     if (!Array.isArray(rawNext)) errors.push('next: expected an array');

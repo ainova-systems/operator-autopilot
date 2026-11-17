@@ -21,6 +21,11 @@ test('one request as next and one value or a map of strings as evidence are read
   const nested = parseResult({ contract: 1, status: 'done', evidence: { pr: { number: 1 } }, next: 'review' }, 'pr-1');
   assert.equal(nested.ok, false);
   if (!nested.ok) assert.deepEqual(nested.errors, ['evidence: expected an array of strings', 'next: expected an array']);
+  for (const notARequest of [{}, { subject: 3, notBefore: 'soon' }]) {
+    const refused = parseResult({ contract: 1, status: 'done', next: notARequest }, 'pr-1');
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.deepEqual(refused.errors, ['next: expected an array']);
+  }
 });
 
 test('requires a wait descriptor for needs-input and fills its defaults', () => {
