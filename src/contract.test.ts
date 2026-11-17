@@ -10,6 +10,24 @@ test('accepts a done result and defaults next subjects to the job subject', () =
   assert.deepEqual(outcome.value.evidence, ['https://example.test/c/1']);
 });
 
+test('one request as next and one value or a map of strings as evidence are read as the lists they mean', () => {
+  const outcome = parseResult({ contract: 1, status: 'done', evidence: { head: 'abc', pr: 'https://example.test/pr/1' }, next: { operation: 'review', key: 'review:abc', input: { head: 'abc' } } }, 'pr-1');
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(outcome.value.evidence, ['abc', 'https://example.test/pr/1']);
+  assert.deepEqual(outcome.value.next, [{ operation: 'review', subject: 'pr-1', input: { head: 'abc' }, key: 'review:abc' }]);
+  const single = parseResult({ contract: 1, status: 'done', evidence: 'https://example.test/c/1' }, 'pr-1');
+  assert.equal(single.ok && single.value.evidence[0], 'https://example.test/c/1');
+  const nested = parseResult({ contract: 1, status: 'done', evidence: { pr: { number: 1 } }, next: 'review' }, 'pr-1');
+  assert.equal(nested.ok, false);
+  if (!nested.ok) assert.deepEqual(nested.errors, ['evidence: expected an array of strings', 'next: expected an array']);
+  for (const notARequest of [{}, { subject: 3, notBefore: 'soon' }]) {
+    const refused = parseResult({ contract: 1, status: 'done', next: notARequest }, 'pr-1');
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.deepEqual(refused.errors, ['next: expected an array']);
+  }
+});
+
 test('requires a wait descriptor for needs-input and fills its defaults', () => {
   const missing = parseResult({ contract: 1, status: 'needs-input' }, 'pr-1');
   assert.equal(missing.ok, false);
