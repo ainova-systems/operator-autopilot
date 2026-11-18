@@ -116,9 +116,9 @@ timer / trigger ─▶ job (deduped) ─▶ pool slot ─▶ run: script, agent 
   `next` requests and, for a question, a `wait` that a later `operator trigger` resumes. Optional
   `endSubjects` names subjects whose work is over: their per-subject tabs close, their sessions
   and Codex threads are forgotten and their open waits in the workflow end unanswered (`ended`);
-  a result without it is read as before. `evidence` written as one string or a map of strings,
-  and `next` written as one request, are read as the lists they mean. Exit 0 without a valid
-  result is a failure.
+  a result without it is read as before. `evidence` is only recorded, so any shape is read as a
+  list of strings (a map as `key: value` entries, other values as JSON), and `next` written as one
+  request is read as the list it means. Exit 0 without a valid result is a failure.
 - **Dedupe, not exactly-once.** A job's id is derived from (workflow, operation, subject, trigger
   id); the same trigger twice is one job. A `next` request may carry a `key`: requests with the
   same operation, subject and key are one job while its record is kept, so a discovery that runs

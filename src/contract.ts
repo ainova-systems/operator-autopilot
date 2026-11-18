@@ -80,6 +80,15 @@ function isIsoDate(value: unknown): value is string {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
+/** One value is a list of one, a map lists its entries as `key: value`, and a value that is not a string is written as JSON. */
+function readEvidence(value: unknown): string[] {
+  const text = (item: unknown): string => (typeof item === 'string' ? item : JSON.stringify(item));
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value.map(text);
+  if (isObject(value)) return Object.entries(value).map(([key, item]) => `${key}: ${text(item)}`);
+  return [text(value)];
+}
+
 /** Validates a parsed result file. Unknown fields are ignored; missing optional lists default to empty. */
 export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<OperationResult> {
   const errors: string[] = [];
@@ -92,16 +101,11 @@ export function parseResult(raw: unknown, defaultSubject: string): ParseOutcome<
   const message = raw['message'];
   if (message !== undefined && typeof message !== 'string') errors.push('message: expected a string');
 
-  // An agent that writes one value where the contract wants a list - one string or a map of
-  // strings as evidence, one request as next - means that list and nothing else, so it is read as
-  // one; failing the run for it would throw away finished work.
-  const rawEvidence = typeof raw['evidence'] === 'string' ? [raw['evidence']] : isObject(raw['evidence']) ? Object.values(raw['evidence']) : raw['evidence'];
-  const evidence: string[] = [];
-  if (rawEvidence !== undefined) {
-    if (!Array.isArray(rawEvidence) || rawEvidence.some((item) => typeof item !== 'string')) errors.push('evidence: expected an array of strings');
-    else evidence.push(...(rawEvidence as string[]));
-  }
+  // Evidence is only recorded, never routed on, so its shape never fails a run that finished its
+  // work: whatever an agent writes is read as the list of strings it means.
+  const evidence = readEvidence(raw['evidence']);
 
+  // An agent that writes one request where the contract wants a list means that list.
   const rawNext = isObject(raw['next']) && typeof raw['next']['operation'] === 'string' ? [raw['next']] : raw['next'];
   const next: NextRequest[] = [];
   if (rawNext !== undefined) {
