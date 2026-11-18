@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.11.10] - 2026-11-18
+
+- A result's `evidence` of any shape is read as a list of strings: a map as `key: value` entries and a value that is not a string as JSON. A map holding numbers, booleans or nested values still failed the finished run as an invalid result, and the subject stopped moving.
+
 ## [0.11.9] - 2026-11-17
 
 - A result whose `evidence` is one string or a map of strings, or whose `next` is one request instead of a list, is read as the list it means; such a slip failed the finished run as an invalid result, and the repeated request then mapped to that failed job, so the subject stopped moving.
